@@ -13,12 +13,12 @@ static size_t sDynamicScriptCount = 0;
 
 // Keeps a stable script list for the current process lifetime.
 static const char *sEnabledBuiltins[] = {
-    "mods/cheats.lua",
-    "mods/faster-swimming.lua",
-    "mods/personal-starcount-ex.lua",
-    "mods/day-night-cycle/main.lua",
     "mods/character-select-coop/main.lua",
     "mods/char-select-the-originals/main.lua",
+    "mods/cheats.lua",
+    "mods/day-night-cycle/main.lua",
+    "mods/faster-swimming.lua",
+    "mods/personal-starcount-ex.lua",
 };
 
 // Returns true if `path` ends with `suffix`.

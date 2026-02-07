@@ -81,6 +81,8 @@ bool smlua_call_event_hooks_interact(const void *mario_state, const void *object
 bool smlua_call_event_hooks_allow_interact(const void *mario_state, const void *object,
                                            unsigned int interact_type, bool *allow_interact);
 bool smlua_call_event_hooks_mario(enum LuaHookedEventType hook_type, const void *mario_state);
+bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_type,
+                                             unsigned int step_arg, int *step_result_override);
 bool smlua_call_event_hooks_dialog(int dialog_id, bool *open_dialog_box,
                                    const char **dialog_text_override);
 void smlua_call_event_hooks_before_set_mario_action(const void *mario_state, int next_action,

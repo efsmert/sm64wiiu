@@ -75,6 +75,7 @@ make -C sm64wiiu wuhb
   - interact / allow-interact
   - dialog hooks
   - mario update hooks
+  - before-phys-step hooks at step-level entry points (ground/air/water/hang) with Co-op DX-style optional step-result override
   - object-set-model hooks.
 
 ### I) Cobject and field reflection
@@ -118,6 +119,7 @@ make -C sm64wiiu wuhb
 - Disabled fast-math for Lua objects (`-fno-fast-math`) to prevent Lua VM corruption.
 - Added deterministic fallback companion loading for known multi-file mods.
 - Added explicit main-script startup markers for runtime diagnosis.
+- Added root-script startup markers for all active scripts (including single-file mods) and targeted HOOK_BEFORE_PHYS_STEP water-step velocity diagnostics for runtime parity triage.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -198,6 +200,8 @@ Notes:
 - GX2 sampler null-shader path fix attempt: removed eager sampler initialization during texture-cache insertion (before shader bind), seeded sentinel sampler state so first textured draw re-applies real parameters, and added explicit log when sampler setup is requested without an active shader to verify/avoid the previous crash path at `gfx_gx2_set_sampler_parameters` | files: sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/gfx/gfx_gx2.cpp | validation: `export DEVKITPRO=/opt/devkitpro DEVKITPPC=/opt/devkitpro/devkitPPC PATH="$PATH:/opt/devkitpro/devkitPPC/bin:/opt/devkitpro/tools/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb -j4` | outcome: build + wuhb succeed; next Cemu run should confirm whether null-shader sampler calls still occur and whether spawn crash moves/resolves.
 - TMEM tile-index bounds hardening pass: fixed out-of-bounds texture-slot indexing in RDP load path by remapping `tmem/256` into the renderer’s two supported texture slots, adding bounded diagnostics for remaps, and guarding load-block/load-tile writes to prevent corruption of adjacent renderer globals (notably GX2 texture vector metadata) | files: sm64wiiu/src/pc/gfx/gfx_pc.c | validation: `export DEVKITPRO=/opt/devkitpro DEVKITPPC=/opt/devkitpro/devkitPPC PATH="$PATH:/opt/devkitpro/devkitPPC/bin:/opt/devkitpro/tools/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb -j4` | outcome: build + wuhb succeed; next Cemu run should no longer crash via corrupted `gx2_textures` vector state from high TMEM tile indices.
 - Co-op DX parity audit + GX2 texture allocator hardening: compared Wii U renderer against donor `sm64coopdx` tile-load semantics and restored compatibility for special load tile `6`, rejected unsupported TMEM tile indices instead of aliasing them, added import-path validity guards, and replaced dynamic `std::vector<_Texture>` growth with a fixed 2048-entry GX2 texture pool to eliminate vector-metadata crash paths observed at `std::vector<_Texture>::_M_default_append` | files: sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/gfx/gfx_gx2.cpp | validation: `export DEVKITPRO=/opt/devkitpro DEVKITPPC=/opt/devkitpro/devkitPPC PATH="$PATH:/opt/devkitpro/devkitPPC/bin:/opt/devkitpro/tools/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb -j4` | outcome: build + wuhb succeed with donor-aligned load-tile handling and non-vector GX2 texture storage for spawn-crash retest.
+- HOOK_BEFORE_PHYS_STEP timing/signature parity pass: moved pre-physics hook dispatch from `bhv_mario_update` to donor-aligned physics-step callsites (`perform_ground_step`, `perform_air_step`, `perform_water_step`, `perform_hanging_step`), added C step-type constants, and implemented Lua hook return override handling (`number` return short-circuits with step result) to match Co-op DX behavior expected by gameplay mods like `faster-swimming` | files: sm64wiiu/include/sm64.h, sm64wiiu/src/pc/lua/smlua_hooks.h, sm64wiiu/src/pc/lua/smlua_hooks.c, sm64wiiu/src/game/mario_step.c, sm64wiiu/src/game/mario_actions_submerged.c, sm64wiiu/src/game/mario_actions_automatic.c, sm64wiiu/src/game/object_list_processor.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed with pre-physics hooks firing at correct simulation points for parity retest.
+- Gameplay-mod order + water-hook diagnostics pass: reordered built-in root script activation so character-select scripts initialize first and gameplay single-file scripts (including `faster-swimming`) run later, added explicit Wii U root-script log lines for every active script (not only `main.lua` roots), and added bounded water-step hook delta logs to verify when HOOK_BEFORE_PHYS_STEP callbacks mutate `MarioState.vel` at runtime | files: sm64wiiu/src/pc/mods/mods.c, sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/src/pc/lua/smlua_hooks.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; next Cemu run should expose whether faster-swimming hook registration/order and velocity mutation are occurring.
 
 ## 10) Required Format For Future Summary Updates
 
@@ -211,14 +215,11 @@ Use this low-token format only. Do not append long narrative sections.
 
 ### Required update entry template
 ```
-### YYYY-MM-DD
-- <short milestone name>: <what changed>
-  - files: <key files>
-  - validation: <commands run>
-  - outcome: <result>
+    ### YYYY-MM-DD
+    - <short milestone name>: <what changed>
+      - files: <key files>
+      - validation: <commands run>
+      - outcome: <result>
+      - gotcha: <single concrete issue and mitigation>
 ```
-
-### Optional extra line (only if needed)
-```
-  - Gotcha: <single concrete issue and mitigation>
-```
+  The gotcha is OPTIONAL, you should only include one if something important was learned

@@ -5,6 +5,8 @@ This file is project-specific guidance for agents working in `/Users/samiareski/
 ## 1) Project context
 - `sm64wiiu/`: shipping Wii U target. `sm64coopdx/`: donor project for enhanced features.
 - Mission: port Co-op DX features into `sm64wiiu` while keeping Wii U bootable at each step.
+- **IMPORTANT:** The core goal is to port all enhanced features from `sm64coopdx` into `sm64wiiu`. `sm64coopdx` targets desktop platforms (Windows/macOS/Linux), while `sm64wiiu` is the native Wii U port. Both are Super Mario 64 decompilation projects.
+- **IMPORTANT:** When re-implementing a feature in `sm64wiiu`, first inspect the corresponding `sm64coopdx` code path to understand its wiring, then bring the implementation over as directly as possible, adapting only the platform-specific wiring differences required for Wii U.
 - The project already compiles and runs. Main risk is Lua/mod runtime stability, not toolchain setup.
 - Strategy: runtime and gameplay parity first, networking last.
 - Focus outputs: `.rpx` and `.wuhb`.
@@ -85,11 +87,15 @@ When you complete work, update `SUMMARY.md`. Follow the rules in its section 10.
 2. **Create a new lettered section only for genuinely new subsystems.** "O) DJUI text rendering pipeline" warrants a new section. Three more constants in the compatibility surface does not.
 
 3. **Add one ledger entry per material milestone** using the template in section 10:
-   ```
-   ### YYYY-MM-DD
-   - <short name>: <what changed> | files: <key files> | validation: <commands> | outcome: <result>
-   ```
-   Add a second line for gotchas if you discovered something non-obvious.
+  ```
+    ### YYYY-MM-DD
+    - <short milestone name>: <what changed>
+      - files: <key files>
+      - validation: <commands run>
+      - outcome: <result>
+      - gotcha: <single concrete issue and mitigation>
+  ```
+    The gotcha is OPTIONAL, you should only include one if something important was learned
 
 4. **Never repeat boilerplate.** Artifact paths are listed once. Build commands are listed once. Don't restate them per entry.
 

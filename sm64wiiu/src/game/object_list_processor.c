@@ -273,8 +273,6 @@ void bhv_mario_update(void) {
 
     // Co-op DX-compatible order: before-update hooks run before action execution.
     smlua_call_event_hooks_mario(HOOK_BEFORE_MARIO_UPDATE, gMarioState);
-    // Early runtime parity for mods that expect pre-physics mutation each frame.
-    smlua_call_event_hooks_mario(HOOK_BEFORE_PHYS_STEP, gMarioState);
     particleFlags = execute_mario_action(gCurrentObject);
     smlua_call_event_hooks_mario(HOOK_MARIO_UPDATE, gMarioState);
     gCurrentObject->oMarioParticleFlags = particleFlags;

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include "sm64.h"
 #include "behavior_data.h"
@@ -9,6 +10,9 @@
 #include "smlua_hooks.h"
 #include "smlua_cobject.h"
 #include <lauxlib.h>
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 #define MAX_HOOKED_REFERENCES 64
 #define MAX_SYNC_TABLE_CHANGE_HOOKS 64
@@ -24,6 +28,8 @@ struct LuaHookedEvent {
 static lua_State *sHookState = NULL;
 static struct LuaHookedEvent sHookedEvents[HOOK_MAX];
 static int sNextModMenuHandle = 1;
+static bool sBeforePhysWaterHookCountLogged = false;
+static int sBeforePhysWaterVelChangeLogs = 0;
 
 struct LuaSyncTableChangeHook {
     int tableRef;
@@ -522,6 +528,76 @@ bool smlua_call_event_hooks_mario(enum LuaHookedEventType hook_type, const void 
                                          NULL, NULL);
 }
 
+// Dispatches pre-physics hooks with step metadata and supports optional result override.
+bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_type,
+                                             unsigned int step_arg, int *step_result_override) {
+    if (sHookState == NULL || mario_state == NULL) {
+        return false;
+    }
+
+    struct LuaHookedEvent *hook = &sHookedEvents[HOOK_BEFORE_PHYS_STEP];
+    struct MarioState *mario = (struct MarioState *)mario_state;
+    const bool log_water_step = (step_type == STEP_TYPE_WATER);
+
+#ifdef TARGET_WII_U
+    if (log_water_step && !sBeforePhysWaterHookCountLogged) {
+        WHBLogPrintf("lua: before_phys water hooks=%d", hook->count);
+        sBeforePhysWaterHookCountLogged = true;
+    }
+#endif
+
+    for (int i = 0; i < hook->count; i++) {
+        f32 vel_before[3];
+        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->references[i]);
+        if (!lua_isfunction(sHookState, -1)) {
+            lua_pop(sHookState, 1);
+            continue;
+        }
+
+        if (log_water_step) {
+            vel_before[0] = mario->vel[0];
+            vel_before[1] = mario->vel[1];
+            vel_before[2] = mario->vel[2];
+        }
+
+        smlua_push_mario_state(sHookState, mario_state);
+        lua_pushinteger(sHookState, step_type);
+        lua_pushinteger(sHookState, (lua_Integer)step_arg);
+
+        if (smlua_pcall_with_budget(sHookState, 3, 1) != LUA_OK) {
+            const char *error = lua_tostring(sHookState, -1);
+            printf("lua: hook %d failed: %s\n", HOOK_BEFORE_PHYS_STEP, error != NULL ? error : "<unknown>");
+            lua_pop(sHookState, 1);
+            continue;
+        }
+
+        if (log_water_step && sBeforePhysWaterVelChangeLogs < 16) {
+            const f32 dx = mario->vel[0] - vel_before[0];
+            const f32 dy = mario->vel[1] - vel_before[1];
+            const f32 dz = mario->vel[2] - vel_before[2];
+            if (fabsf(dx) > 0.0001f || fabsf(dy) > 0.0001f || fabsf(dz) > 0.0001f) {
+#ifdef TARGET_WII_U
+                WHBLogPrintf("lua: before_phys water hook[%d] dvel=(%.3f, %.3f, %.3f)",
+                             i, (double)dx, (double)dy, (double)dz);
+#endif
+                sBeforePhysWaterVelChangeLogs++;
+            }
+        }
+
+        if (lua_isnumber(sHookState, -1)) {
+            if (step_result_override != NULL) {
+                *step_result_override = (int)lua_tointeger(sHookState, -1);
+            }
+            lua_pop(sHookState, 1);
+            return true;
+        }
+
+        lua_pop(sHookState, 1);
+    }
+
+    return false;
+}
+
 // Dispatches dialog hooks and lets Lua veto open + override text.
 bool smlua_call_event_hooks_dialog(int dialog_id, bool *open_dialog_box,
                                    const char **dialog_text_override) {
@@ -773,6 +849,8 @@ void smlua_clear_hooks(lua_State *L) {
     sSyncTableChangeHookCount = 0;
     sMarioActionHookCount = 0;
     sBehaviorHookCount = 0;
+    sBeforePhysWaterHookCountLogged = false;
+    sBeforePhysWaterVelChangeLogs = 0;
 }
 
 // Registers hook API and event constants in Lua.

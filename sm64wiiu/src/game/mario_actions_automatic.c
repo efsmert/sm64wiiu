@@ -16,6 +16,7 @@
 #include "camera.h"
 #include "level_table.h"
 #include "rumble_init.h"
+#include "pc/lua/smlua_hooks.h"
 
 #define POLE_NONE          0
 #define POLE_TOUCHED_FLOOR 1
@@ -305,6 +306,11 @@ s32 perform_hanging_step(struct MarioState *m, Vec3f nextPos) {
     f32 ceilHeight;
     f32 floorHeight;
     f32 ceilOffset;
+    s32 stepResultOverride = 0;
+
+    if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_HANG, 0, &stepResultOverride)) {
+        return stepResultOverride;
+    }
 
     m->wall = resolve_and_return_wall_collisions(nextPos, 50.0f, 50.0f);
     floorHeight = find_floor(nextPos[0], nextPos[1], nextPos[2], &floor);

@@ -5915,7 +5915,14 @@ void smlua_init(void) {
     size_t script_count = mods_get_active_script_count();
     smlua_logf("lua: loading %u root scripts", (unsigned)script_count);
     for (size_t i = 0; i < script_count; i++) {
-        smlua_run_script_with_companions(mods_get_active_script_path(i));
+        const char *root_script = mods_get_active_script_path(i);
+#ifdef TARGET_WII_U
+        // Keep startup visibility for single-file scripts that do not emit
+        // main-script begin/completed markers.
+        WHBLogPrintf("lua: root[%u] '%s'", (unsigned)i,
+                     root_script != NULL ? root_script : "<null>");
+#endif
+        smlua_run_script_with_companions(root_script);
     }
 
     smlua_call_event_hooks(HOOK_ON_MODS_LOADED);

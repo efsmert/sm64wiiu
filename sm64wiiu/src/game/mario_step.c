@@ -8,6 +8,7 @@
 #include "game_init.h"
 #include "interaction.h"
 #include "mario_step.h"
+#include "pc/lua/smlua_hooks.h"
 
 static s16 sMovingSandSpeeds[] = { 12, 8, 4, 0 };
 
@@ -323,6 +324,11 @@ s32 perform_ground_step(struct MarioState *m) {
     s32 i;
     u32 stepResult;
     Vec3f intendedPos;
+    s32 stepResultOverride = 0;
+
+    if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_GROUND, 0, &stepResultOverride)) {
+        return stepResultOverride;
+    }
 
     for (i = 0; i < 4; i++) {
         intendedPos[0] = m->pos[0] + m->floor->normal.y * (m->vel[0] / 4.0f);
@@ -612,6 +618,11 @@ s32 perform_air_step(struct MarioState *m, u32 stepArg) {
     s32 i;
     s32 quarterStepResult;
     s32 stepResult = AIR_STEP_NONE;
+    s32 stepResultOverride = 0;
+
+    if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_AIR, stepArg, &stepResultOverride)) {
+        return stepResultOverride;
+    }
 
     m->wall = NULL;
 

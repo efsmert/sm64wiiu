@@ -16,6 +16,7 @@
 #include "behavior_data.h"
 #include "level_table.h"
 #include "rumble_init.h"
+#include "pc/lua/smlua_hooks.h"
 
 #define MIN_SWIM_STRENGTH 160
 #define MIN_SWIM_SPEED 16.0f
@@ -170,6 +171,11 @@ static u32 perform_water_step(struct MarioState *m) {
     Vec3f nextPos;
     Vec3f step;
     struct Object *marioObj = m->marioObj;
+    s32 stepResultOverride = 0;
+
+    if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_WATER, 0, &stepResultOverride)) {
+        return (u32)stepResultOverride;
+    }
 
     vec3f_copy(step, m->vel);
 
