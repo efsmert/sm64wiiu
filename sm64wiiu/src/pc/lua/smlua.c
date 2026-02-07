@@ -170,9 +170,11 @@ static struct SmluaSequenceOverride sLuaSequenceOverrides[0x100];
 
 static bool smlua_path_has_suffix(const char *path, const char *suffix);
 static void smlua_run_file(const char *path);
+static void smlua_hud_draw_text(const char *message, s32 x, s32 y);
 extern char gSmluaConstants[];
 static void smlua_script_budget_hook(lua_State *L, lua_Debug *ar);
 static void smlua_update_budget_hook(lua_State *L, lua_Debug *ar);
+static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L);
 
 #define SMLUA_SCRIPT_LOAD_INSTRUCTION_BUDGET 10000000
 #define SMLUA_UPDATE_INSTRUCTION_BUDGET 5000000
@@ -203,6 +205,13 @@ struct SmluaGraphRootRef {
 static struct SmluaModAudio sLuaAudioPool[SMLUA_MAX_MOD_AUDIO];
 static s32 sLuaAudioPoolCount = 0;
 static u32 sLuaUpdateCounter = 0;
+
+#define SMLUA_MOD_OVERLAY_MAX_LINES 4
+#define SMLUA_MOD_OVERLAY_LINE_MAX 48
+#define SMLUA_MOD_OVERLAY_SHOW_FRAMES 900
+static char sLuaModOverlayLines[SMLUA_MOD_OVERLAY_MAX_LINES][SMLUA_MOD_OVERLAY_LINE_MAX];
+static s32 sLuaModOverlayLineCount = 0;
+static s32 sLuaModOverlayFramesLeft = 0;
 
 #define SMLUA_CUSTOM_MARKER_DNC_SKYBOX 0x444E4301u
 #define SMLUA_CUSTOM_MARKER_DNC_NO_SKYBOX 0x444E4302u
@@ -286,6 +295,114 @@ static void smlua_logf(const char *fmt, ...) {
 #else
     printf("%s\n", msg);
 #endif
+}
+
+// Converts one script path into a short HUD-safe mod label.
+static void smlua_mod_overlay_make_label(char *out, size_t out_size, const char *script_path) {
+    const char *name = script_path;
+    const char *slash;
+    const char *dot;
+    size_t limit = 0;
+    size_t pos = 0;
+
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    if (name == NULL || name[0] == '\0') {
+        snprintf(out, out_size, "UNKNOWN");
+        return;
+    }
+
+    if (strncmp(name, "mods/", 5) == 0) {
+        name += 5;
+    }
+
+    slash = strchr(name, '/');
+    if (slash != NULL) {
+        // Folder mods are represented by folder name (mods/foo/main.lua -> foo).
+        limit = (size_t)(slash - name);
+    } else {
+        dot = strrchr(name, '.');
+        limit = dot != NULL ? (size_t)(dot - name) : strlen(name);
+    }
+    if (limit == 0) {
+        snprintf(out, out_size, "MOD");
+        return;
+    }
+
+    for (size_t i = 0; i < limit && pos + 1 < out_size; i++) {
+        char c = name[i];
+        if (isalnum((unsigned char)c) || c == '.' || c == '/') {
+            out[pos++] = (char)toupper((unsigned char)c);
+        } else {
+            out[pos++] = ' ';
+        }
+    }
+    while (pos > 0 && out[pos - 1] == ' ') {
+        pos--;
+    }
+    if (pos == 0) {
+        snprintf(out, out_size, "MOD");
+        return;
+    }
+    out[pos] = '\0';
+}
+
+// Rebuilds startup overlay lines showing currently active root scripts.
+static void smlua_refresh_mod_overlay_lines(void) {
+    size_t script_count = mods_get_active_script_count();
+    size_t max_listed = (size_t)(SMLUA_MOD_OVERLAY_MAX_LINES - 1);
+    size_t listed = 0;
+
+    memset(sLuaModOverlayLines, 0, sizeof(sLuaModOverlayLines));
+    sLuaModOverlayLineCount = 0;
+
+    snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "MODS %u",
+             (unsigned)script_count);
+
+    if (script_count == 0) {
+        snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "NONE");
+    } else {
+        for (size_t i = 0; i < script_count && listed < max_listed; i++) {
+            const char *script_path = mods_get_active_script_path(i);
+            smlua_mod_overlay_make_label(
+                sLuaModOverlayLines[sLuaModOverlayLineCount++],
+                SMLUA_MOD_OVERLAY_LINE_MAX,
+                script_path
+            );
+            listed++;
+        }
+        if (script_count > listed && sLuaModOverlayLineCount < SMLUA_MOD_OVERLAY_MAX_LINES) {
+            snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "MORE %u",
+                     (unsigned)(script_count - listed));
+        }
+    }
+
+    sLuaModOverlayFramesLeft = SMLUA_MOD_OVERLAY_SHOW_FRAMES;
+}
+
+// Draws startup overlay with loaded mod count and names for quick runtime verification.
+static void smlua_draw_mod_overlay(void) {
+    const s32 x = 12;
+    const s32 y = 16;
+    const s32 line_step = 12;
+
+    if (sLuaModOverlayFramesLeft <= 0 || sLuaModOverlayLineCount <= 0) {
+        return;
+    }
+
+    for (s32 i = 0; i < sLuaModOverlayLineCount; i++) {
+        smlua_hud_draw_text(sLuaModOverlayLines[i], x, y + (i * line_step));
+    }
+
+    sLuaModOverlayFramesLeft--;
+}
+
+// Renders startup mod overlay from HUD render phase when display lists are active.
+void smlua_render_mod_overlay(void) {
+    smlua_draw_mod_overlay();
 }
 extern s8 char_to_glyph_index(char c);
 extern void render_textrect(s32 x, s32 y, s32 pos);
@@ -821,6 +938,22 @@ static bool smlua_get_script_directory(char *out_dir, size_t out_size, const cha
     return true;
 }
 
+// Returns true when a virtual path exists in the mounted Wii U filesystem view.
+static bool smlua_vfs_file_exists(const char *path) {
+    fs_file_t *file;
+
+    if (path == NULL || path[0] == '\0') {
+        return false;
+    }
+
+    file = fs_open(path);
+    if (file == NULL) {
+        return false;
+    }
+    fs_close(file);
+    return true;
+}
+
 // Resolves a mod-local asset path relative to the calling script and sibling active mods.
 static bool smlua_resolve_mod_asset_path(char *out_path, size_t out_size, const char *script_path,
                                          const char *filename, const char *subdir, const char *ext) {
@@ -835,27 +968,27 @@ static bool smlua_resolve_mod_asset_path(char *out_path, size_t out_size, const 
     if (script_path != NULL && smlua_get_script_directory(script_dir, sizeof(script_dir), script_path)) {
         if (subdir != NULL && ext != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s/%s%s", script_dir, subdir, filename, ext) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (subdir != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s/%s", script_dir, subdir, filename) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (ext != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s%s", script_dir, filename, ext) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (snprintf(candidate, sizeof(candidate), "%s/%s", script_dir, filename) > 0 &&
-            fs_sys_file_exists(candidate)) {
+            smlua_vfs_file_exists(candidate)) {
             snprintf(out_path, out_size, "%s", candidate);
             return true;
         }
@@ -869,27 +1002,27 @@ static bool smlua_resolve_mod_asset_path(char *out_path, size_t out_size, const 
         }
         if (subdir != NULL && ext != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s/%s%s", script_dir, subdir, filename, ext) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (subdir != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s/%s", script_dir, subdir, filename) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (ext != NULL) {
             if (snprintf(candidate, sizeof(candidate), "%s/%s%s", script_dir, filename, ext) > 0 &&
-                fs_sys_file_exists(candidate)) {
+                smlua_vfs_file_exists(candidate)) {
                 snprintf(out_path, out_size, "%s", candidate);
                 return true;
             }
         }
         if (snprintf(candidate, sizeof(candidate), "%s/%s", script_dir, filename) > 0 &&
-            fs_sys_file_exists(candidate)) {
+            smlua_vfs_file_exists(candidate)) {
             snprintf(out_path, out_size, "%s", candidate);
             return true;
         }
@@ -3145,6 +3278,15 @@ static int smlua_func_table_deepcopy(lua_State *L) {
     return 1;
 }
 
+// Applies sync-table writes without triggering recursive __newindex calls.
+static int smlua_func_set_sync_table_field(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_pushvalue(L, 2);
+    lua_pushvalue(L, 3);
+    lua_rawset(L, 1);
+    return 0;
+}
+
 // Removes \#RRGGBB color tags used in DJUI/Co-op DX formatted strings.
 static int smlua_func_get_uncolored_string(lua_State *L) {
     const char *input = luaL_checkstring(L, 1);
@@ -3199,11 +3341,11 @@ static int smlua_func_mod_file_exists(lua_State *L) {
 
     if (filename != NULL) {
         if (smlua_resolve_mod_asset_path(resolved, sizeof(resolved), script_path, filename, NULL, NULL)) {
-            exists = fs_sys_file_exists(resolved);
+            exists = true;
         } else if (smlua_resolve_mod_asset_path(resolved, sizeof(resolved), script_path, filename, "textures", NULL)) {
-            exists = fs_sys_file_exists(resolved);
+            exists = true;
         } else if (smlua_resolve_mod_asset_path(resolved, sizeof(resolved), script_path, filename, "sound", NULL)) {
-            exists = fs_sys_file_exists(resolved);
+            exists = true;
         }
     }
 
@@ -3424,7 +3566,7 @@ static int smlua_func_cast_graph_node(lua_State *L) {
     return 1;
 }
 
-// Single-player reset shim. Full level reset flow is not ported yet.
+// Single-player reset helper shim; Wii U route is still pending full parity.
 static int smlua_func_reset_level(lua_State *L) {
     (void)L;
     return 0;
@@ -4198,6 +4340,70 @@ static void smlua_bind_wiiu_preamble_compat(lua_State *L) {
     smlua_set_global_integer(L, "FONT_TINY", -1);
 }
 
+// Writes one boolean field into a Lua table only when that field is currently nil.
+static void smlua_ensure_table_bool_field(lua_State *L, int table_index,
+                                          const char *field, bool value) {
+    int abs_index = lua_absindex(L, table_index);
+    if (field == NULL) {
+        return;
+    }
+
+    lua_getfield(L, abs_index, field);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushboolean(L, value ? 1 : 0);
+        lua_setfield(L, abs_index, field);
+        return;
+    }
+    lua_pop(L, 1);
+}
+
+// Ensures common Co-op DX globals exist before bundled companion scripts execute.
+static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L) {
+    if (L == NULL) {
+        return;
+    }
+
+    // Character Select helper scripts read these immediately during file load.
+    lua_getglobal(L, "gServerSettings");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+    }
+    smlua_ensure_table_bool_field(L, -1, "nametags", false);
+    smlua_ensure_table_bool_field(L, -1, "enablePlayerList", false);
+    smlua_ensure_table_bool_field(L, -1, "enablePlayersInLevelDisplay", false);
+    lua_setglobal(L, "gServerSettings");
+
+    lua_getglobal(L, "gNametagsSettings");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+    }
+    smlua_ensure_table_bool_field(L, -1, "showHealth", false);
+    smlua_ensure_table_bool_field(L, -1, "showSelfTag", false);
+    lua_setglobal(L, "gNametagsSettings");
+
+    // Fallback wrapper keeps voice.lua from failing if main.lua hasn't created this yet.
+    lua_getglobal(L, "cs_hook_mario_update");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        if (luaL_dostring(L,
+            "cs_hook_mario_update = function(func)\n"
+            "  if type(func) == 'function' then\n"
+            "    hook_event(HOOK_MARIO_UPDATE, func)\n"
+            "  end\n"
+            "end") != LUA_OK) {
+            const char *error = lua_tostring(L, -1);
+            smlua_logf("lua: failed to bind cs_hook_mario_update fallback: %s",
+                       error != NULL ? error : "<unknown>");
+            lua_pop(L, 1);
+        }
+        return;
+    }
+    lua_pop(L, 1);
+}
+
 // Builds/maintains Co-op DX-like single-player sync globals.
 static void smlua_ensure_singleplayer_tables(lua_State *L) {
     int max_players = smlua_get_lua_max_players(L);
@@ -4423,6 +4629,7 @@ static void smlua_bind_minimal_constants(lua_State *L) {
 static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "table_copy", smlua_func_table_copy);
     smlua_set_global_function(L, "table_deepcopy", smlua_func_table_deepcopy);
+    smlua_set_global_function(L, "_set_sync_table_field", smlua_func_set_sync_table_field);
     smlua_set_global_function(L, "get_time", smlua_func_get_time);
     smlua_set_global_function(L, "get_uncolored_string", smlua_func_get_uncolored_string);
     smlua_set_global_function(L, "get_global_timer", smlua_func_get_global_timer);
@@ -5176,6 +5383,324 @@ static enum SmluaVfsLoadResult smlua_try_load_file_from_vfs(lua_State *L, const 
     return SMLUA_VFS_LOAD_OK;
 }
 
+#define SMLUA_REQUIRE_REGISTRY_KEY "SM64.Require.loaded"
+#define SMLUA_REQUIRE_FALLBACK_KEY "SM64.Require.fallback"
+#define SMLUA_REQUIRE_LOADING_SENTINEL ((void *)-1)
+
+// Returns true when normalized path stays inside the caller's mod root.
+static bool smlua_path_is_within_root(const char *path, const char *root) {
+    size_t root_len;
+    if (path == NULL || root == NULL || root[0] == '\0') {
+        return true;
+    }
+    root_len = strlen(root);
+    return strncmp(path, root, root_len) == 0 &&
+           (path[root_len] == '\0' || path[root_len] == '/');
+}
+
+// Derives mod root from script path (mods/<name>/...), or "mods" for single-file mods.
+static bool smlua_get_mod_root_from_script(char *out_root, size_t out_size, const char *script_path) {
+    const char *after_prefix;
+    const char *first_slash;
+    size_t root_len;
+
+    if (out_root == NULL || out_size == 0 || script_path == NULL || strncmp(script_path, "mods/", 5) != 0) {
+        return false;
+    }
+
+    after_prefix = script_path + 5;
+    first_slash = strchr(after_prefix, '/');
+    if (first_slash == NULL) {
+        root_len = strlen("mods");
+    } else {
+        root_len = (size_t)(first_slash - script_path);
+    }
+
+    if (root_len + 1 > out_size) {
+        return false;
+    }
+    memcpy(out_root, script_path, root_len);
+    out_root[root_len] = '\0';
+    return true;
+}
+
+// Normalizes "a/./b/../c" style paths and rejects paths that escape their root.
+static bool smlua_normalize_virtual_path(char *out_path, size_t out_size, const char *path) {
+    char work[SYS_MAX_PATH];
+    char *segments[256];
+    size_t segment_count = 0;
+    char *token;
+    size_t used = 0;
+
+    int written;
+
+    if (out_path == NULL || out_size == 0 || path == NULL || path[0] == '\0') {
+        return false;
+    }
+
+    written = snprintf(work, sizeof(work), "%s", path);
+    if (written < 0 || (size_t)written >= sizeof(work)) {
+        return false;
+    }
+    for (char *p = work; *p != '\0'; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+
+    token = strtok(work, "/");
+    while (token != NULL) {
+        if (strcmp(token, ".") == 0 || token[0] == '\0') {
+            // Skip no-op segments.
+        } else if (strcmp(token, "..") == 0) {
+            if (segment_count == 0) {
+                return false;
+            }
+            segment_count--;
+        } else {
+            if (segment_count >= (sizeof(segments) / sizeof(segments[0]))) {
+                return false;
+            }
+            segments[segment_count++] = token;
+        }
+        token = strtok(NULL, "/");
+    }
+
+    if (segment_count == 0) {
+        return false;
+    }
+
+    out_path[0] = '\0';
+    for (size_t i = 0; i < segment_count; i++) {
+        size_t len = strlen(segments[i]);
+        if (used + len + (i > 0 ? 1 : 0) + 1 > out_size) {
+            return false;
+        }
+        if (i > 0) {
+            out_path[used++] = '/';
+        }
+        memcpy(out_path + used, segments[i], len);
+        used += len;
+        out_path[used] = '\0';
+    }
+    return true;
+}
+
+// Returns shared `loaded` table used to cache required module results by path.
+static void smlua_require_get_loaded_table(lua_State *L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, SMLUA_REQUIRE_REGISTRY_KEY);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, SMLUA_REQUIRE_REGISTRY_KEY);
+    }
+}
+
+// Resolves Lua require() names against the caller script directory inside mod scope.
+static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
+                                              const char *caller_script, const char *module_name) {
+    char module_expr[SYS_MAX_PATH];
+    char script_dir[SYS_MAX_PATH];
+    char mod_root[SYS_MAX_PATH];
+    char joined[SYS_MAX_PATH];
+    char normalized[SYS_MAX_PATH];
+    bool has_mod_root = false;
+    bool has_slash = false;
+
+    int written;
+
+    if (out_path == NULL || out_size == 0 || caller_script == NULL || module_name == NULL) {
+        return false;
+    }
+    if (!smlua_get_script_directory(script_dir, sizeof(script_dir), caller_script)) {
+        return false;
+    }
+    written = snprintf(module_expr, sizeof(module_expr), "%s", module_name);
+    if (written < 0 || (size_t)written >= sizeof(module_expr)) {
+        return false;
+    }
+    if (module_expr[0] == '\0' || module_expr[0] == '/') {
+        return false;
+    }
+
+    for (char *p = module_expr; *p != '\0'; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+        if (*p == '/') {
+            has_slash = true;
+        }
+    }
+    // Common Lua pattern: require("foo.bar") => foo/bar.lua.
+    if (!has_slash) {
+        for (char *p = module_expr; *p != '\0'; p++) {
+            if (*p == '.') {
+                *p = '/';
+            }
+        }
+    }
+
+    written = snprintf(joined, sizeof(joined), "%s/%s", script_dir, module_expr);
+    if (written < 0 || (size_t)written >= sizeof(joined)) {
+        return false;
+    }
+    if (!smlua_normalize_virtual_path(normalized, sizeof(normalized), joined)) {
+        return false;
+    }
+
+    has_mod_root = smlua_get_mod_root_from_script(mod_root, sizeof(mod_root), caller_script);
+    if (has_mod_root && !smlua_path_is_within_root(normalized, mod_root)) {
+        return false;
+    }
+
+    if (smlua_path_has_suffix(normalized, ".lua") || smlua_path_has_suffix(normalized, ".luac")) {
+        if (smlua_vfs_file_exists(normalized)) {
+            snprintf(out_path, out_size, "%s", normalized);
+            return true;
+        }
+    } else {
+        char candidate[SYS_MAX_PATH];
+        written = snprintf(candidate, sizeof(candidate), "%s.lua", normalized);
+        if (written > 0 && (size_t)written < sizeof(candidate) &&
+            (!has_mod_root || smlua_path_is_within_root(candidate, mod_root)) &&
+            smlua_vfs_file_exists(candidate)) {
+            snprintf(out_path, out_size, "%s", candidate);
+            return true;
+        }
+        written = snprintf(candidate, sizeof(candidate), "%s.luac", normalized);
+        if (written > 0 && (size_t)written < sizeof(candidate) &&
+            (!has_mod_root || smlua_path_is_within_root(candidate, mod_root)) &&
+            smlua_vfs_file_exists(candidate)) {
+            snprintf(out_path, out_size, "%s", candidate);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Lua require() compatibility for Wii U: scoped resolution + cache + recursion guard.
+static int smlua_func_require(lua_State *L) {
+    const char *module_name = luaL_checkstring(L, 1);
+    const char *caller_script = smlua_get_caller_script_path(L);
+    const char *previous_script = sActiveScriptPath;
+    enum SmluaVfsLoadResult vfs_result = SMLUA_VFS_LOAD_MISSING;
+    char resolved_path[SYS_MAX_PATH];
+    char error_buffer[512];
+    int loaded_index;
+    int top_before_call;
+    int result_ref = LUA_NOREF;
+
+    if (!smlua_resolve_require_module_path(resolved_path, sizeof(resolved_path), caller_script, module_name)) {
+        // Preserve stock Lua behavior for non-mod modules when available.
+        lua_getfield(L, LUA_REGISTRYINDEX, SMLUA_REQUIRE_FALLBACK_KEY);
+        if (lua_isfunction(L, -1)) {
+            lua_pushvalue(L, 1);
+            lua_call(L, 1, 1);
+            return 1;
+        }
+        lua_pop(L, 1);
+        return luaL_error(L, "module '%s' not found from '%s'",
+                          module_name != NULL ? module_name : "<null>",
+                          caller_script != NULL ? caller_script : "<unknown>");
+    }
+
+    smlua_require_get_loaded_table(L);
+    loaded_index = lua_gettop(L);
+
+    lua_getfield(L, loaded_index, resolved_path);
+    if (lua_touserdata(L, -1) == SMLUA_REQUIRE_LOADING_SENTINEL) {
+        return luaL_error(L, "module '%s' is already loading", module_name);
+    }
+    if (!lua_isnil(L, -1)) {
+        lua_remove(L, loaded_index);
+        return 1;
+    }
+    lua_pop(L, 1);
+
+    lua_pushlightuserdata(L, SMLUA_REQUIRE_LOADING_SENTINEL);
+    lua_setfield(L, loaded_index, resolved_path);
+
+    sActiveScriptPath = resolved_path;
+    vfs_result = smlua_try_load_file_from_vfs(L, resolved_path);
+    if (vfs_result == SMLUA_VFS_LOAD_MISSING && luaL_loadfile(L, resolved_path) != LUA_OK) {
+        const char *error = lua_tostring(L, -1);
+        snprintf(error_buffer, sizeof(error_buffer), "%s", error != NULL ? error : "<unknown>");
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_setfield(L, loaded_index, resolved_path);
+        sActiveScriptPath = previous_script;
+        return luaL_error(L, "module '%s' failed to load: %s", module_name, error_buffer);
+    }
+    if (vfs_result == SMLUA_VFS_LOAD_ERROR) {
+        const char *error = lua_tostring(L, -1);
+        snprintf(error_buffer, sizeof(error_buffer), "%s", error != NULL ? error : "<unknown>");
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_setfield(L, loaded_index, resolved_path);
+        sActiveScriptPath = previous_script;
+        return luaL_error(L, "module '%s' failed to load: %s", module_name, error_buffer);
+    }
+
+    top_before_call = lua_gettop(L) - 1;
+    lua_sethook(L, smlua_script_budget_hook, LUA_MASKCOUNT, SMLUA_SCRIPT_LOAD_INSTRUCTION_BUDGET);
+    if (lua_pcall(L, 0, LUA_MULTRET, 0) != LUA_OK) {
+        const char *error = lua_tostring(L, -1);
+        snprintf(error_buffer, sizeof(error_buffer), "%s", error != NULL ? error : "<unknown>");
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        lua_setfield(L, loaded_index, resolved_path);
+        lua_sethook(L, NULL, 0, 0);
+        sActiveScriptPath = previous_script;
+        return luaL_error(L, "module '%s' failed to run: %s", module_name, error_buffer);
+    }
+    lua_sethook(L, NULL, 0, 0);
+    sActiveScriptPath = previous_script;
+
+    if (lua_gettop(L) == top_before_call) {
+        lua_pushboolean(L, 1);
+    }
+    if (lua_isnil(L, top_before_call + 1)) {
+        lua_pushboolean(L, 1);
+        lua_replace(L, top_before_call + 1);
+    }
+
+    lua_pushvalue(L, top_before_call + 1);
+    result_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, result_ref);
+    lua_setfield(L, loaded_index, resolved_path);
+
+    lua_settop(L, 0);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, result_ref);
+    luaL_unref(L, LUA_REGISTRYINDEX, result_ref);
+    return 1;
+}
+
+// Installs custom require() so Lua mods can load sibling modules in VFS scope.
+static void smlua_bind_require_system(lua_State *L) {
+    if (L == NULL) {
+        return;
+    }
+
+    lua_getfield(L, LUA_REGISTRYINDEX, SMLUA_REQUIRE_FALLBACK_KEY);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_getglobal(L, "require");
+        if (lua_isfunction(L, -1)) {
+            lua_setfield(L, LUA_REGISTRYINDEX, SMLUA_REQUIRE_FALLBACK_KEY);
+        } else {
+            lua_pop(L, 1);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+
+    lua_pushcfunction(L, smlua_func_require);
+    lua_setglobal(L, "require");
+}
+
 // Runs one Lua file and prints a readable error without aborting the game.
 static void smlua_run_file(const char *path) {
     const char *previous_script = sActiveScriptPath;
@@ -5356,6 +5881,7 @@ void smlua_init(void) {
     }
 
     luaL_openlibs(sLuaState);
+    smlua_bind_require_system(sLuaState);
     smlua_bind_math_helpers(sLuaState);
     smlua_bind_compat_metatables(sLuaState);
     smlua_bind_cobject(sLuaState);
@@ -5377,10 +5903,12 @@ void smlua_init(void) {
     }
 #endif
     // Re-apply Wii U compatibility bindings after constants bootstrap script mutates globals.
+    smlua_bind_require_system(sLuaState);
     smlua_bind_minimal_functions(sLuaState);
     smlua_bind_minimal_globals(sLuaState);
     smlua_set_global_function(sLuaState, "gVec3fZero", smlua_func_gvec3f_zero);
     smlua_set_global_function(sLuaState, "vec3f_copy", smlua_func_vec3f_copy);
+    smlua_bind_wiiu_mod_runtime_compat(sLuaState);
     smlua_ensure_singleplayer_tables(sLuaState);
     smlua_update_singleplayer_network_snapshot(sLuaState);
 
@@ -5391,6 +5919,7 @@ void smlua_init(void) {
     }
 
     smlua_call_event_hooks(HOOK_ON_MODS_LOADED);
+    smlua_refresh_mod_overlay_lines();
 
     smlua_logf("lua: initialized (%u scripts)", (unsigned)script_count);
 }

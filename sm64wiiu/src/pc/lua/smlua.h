@@ -26,6 +26,7 @@ struct SmluaLightingState {
 void smlua_init(void);
 void smlua_update(void);
 void smlua_shutdown(void);
+void smlua_render_mod_overlay(void);
 void smlua_get_lighting_state(struct SmluaLightingState *out_state);
 int16_t smlua_get_override_far(int16_t default_far);
 float smlua_get_override_fov(float default_fov);

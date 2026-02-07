@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <vector>
 
@@ -56,22 +57,55 @@ typedef struct _Texture
 }
 Texture;
 
-static struct ShaderProgram shader_program_pool[64];
-static uint8_t shader_program_pool_size = 0;
+static struct ShaderProgram shader_program_pool[256];
+static size_t shader_program_pool_size = 0;
+static bool sShaderPoolOverflowLogged = false;
+static uint32_t sInvalidSamplerStateCount = 0;
+static uint32_t sNullShaderSamplerSetCount = 0;
+static uint32_t sTexturePoolOverflowCount = 0;
 
 static struct ShaderProgram* current_shader_program = nullptr;
 static std::vector<float*> vbo_array;
 
-static std::vector<Texture> gx2_textures;
+#define GX2_MAX_TEXTURES 2048
+static Texture gx2_textures[GX2_MAX_TEXTURES];
+static size_t gx2_texture_count = 0;
 static uint8_t current_tile = 0;
 static uint32_t current_texture_ids[2];
 
 static uint32_t frame_count = 0;
 static uint32_t current_height = 0;
+static bool sLoggedFirstDrawCall = false;
 
 static BOOL current_depth_test = FALSE;
 static BOOL current_depth_write = FALSE;
 static GX2CompareFunction current_depth_compare = GX2_COMPARE_FUNC_LEQUAL;
+
+// Validates tile index used by N64 combiner samplers.
+static bool gfx_gx2_is_valid_tile(int tile)
+{
+    return tile >= 0 && tile < 2;
+}
+
+// Validates texture ids before indexing into gx2_textures.
+static bool gfx_gx2_is_valid_texture_id(uint32_t texture_id)
+{
+    return texture_id < gx2_texture_count;
+}
+
+// Logs invalid sampler/texture state with bounded spam.
+static void gfx_gx2_log_invalid_sampler_state(const char *where, int tile, uint32_t texture_id, uint32_t sampler_location)
+{
+    if (sInvalidSamplerStateCount < 20) {
+        WHBLogPrintf("gfx: invalid sampler state at %s tile=%d tex=%u loc=%u pool=%u",
+                     where,
+                     tile,
+                     (unsigned)texture_id,
+                     (unsigned)sampler_location,
+                     (unsigned)shader_program_pool_size);
+        sInvalidSamplerStateCount++;
+    }
+}
 
 GX2SamplerVar* GX2GetPixelSamplerVar(const GX2PixelShader* shader, const char* name)
 {
@@ -187,6 +221,15 @@ static struct ShaderProgram* gfx_gx2_create_and_load_new_shader(struct ColorComb
     uint32_t shader_id = cc->shader_id;
     struct CCFeatures cc_features;
     gfx_cc_get_features(shader_id, &cc_features);
+
+    if (shader_program_pool_size >= (sizeof(shader_program_pool) / sizeof(shader_program_pool[0]))) {
+        if (!sShaderPoolOverflowLogged) {
+            sShaderPoolOverflowLogged = true;
+            WHBLogPrintf("gfx: shader pool full (%u), cannot create shader_id=0x%08x",
+                         (unsigned)shader_program_pool_size, (unsigned)shader_id);
+        }
+        return nullptr;
+    }
 
     struct ShaderProgram* prg = &shader_program_pool[shader_program_pool_size++];
     prg->is_precompiled = true;
@@ -359,18 +402,31 @@ static void gfx_gx2_shader_get_info(struct ShaderProgram* prg, uint8_t* num_inpu
 
 static uint32_t gfx_gx2_new_texture(void)
 {
-    size_t texture_id = gx2_textures.size();
-    gx2_textures.resize(texture_id + 1);
+    size_t texture_id = gx2_texture_count;
+    if (texture_id >= GX2_MAX_TEXTURES) {
+        if (sTexturePoolOverflowCount < 8) {
+            WHBLogPrintf("gfx: texture pool full (%u)", (unsigned)gx2_texture_count);
+            sTexturePoolOverflowCount++;
+        }
+        return 0;
+    }
+    gx2_texture_count++;
 
     Texture& texture = gx2_textures[texture_id];
+    memset(&texture, 0, sizeof(texture));
     texture.texture_uploaded = false;
     texture.sampler_set = false;
 
-    return texture_id;
+    return (uint32_t)texture_id;
 }
 
 static void gfx_gx2_select_texture(int tile, uint32_t texture_id)
 {
+    if (!gfx_gx2_is_valid_tile(tile) || !gfx_gx2_is_valid_texture_id(texture_id)) {
+        gfx_gx2_log_invalid_sampler_state("select_texture", tile, texture_id, 0);
+        return;
+    }
+
     current_tile = tile;
     current_texture_ids[tile] = texture_id;
 
@@ -378,15 +434,32 @@ static void gfx_gx2_select_texture(int tile, uint32_t texture_id)
     {
         Texture& texture = gx2_textures[texture_id];
         if (texture.texture_uploaded)
-            GX2SetPixelTexture(&texture.texture, current_shader_program->samplers_location[tile]);
-        if (texture.sampler_set)
-            GX2SetPixelSampler(&texture.sampler, current_shader_program->samplers_location[tile]);
+        {
+            uint32_t sampler_loc = current_shader_program->samplers_location[tile];
+            if (sampler_loc < 32) {
+                GX2SetPixelTexture(&texture.texture, sampler_loc);
+            } else {
+                gfx_gx2_log_invalid_sampler_state("set_pixel_texture", tile, texture_id, sampler_loc);
+            }
+        }
+        if (texture.sampler_set) {
+            uint32_t sampler_loc = current_shader_program->samplers_location[tile];
+            if (sampler_loc < 32) {
+                GX2SetPixelSampler(&texture.sampler, sampler_loc);
+            } else {
+                gfx_gx2_log_invalid_sampler_state("set_pixel_sampler", tile, texture_id, sampler_loc);
+            }
+        }
     }
 }
 
 static void gfx_gx2_upload_texture(const uint8_t* rgba32_buf, int width, int height)
 {
     int tile = current_tile;
+    if (!gfx_gx2_is_valid_tile(tile) || !gfx_gx2_is_valid_texture_id(current_texture_ids[tile])) {
+        gfx_gx2_log_invalid_sampler_state("upload_texture", tile, current_texture_ids[tile], 0);
+        return;
+    }
     GX2Texture& texture = gx2_textures[current_texture_ids[tile]].texture;
 
     texture.surface.use       = GX2_SURFACE_USE_TEXTURE;
@@ -422,6 +495,12 @@ static void gfx_gx2_upload_texture(const uint8_t* rgba32_buf, int width, int hei
     GX2InitTextureRegs(&texture);
 
     texture.surface.image = memalign(texture.surface.alignment, texture.surface.imageSize);
+    if (texture.surface.image == nullptr) {
+        WHBLogPrintf("gfx: texture allocation failed, size=%u align=%u",
+                     (unsigned)texture.surface.imageSize,
+                     (unsigned)texture.surface.alignment);
+        return;
+    }
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture.surface.image, texture.surface.imageSize);
 
     GX2Surface surf;
@@ -433,8 +512,14 @@ static void gfx_gx2_upload_texture(const uint8_t* rgba32_buf, int width, int hei
 
     GX2CopySurface(&surf, 0, 0, &texture.surface, 0, 0);
 
-    if (current_shader_program)
-        GX2SetPixelTexture(&texture, current_shader_program->samplers_location[tile]);
+    if (current_shader_program) {
+        uint32_t sampler_loc = current_shader_program->samplers_location[tile];
+        if (sampler_loc < 32) {
+            GX2SetPixelTexture(&texture, sampler_loc);
+        } else {
+            gfx_gx2_log_invalid_sampler_state("upload_set_pixel_texture", tile, current_texture_ids[tile], sampler_loc);
+        }
+    }
 
     gx2_textures[current_texture_ids[tile]].texture_uploaded = true;
 
@@ -453,16 +538,30 @@ static GX2TexClampMode gfx_cm_to_gx2(uint32_t val)
 
 static void gfx_gx2_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt)
 {
+    if (!gfx_gx2_is_valid_tile(tile) || !gfx_gx2_is_valid_texture_id(current_texture_ids[tile])) {
+        gfx_gx2_log_invalid_sampler_state("set_sampler_parameters", tile, current_texture_ids[tile], 0);
+        return;
+    }
+
     current_tile = tile;
 
-    GX2Sampler* sampler = &gx2_textures[current_texture_ids[tile]].sampler;
+    uint32_t texture_id = current_texture_ids[tile];
+    GX2Sampler* sampler = &gx2_textures[texture_id].sampler;
+    gx2_textures[texture_id].sampler_set = true;
     GX2InitSampler(sampler, GX2_TEX_CLAMP_MODE_CLAMP, linear_filter ? GX2_TEX_XY_FILTER_MODE_LINEAR : GX2_TEX_XY_FILTER_MODE_POINT);
     GX2InitSamplerClamping(sampler, gfx_cm_to_gx2(cms), gfx_cm_to_gx2(cmt), GX2_TEX_CLAMP_MODE_WRAP);
 
-    if (current_shader_program)
-        GX2SetPixelSampler(sampler, current_shader_program->samplers_location[tile]);
-
-    gx2_textures[current_texture_ids[tile]].sampler_set = true;
+    if (current_shader_program) {
+        uint32_t sampler_loc = current_shader_program->samplers_location[tile];
+        if (sampler_loc < 32) {
+            GX2SetPixelSampler(sampler, sampler_loc);
+        } else {
+            gfx_gx2_log_invalid_sampler_state("set_sampler", tile, current_texture_ids[tile], sampler_loc);
+        }
+    } else if (sNullShaderSamplerSetCount < 10) {
+        WHBLogPrintf("gfx: set_sampler_parameters without active shader tile=%d tex=%u", tile, texture_id);
+        sNullShaderSamplerSetCount++;
+    }
 }
 
 static void gfx_gx2_set_depth_test(bool depth_test)
@@ -537,6 +636,14 @@ static void gfx_gx2_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t b
     if (!current_shader_program)
         return;
 
+    if (!sLoggedFirstDrawCall) {
+        sLoggedFirstDrawCall = true;
+        WHBLogPrintf("gfx: first draw shader=0x%08x tris=%u stride_f=%u",
+                     (unsigned)current_shader_program->shader_id,
+                     (unsigned)buf_vbo_num_tris,
+                     (unsigned)current_shader_program->num_floats);
+    }
+
     size_t idx = vbo_array.size();
     vbo_array.resize(idx + 1);
 
@@ -588,7 +695,7 @@ extern "C" void gfx_gx2_free_vbo(void)
 extern "C" void gfx_gx2_free(void)
 {
     // Free our textures and shaders
-    for (uint32_t i = 0; i < gx2_textures.size(); i++)
+    for (uint32_t i = 0; i < gx2_texture_count; i++)
     {
         Texture& texture = gx2_textures[i];
         if (texture.texture_uploaded)
@@ -604,7 +711,7 @@ extern "C" void gfx_gx2_free(void)
             gx2FreeShaderGroup(&shader_program_pool[i].gen_group);
     }
 
-    gx2_textures.clear();
+    gx2_texture_count = 0;
     shader_program_pool_size = 0;
 }
 

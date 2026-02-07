@@ -3,8 +3,10 @@
 
 #include <stddef.h>
 
+#define MODS_MAX_ACTIVE_SCRIPTS 128
+
 struct Mods {
-    const char *script_paths[32];
+    const char *script_paths[MODS_MAX_ACTIVE_SCRIPTS];
     size_t script_count;
 };
 

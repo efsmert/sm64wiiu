@@ -18,6 +18,9 @@
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 #include "../lua/smlua.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 #define SUPPORT_CHECK(x) assert(x)
 
@@ -40,6 +43,8 @@
 #define MAX_BUFFERED 256
 #define MAX_LIGHTS 2
 #define MAX_VERTICES 64
+// Co-op DX uses tile 6 as an alternate load tile in some material paths.
+#define G_TX_LOADTILE_6_UNKNOWN 6
 
 struct RGBA {
     uint8_t r, g, b, a;
@@ -72,8 +77,37 @@ static struct {
     uint32_t pool_pos;
 } gfx_texture_cache;
 
-static struct ColorCombiner color_combiner_pool[64];
-static uint8_t color_combiner_pool_size;
+static struct ColorCombiner color_combiner_pool[256];
+static size_t color_combiner_pool_size;
+static bool sColorCombinerPoolOverflowLogged = false;
+static uint32_t sTextureTileRemapLogCount = 0;
+static uint32_t sTextureImportRejectLogCount = 0;
+
+#define GFX_TEXTURE_SLOTS 2
+
+// Maps TMEM/tile inputs into the two texture slots this renderer supports.
+static uint8_t gfx_map_load_tile_to_slot(uint8_t tile, uint32_t tmem) {
+    if (tile == G_TX_LOADTILE_6_UNKNOWN) {
+        return 1;
+    }
+    if (tile != G_TX_LOADTILE) {
+        return 0xFF;
+    }
+
+    uint32_t raw_index = tmem / 256;
+    if (raw_index < GFX_TEXTURE_SLOTS) {
+        return (uint8_t)raw_index;
+    }
+
+#ifdef TARGET_WII_U
+    if (sTextureTileRemapLogCount < 16) {
+        WHBLogPrintf("gfx: unsupported tmem tile index raw=%u tmem=0x%04x",
+                     (unsigned)raw_index, (unsigned)tmem);
+        sTextureTileRemapLogCount++;
+    }
+#endif
+    return 0xFF;
+}
 
 static struct RSP {
     float modelview_matrix_stack[11][4][4];
@@ -251,9 +285,32 @@ static struct ColorCombiner *gfx_lookup_or_create_color_combiner(uint32_t cc_id)
             return prev_combiner = &color_combiner_pool[i];
         }
     }
+
+    if (color_combiner_pool_size >= (sizeof(color_combiner_pool) / sizeof(color_combiner_pool[0]))) {
+#ifdef TARGET_WII_U
+        if (!sColorCombinerPoolOverflowLogged) {
+            sColorCombinerPoolOverflowLogged = true;
+            WHBLogPrintf("gfx: color combiner pool full (%u), reusing previous cc_id for 0x%08x",
+                         (unsigned)color_combiner_pool_size, (unsigned)cc_id);
+        }
+#endif
+        if (prev_combiner != NULL) {
+            return prev_combiner;
+        }
+        return &color_combiner_pool[0];
+    }
+
     gfx_flush();
     struct ColorCombiner *comb = &color_combiner_pool[color_combiner_pool_size++];
     gfx_generate_cc(comb, cc_id);
+#ifdef TARGET_WII_U
+    if (color_combiner_pool_size <= 8 || (color_combiner_pool_size % 16) == 0) {
+        WHBLogPrintf("gfx: combiner[%u] cc_id=0x%08x shader_id=0x%08x",
+                     (unsigned)(color_combiner_pool_size - 1),
+                     (unsigned)comb->cc_id,
+                     (unsigned)comb->shader_id);
+    }
+#endif
     return prev_combiner = comb;
 }
 
@@ -280,10 +337,12 @@ static bool gfx_texture_cache_lookup(int tile, struct TextureHashmapNode **n, co
         (*node)->texture_id = gfx_rapi->new_texture();
     }
     gfx_rapi->select_texture(tile, (*node)->texture_id);
-    gfx_rapi->set_sampler_parameters(tile, false, 0, 0);
-    (*node)->cms = 0;
-    (*node)->cmt = 0;
-    (*node)->linear_filter = false;
+    // Defer sampler setup until a shader is active in draw path.
+    // Initializing this here can hit backend paths before shader bind on Wii U.
+    // Seed sentinel values so first textured draw always applies real sampler state.
+    (*node)->cms = 0xFF;
+    (*node)->cmt = 0xFF;
+    (*node)->linear_filter = true;
     (*node)->next = NULL;
     (*node)->texture_addr = orig_addr;
     (*node)->fmt = fmt;
@@ -473,6 +532,24 @@ static void import_texture_ci8(int tile) {
 }
 
 static void import_texture(int tile) {
+    tile &= 1;
+    if (rdp.texture_tile.line_size_bytes == 0 ||
+        rdp.loaded_texture[tile].addr == NULL ||
+        rdp.loaded_texture[tile].size_bytes == 0 ||
+        rdp.loaded_texture[tile].size_bytes > 4096) {
+#ifdef TARGET_WII_U
+        if (sTextureImportRejectLogCount < 16) {
+            WHBLogPrintf("gfx: reject texture import tile=%d addr=%p size=%u line=%u",
+                         tile,
+                         (void *)rdp.loaded_texture[tile].addr,
+                         (unsigned)rdp.loaded_texture[tile].size_bytes,
+                         (unsigned)rdp.texture_tile.line_size_bytes);
+            sTextureImportRejectLogCount++;
+        }
+#endif
+        return;
+    }
+
     uint8_t fmt = rdp.texture_tile.fmt;
     uint8_t siz = rdp.texture_tile.siz;
 
@@ -1085,8 +1162,8 @@ static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t t
         rdp.textures_changed[1] = true;
     }
 
-    if (tile == G_TX_LOADTILE) {
-        rdp.texture_to_load.tile_number = tmem / 256;
+    if (tile == G_TX_LOADTILE || tile == G_TX_LOADTILE_6_UNKNOWN) {
+        rdp.texture_to_load.tile_number = gfx_map_load_tile_to_slot(tile, tmem);
     }
 }
 
@@ -1129,12 +1206,17 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
             word_size_shift = 2;
             break;
     }
-    uint32_t size_bytes = (lrs + 1) << word_size_shift;
-    rdp.loaded_texture[rdp.texture_to_load.tile_number].size_bytes = size_bytes;
-    assert(size_bytes <= 4096 && "bug: too big texture");
-    rdp.loaded_texture[rdp.texture_to_load.tile_number].addr = rdp.texture_to_load.addr;
+    uint8_t slot = rdp.texture_to_load.tile_number;
+    if (slot >= GFX_TEXTURE_SLOTS) {
+        return;
+    }
 
-    rdp.textures_changed[rdp.texture_to_load.tile_number] = true;
+    uint32_t size_bytes = (lrs + 1) << word_size_shift;
+    rdp.loaded_texture[slot].size_bytes = size_bytes;
+    assert(size_bytes <= 4096 && "bug: too big texture");
+    rdp.loaded_texture[slot].addr = rdp.texture_to_load.addr;
+
+    rdp.textures_changed[slot] = true;
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -1159,17 +1241,22 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
             break;
     }
 
+    uint8_t slot = rdp.texture_to_load.tile_number;
+    if (slot >= GFX_TEXTURE_SLOTS) {
+        return;
+    }
+
     uint32_t size_bytes = (((lrs >> G_TEXTURE_IMAGE_FRAC) + 1) * ((lrt >> G_TEXTURE_IMAGE_FRAC) + 1)) << word_size_shift;
-    rdp.loaded_texture[rdp.texture_to_load.tile_number].size_bytes = size_bytes;
+    rdp.loaded_texture[slot].size_bytes = size_bytes;
 
     assert(size_bytes <= 4096 && "bug: too big texture");
-    rdp.loaded_texture[rdp.texture_to_load.tile_number].addr = rdp.texture_to_load.addr;
+    rdp.loaded_texture[slot].addr = rdp.texture_to_load.addr;
     rdp.texture_tile.uls = uls;
     rdp.texture_tile.ult = ult;
     rdp.texture_tile.lrs = lrs;
     rdp.texture_tile.lrt = lrt;
 
-    rdp.textures_changed[rdp.texture_to_load.tile_number] = true;
+    rdp.textures_changed[slot] = true;
 }
 
 

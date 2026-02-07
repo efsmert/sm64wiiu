@@ -14,6 +14,7 @@
 #include "save_file.h"
 #include "print.h"
 #ifndef TARGET_N64
+#include "pc/lua/smlua.h"
 #include "pc/lua/smlua_hooks.h"
 #endif
 
@@ -487,6 +488,7 @@ void render_hud(void) {
 #ifndef TARGET_N64
         // Draw front-HUD Lua layers after vanilla HUD so overlays appear above counters.
         smlua_call_event_hooks(HOOK_ON_HUD_RENDER);
+        smlua_render_mod_overlay();
 #endif
     }
 }
