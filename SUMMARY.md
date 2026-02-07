@@ -185,6 +185,7 @@ Notes:
   - guarded `.m64` injection path with alias compatibility retained.
 - Lua constants compatibility pass: enabled split autogen constants bootstrap on Wii U (preamble chunk + chunked tail with literal fallback) to expose broader Co-op DX globals/constants for bundled and future Lua mods | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; runtime should no longer miss key constants like `VERSION_NUMBER`, `FONT_COUNT`, `HUD_DISPLAY_FLAG_CAMERA`, `CHAR_ANIM_MAX`.
 - Sync-table parity fix: aligned single-player Lua sync table initialization with autogen `MAX_PLAYERS` so built-in mods that iterate all player slots do not nil-index on startup | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; should clear `gPlayerSyncTable[i]` nil errors in `cheats.lua` and `personal-starcount-ex.lua`.
+- Lua helper API parity pass: added missing Co-op DX helper globals (`table_copy`, `table_deepcopy`, `get_uncolored_string`, `init_mario_after_warp`, plus additional network/texture/level-script/scroll/cast compatibility stubs) and bound them in Wii U runtime for broader third-party mod compatibility | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed with expanded Lua API surface and safer fallback behavior for unported subsystems.
 
 ## 10) Required Format For Future Summary Updates
 

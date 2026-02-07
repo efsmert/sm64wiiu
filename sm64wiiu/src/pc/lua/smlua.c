@@ -3072,6 +3072,108 @@ static int smlua_func_get_time(lua_State *L) {
     return 1;
 }
 
+// Creates a shallow copy of a Lua table for Co-op DX table utility parity.
+static int smlua_func_table_copy(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_newtable(L);
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0) {
+        // Duplicate key so lua_settable consumes key/value and keeps iteration key.
+        lua_pushvalue(L, -2);
+        lua_insert(L, -2);
+        lua_settable(L, 2);
+    }
+    return 1;
+}
+
+// Copies a Lua value deeply, preserving table sharing/cycles via cache table.
+static void smlua_table_deepcopy_value(lua_State *L, int idx, int cache_idx);
+
+// Copies a Lua table deeply, including metatables, with cycle handling.
+static void smlua_table_deepcopy_table(lua_State *L, int table_idx, int cache_idx) {
+    table_idx = lua_absindex(L, table_idx);
+    cache_idx = lua_absindex(L, cache_idx);
+
+    lua_pushvalue(L, table_idx);
+    lua_rawget(L, cache_idx);
+    if (!lua_isnil(L, -1)) {
+        return;
+    }
+    lua_pop(L, 1);
+
+    lua_newtable(L);
+    int new_table_idx = lua_gettop(L);
+    lua_pushvalue(L, table_idx);
+    lua_pushvalue(L, new_table_idx);
+    lua_rawset(L, cache_idx);
+
+    lua_pushnil(L);
+    while (lua_next(L, table_idx) != 0) {
+        int key_idx = lua_absindex(L, -2);
+        int value_idx = lua_absindex(L, -1);
+        smlua_table_deepcopy_value(L, key_idx, cache_idx);
+        smlua_table_deepcopy_value(L, value_idx, cache_idx);
+        lua_settable(L, new_table_idx);
+        lua_pop(L, 1);
+    }
+
+    if (lua_getmetatable(L, table_idx)) {
+        smlua_table_deepcopy_value(L, -1, cache_idx);
+        lua_setmetatable(L, new_table_idx);
+        lua_pop(L, 1);
+    }
+}
+
+// Copies primitive values directly and tables through deep-copy traversal.
+static void smlua_table_deepcopy_value(lua_State *L, int idx, int cache_idx) {
+    idx = lua_absindex(L, idx);
+    if (lua_type(L, idx) == LUA_TTABLE) {
+        smlua_table_deepcopy_table(L, idx, cache_idx);
+    } else {
+        lua_pushvalue(L, idx);
+    }
+}
+
+// Creates a deep copy of a Lua table for Co-op DX table utility parity.
+static int smlua_func_table_deepcopy(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_newtable(L);
+    int cache_idx = lua_gettop(L);
+    smlua_table_deepcopy_table(L, 1, cache_idx);
+    lua_remove(L, cache_idx);
+    return 1;
+}
+
+// Removes \#RRGGBB color tags used in DJUI/Co-op DX formatted strings.
+static int smlua_func_get_uncolored_string(lua_State *L) {
+    const char *input = luaL_checkstring(L, 1);
+    size_t input_len = strlen(input);
+    char *output = malloc(input_len + 1);
+    size_t in_i = 0;
+    size_t out_i = 0;
+
+    if (output == NULL) {
+        lua_pushstring(L, input);
+        return 1;
+    }
+
+    while (in_i < input_len) {
+        if (in_i + 7 < input_len && input[in_i] == '\\' && input[in_i + 1] == '#' &&
+            isxdigit((unsigned char)input[in_i + 2]) && isxdigit((unsigned char)input[in_i + 3]) &&
+            isxdigit((unsigned char)input[in_i + 4]) && isxdigit((unsigned char)input[in_i + 5]) &&
+            isxdigit((unsigned char)input[in_i + 6]) && isxdigit((unsigned char)input[in_i + 7])) {
+            in_i += 8;
+            continue;
+        }
+        output[out_i++] = input[in_i++];
+    }
+    output[out_i] = '\0';
+    lua_pushstring(L, output);
+    free(output);
+    return 1;
+}
+
 // Prints Lua-facing console messages to stdout for debug parity.
 static int smlua_func_log_to_console(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
@@ -3247,6 +3349,92 @@ static int smlua_func_audio_sample_play(lua_State *L) {
 // Sample stop shim for compatibility with Lua voice tables.
 static int smlua_func_audio_sample_stop(lua_State *L) {
     (void)smlua_check_mod_audio(L, 1);
+    return 0;
+}
+
+// Single-player compatibility shim for network object initialization.
+static int smlua_func_network_init_object(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Single-player compatibility shim for explicit network object sends.
+static int smlua_func_network_send_object(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Single-player compatibility shim for targeted packet sends.
+static int smlua_func_network_send_to(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Single-player compatibility shim for bytestring packet sends.
+static int smlua_func_network_send_bytestring(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Single-player compatibility shim for targeted bytestring packet sends.
+static int smlua_func_network_send_bytestring_to(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Exclamation-box content override shim (runtime mutation not ported yet).
+static int smlua_func_set_exclamation_box_contents(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Exclamation-box content query shim returning an empty override set.
+static int smlua_func_get_exclamation_box_contents(lua_State *L) {
+    lua_newtable(L);
+    return 1;
+}
+
+// Texture override shim while dynamic texture replacement is not ported.
+static int smlua_func_texture_override_set(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Texture override reset shim while dynamic texture replacement is not ported.
+static int smlua_func_texture_override_reset(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Level-script parse shim; full dynos level parser integration is pending.
+static int smlua_func_level_script_parse(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Scroll-target registration shim; dynos scrolling hooks are not ported yet.
+static int smlua_func_add_scroll_target(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Graph-node cast shim that preserves the incoming value for compatibility.
+static int smlua_func_cast_graph_node(lua_State *L) {
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+// Single-player reset shim. Full level reset flow is not ported yet.
+static int smlua_func_reset_level(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Re-runs spawn-side setup after Lua-triggered warp state changes.
+static int smlua_func_init_mario_after_warp(lua_State *L) {
+    extern void init_mario_after_warp(void);
+    (void)L;
+    init_mario_after_warp();
     return 0;
 }
 
@@ -4233,10 +4421,17 @@ static void smlua_bind_minimal_constants(lua_State *L) {
 
 // Exposes a compatibility subset of Co-op DX global helper functions.
 static void smlua_bind_minimal_functions(lua_State *L) {
+    smlua_set_global_function(L, "table_copy", smlua_func_table_copy);
+    smlua_set_global_function(L, "table_deepcopy", smlua_func_table_deepcopy);
     smlua_set_global_function(L, "get_time", smlua_func_get_time);
+    smlua_set_global_function(L, "get_uncolored_string", smlua_func_get_uncolored_string);
     smlua_set_global_function(L, "get_global_timer", smlua_func_get_global_timer);
     smlua_set_global_function(L, "log_to_console", smlua_func_log_to_console);
     smlua_set_global_function(L, "djui_popup_create", smlua_func_djui_popup_create);
+    smlua_set_global_function(L, "init_mario_after_warp", smlua_func_init_mario_after_warp);
+    smlua_set_global_function(L, "reset_level", smlua_func_reset_level);
+    smlua_set_global_function(L, "network_init_object", smlua_func_network_init_object);
+    smlua_set_global_function(L, "network_send_object", smlua_func_network_send_object);
     smlua_set_global_function(L, "set_mario_action", smlua_func_set_mario_action);
     smlua_set_global_function(L, "allocate_mario_action", smlua_func_allocate_mario_action);
     smlua_set_global_function(L, "approach_s32", smlua_func_approach_s32);
@@ -4252,6 +4447,9 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "mod_storage_save_bool", smlua_func_mod_storage_save_bool);
     smlua_set_global_function(L, "mod_file_exists", smlua_func_mod_file_exists);
     smlua_set_global_function(L, "get_texture_info", smlua_func_get_texture_info);
+    smlua_set_global_function(L, "texture_override_set", smlua_func_texture_override_set);
+    smlua_set_global_function(L, "texture_override_reset", smlua_func_texture_override_reset);
+    smlua_set_global_function(L, "level_script_parse", smlua_func_level_script_parse);
     smlua_set_global_function(L, "audio_stream_load", smlua_func_audio_stream_load);
     smlua_set_global_function(L, "audio_stream_play", smlua_func_audio_stream_play);
     smlua_set_global_function(L, "audio_stream_stop", smlua_func_audio_stream_stop);
@@ -4305,6 +4503,10 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "obj_set_model_extended", smlua_func_obj_set_model_extended);
     smlua_set_global_function(L, "get_id_from_behavior", smlua_func_get_id_from_behavior);
     smlua_set_global_function(L, "get_behavior_name_from_id", smlua_func_get_behavior_name_from_id);
+    smlua_set_global_function(L, "set_exclamation_box_contents", smlua_func_set_exclamation_box_contents);
+    smlua_set_global_function(L, "get_exclamation_box_contents", smlua_func_get_exclamation_box_contents);
+    smlua_set_global_function(L, "add_scroll_target", smlua_func_add_scroll_target);
+    smlua_set_global_function(L, "cast_graph_node", smlua_func_cast_graph_node);
     smlua_set_global_function(L, "define_custom_obj_fields", smlua_func_define_custom_obj_fields);
     smlua_set_global_function(L, "hook_chat_command", smlua_func_hook_chat_command);
     smlua_set_global_function(L, "network_player_set_description", smlua_func_network_player_set_description);
@@ -4320,6 +4522,9 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "network_local_index_from_global", smlua_func_network_local_index_from_global);
     smlua_set_global_function(L, "network_global_index_from_local", smlua_func_network_global_index_from_local);
     smlua_set_global_function(L, "network_send", smlua_func_network_send);
+    smlua_set_global_function(L, "network_send_to", smlua_func_network_send_to);
+    smlua_set_global_function(L, "network_send_bytestring", smlua_func_network_send_bytestring);
+    smlua_set_global_function(L, "network_send_bytestring_to", smlua_func_network_send_bytestring_to);
     smlua_set_global_function(L, "network_player_get_palette_color", smlua_func_network_player_get_palette_color);
     smlua_set_global_function(L, "network_player_get_override_palette_color", smlua_func_network_player_get_override_palette_color);
     smlua_set_global_function(L, "network_player_set_override_palette_color", smlua_func_network_player_set_override_palette_color);
