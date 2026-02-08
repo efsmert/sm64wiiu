@@ -999,6 +999,19 @@ s32 play_mode_normal(void) {
     warp_area();
     check_instant_warp();
 
+#ifndef TARGET_N64
+    if (gDjuiInMainMenu && gMarioState != NULL && gMarioState->controller != NULL) {
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        gMarioState->controller->buttonDown = 0;
+        gMarioState->controller->buttonPressed = 0;
+        gMarioState->controller->rawStickX = 0;
+        gMarioState->controller->rawStickY = 0;
+        gMarioState->controller->stickX = 0;
+        gMarioState->controller->stickY = 0;
+        gMarioState->controller->stickMag = 0.0f;
+    }
+#endif
+
     if (sTimerRunning && gHudDisplay.timer < 17999) {
         gHudDisplay.timer += 1;
     }

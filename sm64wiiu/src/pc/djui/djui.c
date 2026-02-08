@@ -1,4 +1,5 @@
 #include "djui.h"
+#include "djui_donor.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -22,6 +23,10 @@
 
 bool gDjuiInMainMenu = true;
 bool gDjuiDisabled = false;
+#ifndef DJUI_DEFAULT_DONOR_STACK
+#define DJUI_DEFAULT_DONOR_STACK 1
+#endif
+bool gDjuiUseDonorStack = (DJUI_DEFAULT_DONOR_STACK != 0);
 
 enum DjuiMenuPage {
     DJUI_MENU_PAGE_MAIN = 0,
@@ -54,6 +59,7 @@ static char sDjuiStatusText[64];
 static u32 sDjuiStatusTimer = 0;
 static s8 sDjuiNavStickDirY = 0;
 static u8 sDjuiNavStickTimerY = 0;
+static u16 sDjuiLastButtonDown = 0;
 static bool sDjuiRequireNeutralInput = true;
 static bool sDjuiDebounceAWaitRelease = false;
 static bool sDjuiDebounceBWaitRelease = false;
@@ -983,7 +989,20 @@ static bool djui_input_is_neutral(void) {
     return true;
 }
 
+void djui_set_donor_stack_enabled(bool enabled) {
+    gDjuiUseDonorStack = enabled;
+}
+
+bool djui_is_donor_stack_enabled(void) {
+    return gDjuiUseDonorStack;
+}
+
 void djui_init(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_init();
+        return;
+    }
+
     sDjuiInitialized = true;
     sDjuiRenderLogged = false;
     gDjuiInMainMenu = true;
@@ -1002,6 +1021,7 @@ void djui_init(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = true;
+    sDjuiLastButtonDown = 0;
     sDjuiDebounceAWaitRelease = false;
     sDjuiDebounceBWaitRelease = false;
     sDjuiModsDirty = false;
@@ -1015,12 +1035,22 @@ void djui_init(void) {
 }
 
 void djui_init_late(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_init_late();
+        return;
+    }
+
 #ifdef TARGET_WII_U
     WHBLogPrint("djui: init_late");
 #endif
 }
 
 void djui_shutdown(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_shutdown();
+        return;
+    }
+
     sDjuiInitialized = false;
     gDjuiInMainMenu = false;
     sDjuiRenderLogged = false;
@@ -1039,6 +1069,7 @@ void djui_shutdown(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = false;
+    sDjuiLastButtonDown = 0;
     sDjuiDebounceAWaitRelease = false;
     sDjuiDebounceBWaitRelease = false;
     sDjuiModsDirty = false;
@@ -1052,6 +1083,11 @@ void djui_shutdown(void) {
 }
 
 void djui_open_main_menu(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_open_main_menu();
+        return;
+    }
+
     gDjuiInMainMenu = true;
     sDjuiMenuWarpPending = true;
     djui_page_stack_reset(DJUI_MENU_PAGE_MAIN);
@@ -1068,6 +1104,7 @@ void djui_open_main_menu(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = true;
+    sDjuiLastButtonDown = 0;
     sDjuiDebounceAWaitRelease = false;
     sDjuiDebounceBWaitRelease = false;
     sDjuiHostNetworkSystem = 0;
@@ -1077,6 +1114,11 @@ void djui_open_main_menu(void) {
 }
 
 void djui_close_main_menu(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_close_main_menu();
+        return;
+    }
+
     if (sDjuiModsDirty) {
 #ifdef TARGET_WII_U
         WHBLogPrint("djui: applying mod toggle set");
@@ -1090,6 +1132,7 @@ void djui_close_main_menu(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = false;
+    sDjuiLastButtonDown = 0;
     sDjuiDebounceAWaitRelease = false;
     sDjuiDebounceBWaitRelease = false;
     djui_status_set(NULL);
@@ -1333,7 +1376,7 @@ static void djui_activate_options_selection(void) {
     }
 }
 
-static s8 djui_poll_vertical_nav_step(void) {
+static s8 djui_poll_vertical_nav_step(u16 down) {
     s8 dir = 0;
     s8 rawY = 0;
 
@@ -1341,11 +1384,17 @@ static s8 djui_poll_vertical_nav_step(void) {
         return 0;
     }
 
-    rawY = gPlayer1Controller->rawStickY;
-    if (rawY > 60) {
+    if (down & (U_JPAD | U_CBUTTONS)) {
         dir = -1;
-    } else if (rawY < -60) {
+    } else if (down & (D_JPAD | D_CBUTTONS)) {
         dir = 1;
+    } else {
+        rawY = gPlayer1Controller->rawStickY;
+        if (rawY > 60) {
+            dir = -1;
+        } else if (rawY < -60) {
+            dir = 1;
+        }
     }
 
     if (dir == 0) {
@@ -1360,9 +1409,13 @@ static s8 djui_poll_vertical_nav_step(void) {
         return dir;
     }
 
+    // Match donor hold behavior: brief initial delay, then repeat at a steady cadence.
     sDjuiNavStickTimerY++;
-    if (sDjuiNavStickTimerY >= 10) {
-        sDjuiNavStickTimerY = 8;
+    if (sDjuiNavStickTimerY <= 8) {
+        return 0;
+    }
+
+    if (((sDjuiNavStickTimerY - 8) % 3) == 0) {
         return dir;
     }
 
@@ -1370,6 +1423,11 @@ static s8 djui_poll_vertical_nav_step(void) {
 }
 
 void djui_update(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_update();
+        return;
+    }
+
     u16 pressed = 0;
     u16 down = 0;
     s8 navStep = 0;
@@ -1378,8 +1436,8 @@ void djui_update(void) {
         return;
     }
 
-    pressed = gPlayer1Controller->buttonPressed;
     down = gPlayer1Controller->buttonDown;
+    pressed = (u16)(down & (u16)~sDjuiLastButtonDown);
 
     if ((pressed & START_BUTTON)
         && (gPlayer1Controller->buttonDown & L_TRIG)
@@ -1395,6 +1453,7 @@ void djui_update(void) {
             WHBLogPrint("djui: main menu enabled (L+R+START)");
 #endif
         }
+        sDjuiLastButtonDown = down;
         return;
     }
 
@@ -1402,6 +1461,7 @@ void djui_update(void) {
         sDjuiNavStickDirY = 0;
         sDjuiNavStickTimerY = 0;
         sDjuiRequireNeutralInput = false;
+        sDjuiLastButtonDown = down;
         sDjuiDebounceAWaitRelease = false;
         sDjuiDebounceBWaitRelease = false;
         return;
@@ -1409,19 +1469,23 @@ void djui_update(void) {
 
     if (sDjuiRequireNeutralInput) {
         if (!djui_input_is_neutral()) {
+            sDjuiLastButtonDown = down;
             return;
         }
         sDjuiRequireNeutralInput = false;
+        sDjuiLastButtonDown = down;
         return;
     }
 
     if (pressed & START_BUTTON) {
         djui_close_main_menu();
+        sDjuiLastButtonDown = down;
         return;
     }
 
     if (sDjuiDebounceAWaitRelease) {
         if (down & A_BUTTON) {
+            sDjuiLastButtonDown = down;
             return;
         }
         sDjuiDebounceAWaitRelease = false;
@@ -1429,6 +1493,7 @@ void djui_update(void) {
 
     if (sDjuiDebounceBWaitRelease) {
         if (down & B_BUTTON) {
+            sDjuiLastButtonDown = down;
             return;
         }
         sDjuiDebounceBWaitRelease = false;
@@ -1438,15 +1503,11 @@ void djui_update(void) {
         // Root-panel back is ignored so B does not auto-dismiss into gameplay.
         sDjuiDebounceBWaitRelease = true;
         (void)djui_page_stack_pop();
+        sDjuiLastButtonDown = down;
         return;
     }
 
-    navStep = djui_poll_vertical_nav_step();
-    if (pressed & (U_JPAD | U_CBUTTONS)) {
-        navStep = -1;
-    } else if (pressed & (D_JPAD | D_CBUTTONS)) {
-        navStep = 1;
-    }
+    navStep = djui_poll_vertical_nav_step(down);
 
     if (navStep != 0) {
         if (sDjuiMenuPage == DJUI_MENU_PAGE_MAIN) {
@@ -1496,10 +1557,17 @@ void djui_update(void) {
             }
         }
     }
+
+    sDjuiLastButtonDown = down;
 }
 
 // Donor-style menu-scene control (castle grounds) while DJUI main menu is active.
 void djui_update_menu_level(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_update_menu_level();
+        return;
+    }
+
     bool needsMenuLevelWarp = false;
 
     if (!sDjuiInitialized || !gDjuiInMainMenu || gMarioState == NULL) {
@@ -1559,6 +1627,11 @@ void djui_update_menu_level(void) {
 }
 
 void djui_render(void) {
+    if (gDjuiUseDonorStack) {
+        djui_donor_render();
+        return;
+    }
+
     if (!sDjuiInitialized || gDjuiDisabled) {
         return;
     }
