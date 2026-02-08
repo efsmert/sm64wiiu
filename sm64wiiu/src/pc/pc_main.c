@@ -28,6 +28,7 @@
 #include "audio/audio_null.h"
 
 #include "controller/controller_keyboard.h"
+#include "djui/djui.h"
 #include "lua/smlua.h"
 #include "mods/mods.h"
 
@@ -186,6 +187,7 @@ static void save_config(void) {
 
 // Ensures Lua/mod state is torn down during normal process shutdown.
 static void shutdown_mod_runtime(void) {
+    djui_shutdown();
     smlua_shutdown();
     mods_shutdown();
 }
@@ -285,6 +287,11 @@ void main_func(void) {
     WHBLogPrint("pc: lua init begin");
 #endif
     smlua_init();
+#ifdef TARGET_WII_U
+    WHBLogPrint("pc: djui init begin");
+#endif
+    djui_init();
+    djui_init_late();
 #ifdef TARGET_WII_U
     WHBLogPrint("pc: entering main loop");
 #endif

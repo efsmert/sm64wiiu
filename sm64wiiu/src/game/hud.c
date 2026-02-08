@@ -14,6 +14,7 @@
 #include "save_file.h"
 #include "print.h"
 #ifndef TARGET_N64
+#include "pc/djui/djui.h"
 #include "pc/lua/smlua.h"
 #include "pc/lua/smlua_hooks.h"
 #endif
@@ -429,6 +430,11 @@ void render_hud(void) {
 #endif
 
     hudDisplayFlags = gHudDisplay.flags;
+#ifndef TARGET_N64
+    if (gDjuiInMainMenu) {
+        hudDisplayFlags = HUD_DISPLAY_NONE;
+    }
+#endif
 
     if (hudDisplayFlags == HUD_DISPLAY_NONE) {
         sPowerMeterHUD.animation = POWER_METER_HIDDEN;

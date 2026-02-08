@@ -337,7 +337,7 @@ SRC_DIRS := src src/engine src/game src/audio src/menu src/buffers actors levels
 ifeq ($(TARGET_N64),1)
   SRC_DIRS += asm lib
 else
-  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/mods
+  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/mods src/pc/djui
 endif
 BIN_DIRS := bin bin/$(VERSION)
 

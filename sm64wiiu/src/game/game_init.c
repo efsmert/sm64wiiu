@@ -19,6 +19,7 @@
 #include "segment2.h"
 #include "segment_symbols.h"
 #include "rumble_init.h"
+#include "pc/djui/djui.h"
 #include <prevent_bss_reordering.h>
 
 // First 3 controller slots
@@ -296,6 +297,8 @@ void end_master_display_list(void) {
     if (gShowProfiler) {
         draw_profiler();
     }
+
+    djui_render();
 
     gDPFullSync(gDisplayListHead++);
     gSPEndDisplayList(gDisplayListHead++);

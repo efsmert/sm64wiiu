@@ -30,6 +30,7 @@
 #include "rumble_init.h"
 #ifndef TARGET_N64
 #include "pc/lua/smlua_hooks.h"
+#include "pc/djui/djui.h"
 #endif
 
 #define PLAY_MODE_NORMAL 0
@@ -215,6 +216,12 @@ u16 level_control_timer(s32 timerOp) {
 }
 
 u32 pressed_pause(void) {
+#ifndef TARGET_N64
+    if (gDjuiInMainMenu) {
+        return FALSE;
+    }
+#endif
+
     u32 dialogActive = get_dialog_id() >= 0;
     u32 intangible = (gMarioState->action & ACT_FLAG_INTANGIBLE) != 0;
 
@@ -1143,6 +1150,11 @@ UNUSED static s32 play_mode_unused(void) {
 
 s32 update_level(void) {
     s32 changeLevel;
+
+#ifndef TARGET_N64
+    djui_update();
+    djui_update_menu_level();
+#endif
 
     switch (sCurrPlayMode) {
         case PLAY_MODE_NORMAL:

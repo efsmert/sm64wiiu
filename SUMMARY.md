@@ -131,6 +131,12 @@ make -C sm64wiiu wuhb
 - Added GX2 window start-frame diagnostics and a first-frame clear skip mitigation in `gfx_gx2_window_start_frame()` to avoid intermittent black-screen hangs before `start_frame()` returns on Cemu full-sync paths.
 - Added Wii U watchdog diagnostics thread + cross-module stage markers (`pc_main`/`gfx_run`) so hangs without crashes still emit periodic `diag: stall ... stage=...` logs showing where frame progress stopped.
 
+### O) DJUI bootstrap (phase slice 1)
+- Added initial `src/pc/djui` scaffold (`djui.[ch]`) and wired lifecycle hooks into Wii U startup/shutdown (`djui_init`, `djui_init_late`, `djui_shutdown`).
+- Added DJUI render hook call in `end_master_display_list()` so future panel/UI rendering can layer in donor-aligned display-list phase.
+- Added guarded main-menu mode state (`gDjuiInMainMenu`) with temporary debug toggle (`L+R+START`) and first-pass castle-grounds menu-scene control (`djui_update_menu_level`).
+- Suppressed vanilla HUD while DJUI main-menu mode is active to match donor layering expectations.
+
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
 - Runtime `.m64` injection in `smlua_audio_utils_replace_sequence` remains guarded for stability; sequence aliasing remains enabled.
@@ -147,6 +153,7 @@ make -C sm64wiiu wuhb
 - Continue non-network gameplay/mod parity with stability-first validation.
 - Expand missing Lua API/cobject coverage when runtime behavior proves necessity.
 - Continue Phase 1 against generated parity queue (`parity/phase1_lua_port_queue.md`), prioritizing donor autogen Lua coverage and hook callsite parity.
+- Continue DJUI parity slices: replace scaffold with donor panel stack/root renderer and port main/join/lobbies flows incrementally.
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
 
@@ -224,6 +231,7 @@ Notes:
 - Phase 1 Lua helper parity expansion (vanilla gameplay/camera batch): added donor-aligned Lua bindings for existing Wii U-side helpers (`adjust_sound_for_speed`, `add_tree_leaf_particles`, `align_with_floor`, `analog_stick_held_back`, `anim_and_audio_for_walk`, `anim_and_audio_for_hold_walk`, `anim_and_audio_for_heavy_walk`, `animated_stationary_ground_step`, `approach_f32_ptr`, `approach_vec3f_asymptotic`, `set_or_approach_vec3f_asymptotic`) and refreshed parity artifacts | files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase1_lua_port_queue.md | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Lua global parity improved to 204 Wii U globals / 199 shared / 1808 missing with no current built-in-mod missing-symbol regressions.
 - Phase 1 Lua helper parity expansion (math/slope/act-select batch): added donor-aligned Lua bindings for `atan2f`, slope/landing helpers (`apply_slope_accel`, `apply_landing_accel`, `apply_slope_decel`), `arc_to_goal_pos`, and act-select HUD helpers (`act_select_hud_hide`, `act_select_hud_show`, `act_select_hud_is_hidden`) backed by a local mask shim; refreshed parity artifacts | files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase1_lua_port_queue.md | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Lua global parity improved to 212 Wii U globals / 207 shared / 1800 missing with no current built-in-mod missing-symbol regressions.
 - Active-mod table compatibility fix: rebuilt Lua `gActiveMods` from the actual active script list (instead of hardcoded entries) to keep mod-list UIs aligned with runtime-loaded mods and eliminate misleading mod-count displays while preserving single-player stability | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`, `tail -n 400 \"$HOME/Library/Application Support/Cemu/log.txt\"` | outcome: build + wuhb succeed; Cemu log confirms all six bundled root scripts are still loading (`root[0]..root[5]`), and Lua now receives a dynamic active-mod list instead of static placeholders.
+- DJUI bootstrap slice 1: added `src/pc/djui` runtime scaffold, integrated init/shutdown/render hooks into Wii U loop, added guarded `gDjuiInMainMenu` menu-scene controller (castle grounds) behind temporary `L+R+START` toggle, and hid vanilla HUD while DJUI main menu mode is active | files: sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/pc/djui/djui.h, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/game/game_init.c, sm64wiiu/src/game/level_update.c, sm64wiiu/src/game/hud.c, sm64wiiu/Makefile | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Wii U runtime now has a stable DJUI integration spine ready for panel-stack/menu parity slices.
 
 ## 10) Required Format For Future Summary Updates
 
