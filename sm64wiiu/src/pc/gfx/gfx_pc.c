@@ -17,6 +17,7 @@
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+#include "../pc_diag.h"
 #include "../lua/smlua.h"
 #ifdef TARGET_WII_U
 #include <whb/log.h>
@@ -181,6 +182,12 @@ static struct RenderingState {
 struct GfxDimensions gfx_current_dimensions;
 
 static bool dropped_frame;
+static bool sLoggedFrame1GfxRunEnter = false;
+static bool sLoggedFrame1GfxRunAfterStart = false;
+static bool sLoggedFrame1GfxRunAfterDl = false;
+static bool sLoggedFrame1GfxRunAfterFlush = false;
+static bool sLoggedFrame1GfxRunAfterEnd = false;
+static bool sLoggedFrame1GfxRunAfterSwapBegin = false;
 
 #ifdef TARGET_WII_U
 static float buf_vbo[MAX_BUFFERED * (28 * 3)]; // 3 vertices in a triangle and 28 floats per vtx
@@ -1807,29 +1814,77 @@ void gfx_start_frame(void) {
 }
 
 void gfx_run(Gfx *commands) {
+    pc_diag_mark_stage("gfx_run:enter");
     gfx_sp_reset();
 
     //puts("New frame");
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunEnter) {
+        sLoggedFrame1GfxRunEnter = true;
+        WHBLogPrint("gfx: frame1 gfx_run enter");
+    }
+#endif
 
+    pc_diag_mark_stage("gfx_run:pre_start_frame");
     if (!gfx_wapi->start_frame()) {
+        pc_diag_mark_stage("gfx_run:start_frame_false");
         dropped_frame = true;
         return;
     }
+    pc_diag_mark_stage("gfx_run:post_start_frame");
     dropped_frame = false;
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunAfterStart) {
+        sLoggedFrame1GfxRunAfterStart = true;
+        WHBLogPrint("gfx: frame1 gfx_run post start_frame");
+    }
+#endif
 
     //double t0 = gfx_wapi->get_time();
     gfx_rapi->start_frame();
+    pc_diag_mark_stage("gfx_run:post_rapi_start_frame");
     gfx_run_dl(commands);
+    pc_diag_mark_stage("gfx_run:post_run_dl");
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunAfterDl) {
+        sLoggedFrame1GfxRunAfterDl = true;
+        WHBLogPrint("gfx: frame1 gfx_run post run_dl");
+    }
+#endif
     gfx_flush();
+    pc_diag_mark_stage("gfx_run:post_flush");
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunAfterFlush) {
+        sLoggedFrame1GfxRunAfterFlush = true;
+        WHBLogPrint("gfx: frame1 gfx_run post flush");
+    }
+#endif
     //double t1 = gfx_wapi->get_time();
     //printf("Process %f %f\n", t1, t1 - t0);
     gfx_rapi->end_frame();
+    pc_diag_mark_stage("gfx_run:post_end_frame");
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunAfterEnd) {
+        sLoggedFrame1GfxRunAfterEnd = true;
+        WHBLogPrint("gfx: frame1 gfx_run post end_frame");
+    }
+#endif
     gfx_wapi->swap_buffers_begin();
+    pc_diag_mark_stage("gfx_run:post_swap_buffers_begin");
+#ifdef TARGET_WII_U
+    if (!sLoggedFrame1GfxRunAfterSwapBegin) {
+        sLoggedFrame1GfxRunAfterSwapBegin = true;
+        WHBLogPrint("gfx: frame1 gfx_run post swap_buffers_begin");
+    }
+#endif
 }
 
 void gfx_end_frame(void) {
+    pc_diag_mark_stage("gfx_end_frame:enter");
     if (!dropped_frame) {
         gfx_rapi->finish_render();
+        pc_diag_mark_stage("gfx_end_frame:post_finish_render");
         gfx_wapi->swap_buffers_end();
+        pc_diag_mark_stage("gfx_end_frame:post_swap_buffers_end");
     }
 }

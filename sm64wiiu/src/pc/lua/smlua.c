@@ -32,6 +32,7 @@
 #include "game/level_update.h"
 #include "game/mario.h"
 #include "engine/graph_node.h"
+#include "engine/math_util.h"
 #include "engine/surface_collision.h"
 #include "game/sound_init.h"
 #include "audio/external.h"
@@ -156,6 +157,7 @@ static bool sLuaSequenceAliasValid[0x100];
 static bool sLuaCameraFrozen = false;
 static bool sLuaHudHidden = false;
 static s32 sLuaHudSavedFlags = HUD_DISPLAY_DEFAULT;
+static s8 sLuaHudFlash = 0;
 
 struct SmluaSequenceOverride {
     bool active;
@@ -2309,6 +2311,18 @@ static int smlua_func_hook_chat_command(lua_State *L) {
     return 1;
 }
 
+// Stub for Co-op DX chat command description updates while chat UI is unported.
+static int smlua_func_update_chat_command_description(lua_State *L) {
+    const char *command = luaL_optstring(L, 1, "");
+    const char *description = luaL_optstring(L, 2, "");
+    if (command == NULL || description == NULL || command[0] == '\0' || description[0] == '\0') {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // Stub for Co-op DX network player descriptions in local-only single-player mode.
 static int smlua_func_network_player_set_description(lua_State *L) {
     (void)L;
@@ -3316,6 +3330,13 @@ static int smlua_func_get_uncolored_string(lua_State *L) {
     return 1;
 }
 
+// Display-list mutation shim is unimplemented until DynOS command parsing is ported.
+static int smlua_func_gfx_set_command(lua_State *L) {
+    (void)L;
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
 // Prints Lua-facing console messages to stdout for debug parity.
 static int smlua_func_log_to_console(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
@@ -4179,6 +4200,385 @@ static int smlua_func_approach_s32(lua_State *L) {
     return 1;
 }
 
+// Co-op DX math helper `approach_f32(current, target, inc, dec)`.
+static int smlua_func_approach_f32(lua_State *L) {
+    f32 current = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 inc = (f32)luaL_checknumber(L, 3);
+    f32 dec = (f32)luaL_checknumber(L, 4);
+    lua_pushnumber(L, approach_f32(current, target, inc, dec));
+    return 1;
+}
+
+// Co-op DX helper that returns (changed, newValue) for asymptotic approach.
+static int smlua_func_approach_f32_asymptotic_bool(lua_State *L) {
+    f32 current = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 multiplier = (f32)luaL_checknumber(L, 3);
+    lua_pushinteger(L, approach_f32_asymptotic_bool(&current, target, multiplier));
+    lua_pushnumber(L, current);
+    return 2;
+}
+
+// Co-op DX helper `approach_f32_asymptotic(current, target, multiplier)`.
+static int smlua_func_approach_f32_asymptotic(lua_State *L) {
+    f32 current = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 multiplier = (f32)luaL_checknumber(L, 3);
+    lua_pushnumber(L, approach_f32_asymptotic(current, target, multiplier));
+    return 1;
+}
+
+// Co-op DX helper that returns (changed, newValue) while preserving vanilla camera semantics.
+static int smlua_func_set_or_approach_f32_asymptotic(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    f32 goal = (f32)luaL_checknumber(L, 2);
+    f32 scale = (f32)luaL_checknumber(L, 3);
+    lua_pushinteger(L, set_or_approach_f32_asymptotic(&value, goal, scale));
+    lua_pushnumber(L, value);
+    return 2;
+}
+
+// Co-op DX helper returning (changed, newValue) for signed linear approach.
+static int smlua_func_approach_f32_signed(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 increment = (f32)luaL_checknumber(L, 3);
+    lua_pushinteger(L, approach_f32_signed(&value, target, increment));
+    lua_pushnumber(L, value);
+    return 2;
+}
+
+// Co-op DX helper `approach_f32_symmetric(value, target, increment)`.
+static int smlua_func_approach_f32_symmetric(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 increment = (f32)luaL_checknumber(L, 3);
+    lua_pushnumber(L, approach_f32_symmetric(value, target, increment));
+    return 1;
+}
+
+// Co-op DX helper `abs_angle_diff(x0, x1)`.
+static int smlua_func_abs_angle_diff(lua_State *L) {
+    s16 x0 = (s16)luaL_checkinteger(L, 1);
+    s16 x1 = (s16)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, abs_angle_diff(x0, x1));
+    return 1;
+}
+
+// Co-op DX helper `absf_2(value)`.
+static int smlua_func_absf_2(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    lua_pushnumber(L, value < 0.0f ? -value : value);
+    return 1;
+}
+
+// Co-op DX helper that returns (changed, newValue) for asymptotic s16 approach.
+static int smlua_func_approach_s16_asymptotic_bool(lua_State *L) {
+    s16 current = (s16)luaL_checkinteger(L, 1);
+    s16 target = (s16)luaL_checkinteger(L, 2);
+    s16 divisor = (s16)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, approach_s16_asymptotic_bool(&current, target, divisor));
+    lua_pushinteger(L, current);
+    return 2;
+}
+
+// Co-op DX helper `approach_s16_asymptotic(current, target, divisor)`.
+static int smlua_func_approach_s16_asymptotic(lua_State *L) {
+    s16 current = (s16)luaL_checkinteger(L, 1);
+    s16 target = (s16)luaL_checkinteger(L, 2);
+    s16 divisor = (s16)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, approach_s16_asymptotic(current, target, divisor));
+    return 1;
+}
+
+// Co-op DX helper `approach_s16_symmetric(current, target, increment)`.
+static int smlua_func_approach_s16_symmetric(lua_State *L) {
+    s16 current = (s16)luaL_checkinteger(L, 1);
+    s16 target = (s16)luaL_checkinteger(L, 2);
+    s16 increment = (s16)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, approach_s16_symmetric(current, target, increment));
+    return 1;
+}
+
+// Co-op DX helper that returns (changed, newValue) for camera s16 approach.
+static int smlua_func_camera_approach_s16_symmetric_bool(lua_State *L) {
+    s16 current = (s16)luaL_checkinteger(L, 1);
+    s16 target = (s16)luaL_checkinteger(L, 2);
+    s16 increment = (s16)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, camera_approach_s16_symmetric_bool(&current, target, increment));
+    lua_pushinteger(L, current);
+    return 2;
+}
+
+// Co-op DX helper that returns (changed, newValue) for set-or-approach camera s16.
+static int smlua_func_set_or_approach_s16_symmetric(lua_State *L) {
+    s16 current = (s16)luaL_checkinteger(L, 1);
+    s16 target = (s16)luaL_checkinteger(L, 2);
+    s16 increment = (s16)luaL_checkinteger(L, 3);
+    lua_pushinteger(L, set_or_approach_s16_symmetric(&current, target, increment));
+    lua_pushinteger(L, current);
+    return 2;
+}
+
+// Co-op DX helper that returns adjusted value after applying object-style quadratic drag.
+static int smlua_func_apply_drag_to_value(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    f32 drag_strength = (f32)luaL_checknumber(L, 2);
+    if (value != 0.0f) {
+        f32 decel = value * value * (drag_strength * 0.0001f);
+        if (value > 0.0f) {
+            value -= decel;
+            if (value < 0.001f) {
+                value = 0.0f;
+            }
+        } else {
+            value += decel;
+            if (value > -0.001f) {
+                value = 0.0f;
+            }
+        }
+    }
+    lua_pushnumber(L, value);
+    return 1;
+}
+
+// Co-op DX helper `adjust_sound_for_speed(m)`.
+static int smlua_func_adjust_sound_for_speed(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        adjust_sound_for_speed(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `add_tree_leaf_particles(m)`.
+static int smlua_func_add_tree_leaf_particles(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void add_tree_leaf_particles(struct MarioState *m);
+        add_tree_leaf_particles(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `align_with_floor(m)`.
+static int smlua_func_align_with_floor(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void align_with_floor(struct MarioState *m);
+        align_with_floor(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `analog_stick_held_back(m)`.
+static int smlua_func_analog_stick_held_back(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m == NULL) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    extern s32 analog_stick_held_back(struct MarioState *m);
+    lua_pushinteger(L, analog_stick_held_back(m));
+    return 1;
+}
+
+// Co-op DX helper `anim_and_audio_for_walk(m)`.
+static int smlua_func_anim_and_audio_for_walk(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void anim_and_audio_for_walk(struct MarioState *m);
+        anim_and_audio_for_walk(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `anim_and_audio_for_hold_walk(m)`.
+static int smlua_func_anim_and_audio_for_hold_walk(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void anim_and_audio_for_hold_walk(struct MarioState *m);
+        anim_and_audio_for_hold_walk(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `anim_and_audio_for_heavy_walk(m)`.
+static int smlua_func_anim_and_audio_for_heavy_walk(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void anim_and_audio_for_heavy_walk(struct MarioState *m);
+        anim_and_audio_for_heavy_walk(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `animated_stationary_ground_step(m, animation, endAction)`.
+static int smlua_func_animated_stationary_ground_step(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    s32 animation = (s32)luaL_checkinteger(L, 2);
+    u32 end_action = (u32)luaL_checkinteger(L, 3);
+    if (m != NULL) {
+        extern void animated_stationary_ground_step(struct MarioState *m, s32 animation, u32 endAction);
+        animated_stationary_ground_step(m, animation, end_action);
+    }
+    return 0;
+}
+
+// Co-op DX helper mirrored for Lua value semantics (returns `changed, newValue`).
+static s32 smlua_approach_f32_ptr_compat(f32 *value, f32 target, f32 delta) {
+    if (*value > target) {
+        delta = -delta;
+    }
+    *value += delta;
+    if ((*value - target) * delta >= 0.0f) {
+        *value = target;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// Co-op DX helper `approach_f32_ptr(value, target, delta)`.
+static int smlua_func_approach_f32_ptr(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    f32 target = (f32)luaL_checknumber(L, 2);
+    f32 delta = (f32)luaL_checknumber(L, 3);
+    lua_pushinteger(L, smlua_approach_f32_ptr_compat(&value, target, delta));
+    lua_pushnumber(L, value);
+    return 2;
+}
+
+// Co-op DX helper `approach_vec3f_asymptotic(current, target, xMul, yMul, zMul)`.
+static int smlua_func_approach_vec3f_asymptotic(lua_State *L) {
+    Vec3f current = { 0.0f, 0.0f, 0.0f };
+    Vec3f target = { 0.0f, 0.0f, 0.0f };
+    f32 x_mul = (f32)luaL_checknumber(L, 3);
+    f32 y_mul = (f32)luaL_checknumber(L, 4);
+    f32 z_mul = (f32)luaL_checknumber(L, 5);
+
+    if (!smlua_read_vec3_like(L, 1, current) || !smlua_read_vec3_like(L, 2, target)) {
+        return 0;
+    }
+
+    approach_vec3f_asymptotic(current, target, x_mul, y_mul, z_mul);
+    smlua_write_vec3_like(L, 1, current);
+
+    lua_newtable(L);
+    lua_pushnumber(L, current[0]);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, current[1]);
+    lua_setfield(L, -2, "y");
+    lua_pushnumber(L, current[2]);
+    lua_setfield(L, -2, "z");
+    return 1;
+}
+
+// Co-op DX helper `set_or_approach_vec3f_asymptotic(dst, goal, xMul, yMul, zMul)`.
+static int smlua_func_set_or_approach_vec3f_asymptotic(lua_State *L) {
+    Vec3f dst = { 0.0f, 0.0f, 0.0f };
+    Vec3f goal = { 0.0f, 0.0f, 0.0f };
+    f32 x_mul = (f32)luaL_checknumber(L, 3);
+    f32 y_mul = (f32)luaL_checknumber(L, 4);
+    f32 z_mul = (f32)luaL_checknumber(L, 5);
+
+    if (!smlua_read_vec3_like(L, 1, dst) || !smlua_read_vec3_like(L, 2, goal)) {
+        return 0;
+    }
+
+    set_or_approach_vec3f_asymptotic(dst, goal, x_mul, y_mul, z_mul);
+    smlua_write_vec3_like(L, 1, dst);
+
+    lua_newtable(L);
+    lua_pushnumber(L, dst[0]);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, dst[1]);
+    lua_setfield(L, -2, "y");
+    lua_pushnumber(L, dst[2]);
+    lua_setfield(L, -2, "z");
+    return 1;
+}
+
+// Co-op DX trigonometry helper `sins(sm64Angle)`.
+static int smlua_func_sins(lua_State *L) {
+    s16 angle = (s16)luaL_checkinteger(L, 1);
+    lua_pushnumber(L, sins(angle));
+    return 1;
+}
+
+// Co-op DX trigonometry helper `coss(sm64Angle)`.
+static int smlua_func_coss(lua_State *L) {
+    s16 angle = (s16)luaL_checkinteger(L, 1);
+    lua_pushnumber(L, coss(angle));
+    return 1;
+}
+
+// Co-op DX helper `atan2s(y, x)`.
+static int smlua_func_atan2s(lua_State *L) {
+    f32 y = (f32)luaL_checknumber(L, 1);
+    f32 x = (f32)luaL_checknumber(L, 2);
+    lua_pushinteger(L, atan2s(y, x));
+    return 1;
+}
+
+// Compatibility stub for idle-cancel helper used by character-select scripts.
+static int smlua_func_check_common_idle_cancels(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
+// Compatibility stub for stationary ground-step helper used by character-select scripts.
+static int smlua_func_stationary_ground_step(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
+// Local compatibility for pause-menu flash flag queried by HUD scripts.
+static int smlua_func_hud_get_flash(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, (lua_Integer)sLuaHudFlash);
+    return 1;
+}
+
+// Local compatibility for pause-menu flash flag set by HUD scripts.
+static int smlua_func_hud_set_flash(lua_State *L) {
+    sLuaHudFlash = (s8)luaL_checkinteger(L, 1);
+    return 0;
+}
+
+// Compatibility shim for scripts requesting gameplay unpause.
+static int smlua_func_game_unpause(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+// Single-player compatibility shim: nearest player object is local Mario object.
+static int smlua_func_nearest_player_to_object(lua_State *L) {
+    (void)L;
+    if (gMarioObject == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
+    smlua_push_object(L, gMarioObject);
+    return 1;
+}
+
+// Character-select compatibility helper mapped to vanilla animation setter.
+static int smlua_func_set_character_animation(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    s32 anim_id = (s32)luaL_checkinteger(L, 2);
+    lua_pushinteger(L, set_mario_animation(m, anim_id));
+    return 1;
+}
+
+// Character voice compatibility stub until full character audio routing is ported.
+static int smlua_func_play_character_sound(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
 // Returns zero in local-only mode where network area timing is absent.
 static int smlua_func_get_network_area_timer(lua_State *L) {
     (void)L;
@@ -4642,6 +5042,42 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "set_mario_action", smlua_func_set_mario_action);
     smlua_set_global_function(L, "allocate_mario_action", smlua_func_allocate_mario_action);
     smlua_set_global_function(L, "approach_s32", smlua_func_approach_s32);
+    smlua_set_global_function(L, "approach_f32", smlua_func_approach_f32);
+    smlua_set_global_function(L, "approach_f32_asymptotic_bool", smlua_func_approach_f32_asymptotic_bool);
+    smlua_set_global_function(L, "approach_f32_asymptotic", smlua_func_approach_f32_asymptotic);
+    smlua_set_global_function(L, "set_or_approach_f32_asymptotic", smlua_func_set_or_approach_f32_asymptotic);
+    smlua_set_global_function(L, "approach_f32_signed", smlua_func_approach_f32_signed);
+    smlua_set_global_function(L, "approach_f32_symmetric", smlua_func_approach_f32_symmetric);
+    smlua_set_global_function(L, "abs_angle_diff", smlua_func_abs_angle_diff);
+    smlua_set_global_function(L, "absf_2", smlua_func_absf_2);
+    smlua_set_global_function(L, "approach_s16_asymptotic_bool", smlua_func_approach_s16_asymptotic_bool);
+    smlua_set_global_function(L, "approach_s16_asymptotic", smlua_func_approach_s16_asymptotic);
+    smlua_set_global_function(L, "approach_s16_symmetric", smlua_func_approach_s16_symmetric);
+    smlua_set_global_function(L, "camera_approach_s16_symmetric_bool", smlua_func_camera_approach_s16_symmetric_bool);
+    smlua_set_global_function(L, "set_or_approach_s16_symmetric", smlua_func_set_or_approach_s16_symmetric);
+    smlua_set_global_function(L, "apply_drag_to_value", smlua_func_apply_drag_to_value);
+    smlua_set_global_function(L, "adjust_sound_for_speed", smlua_func_adjust_sound_for_speed);
+    smlua_set_global_function(L, "add_tree_leaf_particles", smlua_func_add_tree_leaf_particles);
+    smlua_set_global_function(L, "align_with_floor", smlua_func_align_with_floor);
+    smlua_set_global_function(L, "analog_stick_held_back", smlua_func_analog_stick_held_back);
+    smlua_set_global_function(L, "anim_and_audio_for_walk", smlua_func_anim_and_audio_for_walk);
+    smlua_set_global_function(L, "anim_and_audio_for_hold_walk", smlua_func_anim_and_audio_for_hold_walk);
+    smlua_set_global_function(L, "anim_and_audio_for_heavy_walk", smlua_func_anim_and_audio_for_heavy_walk);
+    smlua_set_global_function(L, "animated_stationary_ground_step", smlua_func_animated_stationary_ground_step);
+    smlua_set_global_function(L, "approach_f32_ptr", smlua_func_approach_f32_ptr);
+    smlua_set_global_function(L, "approach_vec3f_asymptotic", smlua_func_approach_vec3f_asymptotic);
+    smlua_set_global_function(L, "set_or_approach_vec3f_asymptotic", smlua_func_set_or_approach_vec3f_asymptotic);
+    smlua_set_global_function(L, "sins", smlua_func_sins);
+    smlua_set_global_function(L, "coss", smlua_func_coss);
+    smlua_set_global_function(L, "atan2s", smlua_func_atan2s);
+    smlua_set_global_function(L, "check_common_idle_cancels", smlua_func_check_common_idle_cancels);
+    smlua_set_global_function(L, "stationary_ground_step", smlua_func_stationary_ground_step);
+    smlua_set_global_function(L, "hud_get_flash", smlua_func_hud_get_flash);
+    smlua_set_global_function(L, "hud_set_flash", smlua_func_hud_set_flash);
+    smlua_set_global_function(L, "game_unpause", smlua_func_game_unpause);
+    smlua_set_global_function(L, "nearest_player_to_object", smlua_func_nearest_player_to_object);
+    smlua_set_global_function(L, "set_character_animation", smlua_func_set_character_animation);
+    smlua_set_global_function(L, "play_character_sound", smlua_func_play_character_sound);
     smlua_set_global_function(L, "get_network_area_timer", smlua_func_get_network_area_timer);
     smlua_set_global_function(L, "smlua_text_utils_get_language", smlua_func_text_utils_get_language);
     smlua_set_global_function(L, "mod_storage_load", smlua_func_mod_storage_load);
@@ -4715,7 +5151,9 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "add_scroll_target", smlua_func_add_scroll_target);
     smlua_set_global_function(L, "cast_graph_node", smlua_func_cast_graph_node);
     smlua_set_global_function(L, "define_custom_obj_fields", smlua_func_define_custom_obj_fields);
+    smlua_set_global_function(L, "gfx_set_command", smlua_func_gfx_set_command);
     smlua_set_global_function(L, "hook_chat_command", smlua_func_hook_chat_command);
+    smlua_set_global_function(L, "update_chat_command_description", smlua_func_update_chat_command_description);
     smlua_set_global_function(L, "network_player_set_description", smlua_func_network_player_set_description);
     smlua_set_global_function(L, "network_is_server", smlua_func_network_is_server);
     smlua_set_global_function(L, "network_is_moderator", smlua_func_network_is_moderator);

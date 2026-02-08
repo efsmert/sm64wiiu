@@ -66,6 +66,7 @@ static uint32_t sTexturePoolOverflowCount = 0;
 
 static struct ShaderProgram* current_shader_program = nullptr;
 static std::vector<float*> vbo_array;
+static std::vector<float*> vbo_array_prev;
 
 #define GX2_MAX_TEXTURES 2048
 static Texture gx2_textures[GX2_MAX_TEXTURES];
@@ -76,10 +77,21 @@ static uint32_t current_texture_ids[2];
 static uint32_t frame_count = 0;
 static uint32_t current_height = 0;
 static bool sLoggedFirstDrawCall = false;
+static bool sLoggedFirstDrawSubmitBegin = false;
+static bool sLoggedFirstDrawSubmitEnd = false;
 
 static BOOL current_depth_test = FALSE;
 static BOOL current_depth_write = FALSE;
 static GX2CompareFunction current_depth_compare = GX2_COMPARE_FUNC_LEQUAL;
+
+// Releases all CPU-side VBO allocations tracked in a frame list.
+static void gfx_gx2_release_vbo_list(std::vector<float*>& buffers)
+{
+    for (uint32_t i = 0; i < buffers.size(); i++) {
+        free(buffers[i]);
+    }
+    buffers.clear();
+}
 
 // Validates tile index used by N64 combiner samplers.
 static bool gfx_gx2_is_valid_tile(int tile)
@@ -656,7 +668,15 @@ static void gfx_gx2_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t b
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, new_vbo, vbo_len);
 
     GX2SetAttribBuffer(0, vbo_len, sizeof(float) * current_shader_program->num_floats, new_vbo);
+    if (!sLoggedFirstDrawSubmitBegin) {
+        sLoggedFirstDrawSubmitBegin = true;
+        WHBLogPrint("gfx: first draw submit begin");
+    }
     GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3 * buf_vbo_num_tris, 0, 1);
+    if (!sLoggedFirstDrawSubmitEnd) {
+        sLoggedFirstDrawSubmitEnd = true;
+        WHBLogPrint("gfx: first draw submit end");
+    }
 }
 
 static void gfx_gx2_init(void)
@@ -670,6 +690,10 @@ static void gfx_gx2_on_resize(void)
 static void gfx_gx2_start_frame(void)
 {
     frame_count++;
+    // Keep one-frame latency before freeing transient VBO uploads so we avoid
+    // hard stalls from per-frame GX2DrawDone() on Cemu full-sync paths.
+    gfx_gx2_release_vbo_list(vbo_array_prev);
+    vbo_array_prev.swap(vbo_array);
 }
 
 static void gfx_gx2_end_frame(void)
@@ -678,18 +702,13 @@ static void gfx_gx2_end_frame(void)
 
 static void gfx_gx2_finish_render(void)
 {
-    // Wait until drawing is done
-    GX2DrawDone();
-    // Free resources
-    gfx_gx2_free_vbo();
+    GX2Flush();
 }
 
 extern "C" void gfx_gx2_free_vbo(void)
 {
-    for (uint32_t i = 0; i < vbo_array.size(); i++)
-        free(vbo_array[i]);
-
-    vbo_array.clear();
+    gfx_gx2_release_vbo_list(vbo_array);
+    gfx_gx2_release_vbo_list(vbo_array_prev);
 }
 
 extern "C" void gfx_gx2_free(void)

@@ -91,6 +91,7 @@ make -C sm64wiiu wuhb
   - model/behavior helpers
   - math helpers/aliases
   - sound bridges (`play_sound`, `set_background_music`, etc.).
+- Added Phase 0/1 parity artifacts generator (`tools/parity/generate_phase0_phase1_matrix.py`) that produces repeatable donor-vs-Wii U Lua/hook/module gap reports (`parity/phase0_matrix.{json,md}`, `parity/phase1_lua_port_queue.md`).
 
 ### K) HUD/dialog/interaction slices
 - Dialog override conversion/render integration for common charset.
@@ -108,6 +109,11 @@ make -C sm64wiiu wuhb
 - Synced built-in character-select payloads (`character-select-coop`, `char-select-the-originals`) into runtime + bundled content.
 - Added asset sync helper script.
 - Added compatibility functions required by character-select/day-night top-level scripts.
+- Added first-pass character-select gameplay helper globals used by built-ins (`sins`, `coss`, `atan2s`, `check_common_idle_cancels`, `stationary_ground_step`, `set_character_animation`, `play_character_sound`, plus `hud_get_flash`/`hud_set_flash` and `game_unpause` compatibility shims).
+  - `check_common_idle_cancels` / `stationary_ground_step` are currently safe compatibility stubs on Wii U pending broader action-hook parity to avoid runtime hangs.
+  - `play_character_sound` is currently a no-op compatibility stub pending full character-voice routing parity.
+- Added second-pass low-risk Lua helper parity (`absf_2`, `approach_s16_asymptotic_bool`, `approach_s16_asymptotic`, `approach_s16_symmetric`, `camera_approach_s16_symmetric_bool`, `set_or_approach_s16_symmetric`, `apply_drag_to_value`) and `gfx_set_command` compatibility stub (returns false until DynOS display-list command parser is ported).
+- Added third-pass low-risk Lua helper parity for vanilla gameplay/camera helpers (`adjust_sound_for_speed`, `add_tree_leaf_particles`, `align_with_floor`, `analog_stick_held_back`, `anim_and_audio_for_walk`, `anim_and_audio_for_hold_walk`, `anim_and_audio_for_heavy_walk`, `animated_stationary_ground_step`, `approach_f32_ptr`, `approach_vec3f_asymptotic`, `set_or_approach_vec3f_asymptotic`).
 
 ### N) Wii U runtime stability hardening
 - Moved Lua/mod init later in startup (after core game/audio init).
@@ -120,6 +126,8 @@ make -C sm64wiiu wuhb
 - Added deterministic fallback companion loading for known multi-file mods.
 - Added explicit main-script startup markers for runtime diagnosis.
 - Added root-script startup markers for all active scripts (including single-file mods) and targeted HOOK_BEFORE_PHYS_STEP water-step velocity diagnostics for runtime parity triage.
+- Added GX2 window start-frame diagnostics and a first-frame clear skip mitigation in `gfx_gx2_window_start_frame()` to avoid intermittent black-screen hangs before `start_frame()` returns on Cemu full-sync paths.
+- Added Wii U watchdog diagnostics thread + cross-module stage markers (`pc_main`/`gfx_run`) so hangs without crashes still emit periodic `diag: stall ... stage=...` logs showing where frame progress stopped.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -136,6 +144,7 @@ make -C sm64wiiu wuhb
 ## 8) Remaining Work / Next Focus
 - Continue non-network gameplay/mod parity with stability-first validation.
 - Expand missing Lua API/cobject coverage when runtime behavior proves necessity.
+- Continue Phase 1 against generated parity queue (`parity/phase1_lua_port_queue.md`), prioritizing donor autogen Lua coverage and hook callsite parity.
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
 
@@ -202,6 +211,15 @@ Notes:
 - Co-op DX parity audit + GX2 texture allocator hardening: compared Wii U renderer against donor `sm64coopdx` tile-load semantics and restored compatibility for special load tile `6`, rejected unsupported TMEM tile indices instead of aliasing them, added import-path validity guards, and replaced dynamic `std::vector<_Texture>` growth with a fixed 2048-entry GX2 texture pool to eliminate vector-metadata crash paths observed at `std::vector<_Texture>::_M_default_append` | files: sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/gfx/gfx_gx2.cpp | validation: `export DEVKITPRO=/opt/devkitpro DEVKITPPC=/opt/devkitpro/devkitPPC PATH="$PATH:/opt/devkitpro/devkitPPC/bin:/opt/devkitpro/tools/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb -j4` | outcome: build + wuhb succeed with donor-aligned load-tile handling and non-vector GX2 texture storage for spawn-crash retest.
 - HOOK_BEFORE_PHYS_STEP timing/signature parity pass: moved pre-physics hook dispatch from `bhv_mario_update` to donor-aligned physics-step callsites (`perform_ground_step`, `perform_air_step`, `perform_water_step`, `perform_hanging_step`), added C step-type constants, and implemented Lua hook return override handling (`number` return short-circuits with step result) to match Co-op DX behavior expected by gameplay mods like `faster-swimming` | files: sm64wiiu/include/sm64.h, sm64wiiu/src/pc/lua/smlua_hooks.h, sm64wiiu/src/pc/lua/smlua_hooks.c, sm64wiiu/src/game/mario_step.c, sm64wiiu/src/game/mario_actions_submerged.c, sm64wiiu/src/game/mario_actions_automatic.c, sm64wiiu/src/game/object_list_processor.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed with pre-physics hooks firing at correct simulation points for parity retest.
 - Gameplay-mod order + water-hook diagnostics pass: reordered built-in root script activation so character-select scripts initialize first and gameplay single-file scripts (including `faster-swimming`) run later, added explicit Wii U root-script log lines for every active script (not only `main.lua` roots), and added bounded water-step hook delta logs to verify when HOOK_BEFORE_PHYS_STEP callbacks mutate `MarioState.vel` at runtime | files: sm64wiiu/src/pc/mods/mods.c, sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/src/pc/lua/smlua_hooks.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; next Cemu run should expose whether faster-swimming hook registration/order and velocity mutation are occurring.
+- Phase 0/1 parity bootstrap: added a repeatable donor-vs-Wii U parity matrix generator and implemented first-pass missing Lua compatibility bindings required by currently shipped built-in mods (`sins`, `coss`, `atan2s`, `check_common_idle_cancels`, `stationary_ground_step`, `game_unpause`, `hud_get_flash`, `hud_set_flash`, `nearest_player_to_object`, `set_character_animation`, `play_character_sound`) | files: sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase1_lua_port_queue.md, sm64wiiu/src/pc/lua/smlua.c | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Phase 0 artifacts now quantify parity (2007 donor Lua globals vs 177 Wii U, 1835 still missing) and current built-in mods no longer reference missing donor globals.
+- Black-screen regression mitigation for Phase 1 helpers: narrowed newly added action-step Lua helpers to safe compatibility stubs (`check_common_idle_cancels`, `stationary_ground_step`) and added stronger Mario-object validity guard for `set_character_animation` after Cemu runs showed startup reaching first draw then hanging in runtime update flow | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed with symbol parity retained and lower risk of custom-action recursion hangs.
+
+### 2026-02-07
+- Phase 1 low-risk Lua helper expansion + start-frame hang mitigation: added donor-compatible helper globals (`absf_2`, `approach_s16_*`, `camera_approach_s16_symmetric_bool`, `set_or_approach_s16_symmetric`, `apply_drag_to_value`) and `gfx_set_command` stub on Lua side, then instrumented/reordered GX2 window start-frame setup with one-frame clear skip to avoid intermittent black-screen stalls before `gfx_run` reaches `post start_frame` | files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/src/pc/gfx/gfx_gx2_window.cpp, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase1_lua_port_queue.md | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; runtime reaches gameplay again, missing donor globals reduced to 1819 (Wii U registered globals now 193, shared 188), and built-in mods still report no missing donor globals.
+- Hang-observability pass: added a Wii U-only watchdog thread (`coreinit` thread API) that emits periodic stall diagnostics with last frame stage and elapsed stall duration, and wired lightweight progress markers through `produce_one_frame`, `gfx_run`, and `gfx_end_frame` to make black-screen hangs diagnosable even when Cemu logs show no crash event | files: sm64wiiu/src/pc/pc_diag.h, sm64wiiu/src/pc/pc_diag_wiiu.c, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/pc/gfx/gfx_pc.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; future hangs should print `diag: stall ... stage='...'` lines that identify the stuck subsystem boundary.
+
+### 2026-02-08
+- Phase 1 Lua helper parity expansion (vanilla gameplay/camera batch): added donor-aligned Lua bindings for existing Wii U-side helpers (`adjust_sound_for_speed`, `add_tree_leaf_particles`, `align_with_floor`, `analog_stick_held_back`, `anim_and_audio_for_walk`, `anim_and_audio_for_hold_walk`, `anim_and_audio_for_heavy_walk`, `animated_stationary_ground_step`, `approach_f32_ptr`, `approach_vec3f_asymptotic`, `set_or_approach_vec3f_asymptotic`) and refreshed parity artifacts | files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase1_lua_port_queue.md | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Lua global parity improved to 204 Wii U globals / 199 shared / 1808 missing with no current built-in-mod missing-symbol regressions.
 
 ## 10) Required Format For Future Summary Updates
 

@@ -34,6 +34,7 @@
 #include "configfile.h"
 #include "platform.h"
 #include "fs/fs.h"
+#include "pc_diag.h"
 
 #include "compat.h"
 
@@ -87,6 +88,7 @@ void exec_display_list(struct SPTask *spTask) {
 #endif
 
 void produce_one_frame(void) {
+    pc_diag_mark_stage("produce_one_frame:begin");
     gfx_start_frame();
 #ifdef TARGET_WII_U
     if (sFrameMarkerCount == 0) {
@@ -94,8 +96,27 @@ void produce_one_frame(void) {
     }
     sFrameMarkerCount++;
 #endif
+    pc_diag_mark_frame(sFrameMarkerCount);
+#ifdef TARGET_WII_U
+    if (sFrameMarkerCount == 1) {
+        WHBLogPrint("pc: frame1 pre game_loop_one_iteration");
+    }
+#endif
+    pc_diag_mark_stage("produce_one_frame:before_game_loop");
     game_loop_one_iteration();
+    pc_diag_mark_stage("produce_one_frame:after_game_loop");
+#ifdef TARGET_WII_U
+    if (sFrameMarkerCount == 1) {
+        WHBLogPrint("pc: frame1 post game_loop_one_iteration");
+    }
+#endif
     smlua_update();
+    pc_diag_mark_stage("produce_one_frame:after_smlua_update");
+#ifdef TARGET_WII_U
+    if (sFrameMarkerCount == 1) {
+        WHBLogPrint("pc: frame1 post smlua_update");
+    }
+#endif
 
     int samples_left = audio_api->buffered();
     u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
@@ -110,8 +131,20 @@ void produce_one_frame(void) {
     }
     //printf("Audio samples before submitting: %d\n", audio_api->buffered());
     audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
+    pc_diag_mark_stage("produce_one_frame:after_audio_play");
+#ifdef TARGET_WII_U
+    if (sFrameMarkerCount == 1) {
+        WHBLogPrint("pc: frame1 post audio play");
+    }
+#endif
 
     gfx_end_frame();
+    pc_diag_mark_stage("produce_one_frame:after_gfx_end_frame");
+#ifdef TARGET_WII_U
+    if (sFrameMarkerCount == 1) {
+        WHBLogPrint("pc: frame1 post gfx_end_frame");
+    }
+#endif
 }
 
 #ifdef TARGET_WEB
@@ -210,6 +243,9 @@ void main_func(void) {
 
     wm_api->set_fullscreen_changed_callback(on_fullscreen_changed);
     wm_api->set_keyboard_callbacks(keyboard_on_key_down, keyboard_on_key_up, keyboard_on_all_keys_up, NULL, NULL);
+
+    pc_diag_watchdog_init();
+    pc_diag_mark_stage("main:after_watchdog_init");
 
 
 #if HAVE_WASAPI

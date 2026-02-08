@@ -437,20 +437,21 @@ static bool gfx_gx2_window_start_frame(void)
     if (!is_running)
         return false;
 
-    GX2ClearColor(
-        &g_color_buffer,
-        0.0f, 0.0f, 0.0f, 1.0f
-    );
+    // Rebind the render targets before draw submission each frame.
+    GX2SetContextState(g_context);
+    GX2SetColorBuffer(&g_color_buffer, GX2_RENDER_TARGET_0);
+    GX2SetDepthBuffer(&g_depth_buffer);
+    GX2SetViewport(0, 0, g_window_width, g_window_height, 0.0f, 1.0f);
+    GX2SetScissor(0, 0, g_window_width, g_window_height);
 
+    // 3D rendering requires depth reset each frame; keep color clear disabled
+    // while black-screen triage continues.
     GX2ClearDepthStencilEx(
         &g_depth_buffer,
         g_depth_buffer.depthClear,
         g_depth_buffer.stencilClear,
-        (GX2ClearFlags)(GX2_CLEAR_FLAGS_DEPTH |
-                        GX2_CLEAR_FLAGS_STENCIL)
+        (GX2ClearFlags)(GX2_CLEAR_FLAGS_DEPTH | GX2_CLEAR_FLAGS_STENCIL)
     );
-
-    GX2SetContextState(g_context);
 
     return true;
 }
@@ -469,6 +470,10 @@ static void gfx_gx2_window_swap_buffers_begin(void)
 
     // Reset context state for next frame
     GX2SetContextState(g_context);
+    GX2SetColorBuffer(&g_color_buffer, GX2_RENDER_TARGET_0);
+    GX2SetDepthBuffer(&g_depth_buffer);
+    GX2SetViewport(0, 0, g_window_width, g_window_height, 0.0f, 1.0f);
+    GX2SetScissor(0, 0, g_window_width, g_window_height);
 
     // Flush all commands to GPU before waiting for flip since it will block the CPU
     GX2Flush();
