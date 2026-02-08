@@ -11,8 +11,8 @@ static struct Mods *sActiveMods = &gLocalMods;
 static char *sDynamicScriptPaths[MODS_MAX_ACTIVE_SCRIPTS];
 static size_t sDynamicScriptCount = 0;
 
-// Keeps a stable script list for the current process lifetime.
-static const char *sEnabledBuiltins[] = {
+// Keep a deterministic script catalog for the current process lifetime.
+static const char *sBuiltinScripts[] = {
     "mods/character-select-coop/main.lua",
     "mods/char-select-the-originals/main.lua",
     "mods/cheats.lua",
@@ -101,30 +101,32 @@ static void mods_clear_dynamic_script_paths(void) {
     sDynamicScriptCount = 0;
 }
 
-// Returns true if script path is already present in the local active list.
-static bool mods_has_script_path(const char *script_path) {
-    for (size_t i = 0; i < gLocalMods.script_count; i++) {
-        if (strcmp(gLocalMods.script_paths[i], script_path) == 0) {
+// Returns true if script path already exists in local script catalog.
+static bool mods_has_available_script_path(const char *script_path) {
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        if (strcmp(gLocalMods.available_script_paths[i], script_path) == 0) {
             return true;
         }
     }
     return false;
 }
 
-// Adds one script path to gLocalMods with optional ownership copy for discovered entries.
-static bool mods_try_add_script(const char *script_path, bool own_copy) {
+// Adds one script path to local script catalog with optional ownership copy.
+static bool mods_try_add_available_script(const char *script_path, bool own_copy) {
     char *copy = NULL;
+    size_t slot = 0;
 
     if (script_path == NULL || script_path[0] == '\0') {
         return false;
     }
-    if (gLocalMods.script_count >= MODS_MAX_ACTIVE_SCRIPTS) {
+    if (gLocalMods.available_script_count >= MODS_MAX_ACTIVE_SCRIPTS) {
         return false;
     }
-    if (mods_has_script_path(script_path)) {
+    if (mods_has_available_script_path(script_path)) {
         return false;
     }
 
+    slot = gLocalMods.available_script_count;
     if (own_copy) {
         if (sDynamicScriptCount >= MODS_MAX_ACTIVE_SCRIPTS) {
             return false;
@@ -134,20 +136,47 @@ static bool mods_try_add_script(const char *script_path, bool own_copy) {
             return false;
         }
         sDynamicScriptPaths[sDynamicScriptCount++] = copy;
-        gLocalMods.script_paths[gLocalMods.script_count++] = copy;
-        return true;
+        gLocalMods.available_script_paths[slot] = copy;
+    } else {
+        gLocalMods.available_script_paths[slot] = script_path;
     }
 
-    gLocalMods.script_paths[gLocalMods.script_count++] = script_path;
+    // Default policy matches Co-op DX host-mod panel behavior: mods start disabled.
+    gLocalMods.available_script_enabled[slot] = false;
+    gLocalMods.available_script_count++;
     return true;
 }
 
-// Adds a built-in script only if it exists in the mounted virtual filesystem.
-static void mods_try_add_builtin(const char *script_path) {
-    if (!mods_script_exists_in_vfs(script_path)) {
-        return;
+// Rebuilds active script array from local enabled state.
+static void mods_rebuild_active_script_list(void) {
+    size_t out_count = 0;
+
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        const char *script_path = gLocalMods.available_script_paths[i];
+
+        if (!gLocalMods.available_script_enabled[i]) {
+            continue;
+        }
+        if (script_path == NULL || !mods_script_exists_in_vfs(script_path)) {
+            gLocalMods.available_script_enabled[i] = false;
+            continue;
+        }
+        if (out_count >= MODS_MAX_ACTIVE_SCRIPTS) {
+            break;
+        }
+
+        gLocalMods.script_paths[out_count++] = script_path;
     }
-    (void)mods_try_add_script(script_path, false);
+
+    gLocalMods.script_count = out_count;
+}
+
+// Adds a built-in script only if it exists in the mounted virtual filesystem.
+static bool mods_try_add_builtin(const char *script_path) {
+    if (!mods_script_exists_in_vfs(script_path)) {
+        return false;
+    }
+    return mods_try_add_available_script(script_path, false);
 }
 
 // Discovers root scripts under `mods/` to support user-added Lua mods on Wii U.
@@ -170,7 +199,7 @@ static size_t mods_discover_root_scripts(void) {
         if (!mods_script_exists_in_vfs(path)) {
             continue;
         }
-        if (mods_try_add_script(path, true)) {
+        if (mods_try_add_available_script(path, true)) {
             added++;
         }
     }
@@ -184,32 +213,66 @@ void mods_activate(struct Mods *mods) {
     sActiveMods = (mods != NULL) ? mods : &gLocalMods;
 }
 
-// Builds the default built-in mod set for single-player Wii U runtime.
+// Builds local script catalog and default active set for single-player Wii U runtime.
 void mods_init(void) {
-    size_t builtin_count;
-    size_t discovered_count;
+    size_t builtin_count = 0;
+    size_t discovered_count = 0;
 
     mods_clear_dynamic_script_paths();
     memset(&gLocalMods, 0, sizeof(gLocalMods));
 
-    for (size_t i = 0; i < sizeof(sEnabledBuiltins) / sizeof(sEnabledBuiltins[0]); i++) {
-        mods_try_add_builtin(sEnabledBuiltins[i]);
+    for (size_t i = 0; i < sizeof(sBuiltinScripts) / sizeof(sBuiltinScripts[0]); i++) {
+        if (mods_try_add_builtin(sBuiltinScripts[i])) {
+            builtin_count++;
+        }
     }
-    builtin_count = gLocalMods.script_count;
     discovered_count = mods_discover_root_scripts();
+    mods_rebuild_active_script_list();
 
     mods_activate(&gLocalMods);
-    printf("mods: activated %u scripts (%u built-in, %u discovered)\n",
-           (unsigned)gLocalMods.script_count,
+    printf("mods: cataloged %u scripts (%u built-in, %u discovered), enabled %u\n",
+           (unsigned)gLocalMods.available_script_count,
            (unsigned)builtin_count,
-           (unsigned)discovered_count);
+           (unsigned)discovered_count,
+           (unsigned)gLocalMods.script_count);
 }
 
-// Clears active mod references during shutdown.
+// Clears mod references during shutdown.
 void mods_shutdown(void) {
     mods_clear_dynamic_script_paths();
     memset(&gLocalMods, 0, sizeof(gLocalMods));
     sActiveMods = &gLocalMods;
+}
+
+size_t mods_get_available_script_count(void) {
+    return gLocalMods.available_script_count;
+}
+
+const char *mods_get_available_script_path(size_t index) {
+    if (index >= gLocalMods.available_script_count) {
+        return NULL;
+    }
+    return gLocalMods.available_script_paths[index];
+}
+
+bool mods_get_available_script_enabled(size_t index) {
+    if (index >= gLocalMods.available_script_count) {
+        return false;
+    }
+    return gLocalMods.available_script_enabled[index];
+}
+
+bool mods_set_available_script_enabled(size_t index, bool enabled) {
+    if (index >= gLocalMods.available_script_count) {
+        return false;
+    }
+    if (gLocalMods.available_script_enabled[index] == enabled) {
+        return false;
+    }
+
+    gLocalMods.available_script_enabled[index] = enabled;
+    mods_rebuild_active_script_list();
+    return true;
 }
 
 // Returns number of scripts in the currently active mod set.
