@@ -38,7 +38,8 @@ static bool sDjuiInitialized = false;
 static bool sDjuiRenderLogged = false;
 static bool sDjuiMenuWarpPending = true;
 static enum DjuiMenuPage sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-static enum DjuiMenuPage sDjuiModsReturnPage = DJUI_MENU_PAGE_MAIN;
+static enum DjuiMenuPage sDjuiPageStack[32] = { DJUI_MENU_PAGE_MAIN };
+static s32 sDjuiPageStackSize = 1;
 static s32 sDjuiMainSelection = 0;
 static s32 sDjuiLobbyListSelection = 0;
 static s32 sDjuiHostSelection = 0;
@@ -54,6 +55,8 @@ static u32 sDjuiStatusTimer = 0;
 static s8 sDjuiNavStickDirY = 0;
 static u8 sDjuiNavStickTimerY = 0;
 static bool sDjuiRequireNeutralInput = true;
+static bool sDjuiDebounceAWaitRelease = false;
+static bool sDjuiDebounceBWaitRelease = false;
 static bool sDjuiModsDirty = false;
 static s32 sDjuiHostSettingPlayerInteraction = 0;
 static s32 sDjuiHostSettingOnStarCollection = 0;
@@ -204,6 +207,34 @@ static s32 djui_active_mod_count(void) {
 
 static s32 djui_available_mod_count(void) {
     return (s32)mods_get_available_script_count();
+}
+
+static void djui_page_stack_reset(enum DjuiMenuPage rootPage) {
+    sDjuiPageStackSize = 1;
+    sDjuiPageStack[0] = rootPage;
+    sDjuiMenuPage = rootPage;
+    sDjuiRequireNeutralInput = true;
+}
+
+static void djui_page_stack_push(enum DjuiMenuPage page) {
+    if (sDjuiPageStackSize < (s32)(sizeof(sDjuiPageStack) / sizeof(sDjuiPageStack[0]))) {
+        sDjuiPageStack[sDjuiPageStackSize++] = page;
+    } else {
+        sDjuiPageStack[sDjuiPageStackSize - 1] = page;
+    }
+    sDjuiMenuPage = page;
+    sDjuiRequireNeutralInput = true;
+}
+
+static bool djui_page_stack_pop(void) {
+    if (sDjuiPageStackSize <= 1) {
+        return false;
+    }
+
+    sDjuiPageStackSize--;
+    sDjuiMenuPage = sDjuiPageStack[sDjuiPageStackSize - 1];
+    sDjuiRequireNeutralInput = true;
+    return true;
 }
 
 static void djui_status_set(const char *message) {
@@ -957,8 +988,7 @@ void djui_init(void) {
     sDjuiRenderLogged = false;
     gDjuiInMainMenu = true;
     sDjuiMenuWarpPending = true;
-    sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-    sDjuiModsReturnPage = DJUI_MENU_PAGE_MAIN;
+    djui_page_stack_reset(DJUI_MENU_PAGE_MAIN);
     sDjuiMainSelection = 0;
     sDjuiLobbyListSelection = 0;
     sDjuiHostSelection = 0;
@@ -972,6 +1002,8 @@ void djui_init(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = true;
+    sDjuiDebounceAWaitRelease = false;
+    sDjuiDebounceBWaitRelease = false;
     sDjuiModsDirty = false;
     sDjuiHostNetworkSystem = 0;
     sDjuiHostPortIndex = 0;
@@ -993,8 +1025,7 @@ void djui_shutdown(void) {
     gDjuiInMainMenu = false;
     sDjuiRenderLogged = false;
     sDjuiMenuWarpPending = false;
-    sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-    sDjuiModsReturnPage = DJUI_MENU_PAGE_MAIN;
+    djui_page_stack_reset(DJUI_MENU_PAGE_MAIN);
     sDjuiMainSelection = 0;
     sDjuiLobbyListSelection = 0;
     sDjuiHostSelection = 0;
@@ -1008,6 +1039,8 @@ void djui_shutdown(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = false;
+    sDjuiDebounceAWaitRelease = false;
+    sDjuiDebounceBWaitRelease = false;
     sDjuiModsDirty = false;
     sDjuiHostNetworkSystem = 0;
     sDjuiHostPortIndex = 0;
@@ -1021,8 +1054,7 @@ void djui_shutdown(void) {
 void djui_open_main_menu(void) {
     gDjuiInMainMenu = true;
     sDjuiMenuWarpPending = true;
-    sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-    sDjuiModsReturnPage = DJUI_MENU_PAGE_MAIN;
+    djui_page_stack_reset(DJUI_MENU_PAGE_MAIN);
     sDjuiMainSelection = 0;
     sDjuiLobbyListSelection = 0;
     sDjuiHostSelection = 0;
@@ -1036,6 +1068,8 @@ void djui_open_main_menu(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = true;
+    sDjuiDebounceAWaitRelease = false;
+    sDjuiDebounceBWaitRelease = false;
     sDjuiHostNetworkSystem = 0;
     sDjuiHostPortIndex = 0;
     sDjuiHostPasswordEnabled = false;
@@ -1056,6 +1090,8 @@ void djui_close_main_menu(void) {
     sDjuiNavStickDirY = 0;
     sDjuiNavStickTimerY = 0;
     sDjuiRequireNeutralInput = false;
+    sDjuiDebounceAWaitRelease = false;
+    sDjuiDebounceBWaitRelease = false;
     djui_status_set(NULL);
 }
 
@@ -1158,16 +1194,16 @@ static void djui_activate_main_selection(void) {
     switch (sDjuiMainSelection) {
         case 0:
             sDjuiHostSelection = 0;
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST;
+            djui_page_stack_push(DJUI_MENU_PAGE_HOST);
             djui_status_set("HOST PANEL");
             break;
         case 1:
-            sDjuiMenuPage = DJUI_MENU_PAGE_LOBBIES;
+            djui_page_stack_push(DJUI_MENU_PAGE_LOBBIES);
             djui_status_set("JOIN FLOW: OFFLINE LIST");
             break;
         case 2:
             sDjuiOptionsSelection = 0;
-            sDjuiMenuPage = DJUI_MENU_PAGE_OPTIONS;
+            djui_page_stack_push(DJUI_MENU_PAGE_OPTIONS);
             djui_status_set("OPTIONS PANEL");
             break;
         case 3:
@@ -1191,19 +1227,18 @@ static void djui_activate_host_selection(void) {
             break;
         case 3:
             sDjuiHostSaveSelection = 0;
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST_SAVE;
+            djui_page_stack_push(DJUI_MENU_PAGE_HOST_SAVE);
             break;
         case 4:
             sDjuiHostSettingsSelection = 0;
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST_SETTINGS;
+            djui_page_stack_push(DJUI_MENU_PAGE_HOST_SETTINGS);
             break;
         case 5:
-            sDjuiModsReturnPage = DJUI_MENU_PAGE_HOST;
-            sDjuiMenuPage = DJUI_MENU_PAGE_MODS;
+            djui_page_stack_push(DJUI_MENU_PAGE_MODS);
             djui_set_mod_selection(0);
             break;
         case 6:
-            sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
+            djui_page_stack_pop();
             break;
         case 7:
             djui_close_main_menu();
@@ -1216,7 +1251,7 @@ static void djui_activate_host_save_selection(void) {
         gCurrSaveFileNum = sDjuiHostSaveSelection + 1;
         djui_status_set("HOST SAVE SLOT SELECTED");
     } else {
-        sDjuiMenuPage = DJUI_MENU_PAGE_HOST;
+        djui_page_stack_pop();
     }
 }
 
@@ -1255,7 +1290,7 @@ static void djui_activate_host_settings_selection(void) {
             }
             break;
         case 7:
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST;
+            djui_page_stack_pop();
             break;
     }
 }
@@ -1266,12 +1301,11 @@ static void djui_activate_lobby_selection(void) {
             djui_close_main_menu();
             break;
         case 1:
-            sDjuiModsReturnPage = DJUI_MENU_PAGE_LOBBY;
-            sDjuiMenuPage = DJUI_MENU_PAGE_MODS;
+            djui_page_stack_push(DJUI_MENU_PAGE_MODS);
             djui_set_mod_selection(0);
             break;
         case 2:
-            sDjuiMenuPage = DJUI_MENU_PAGE_LOBBIES;
+            djui_page_stack_pop();
             break;
     }
 }
@@ -1294,7 +1328,7 @@ static void djui_activate_options_selection(void) {
             djui_status_set("MISC PANEL: PENDING");
             break;
         case 5:
-            sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
+            djui_page_stack_pop();
             break;
     }
 }
@@ -1337,6 +1371,7 @@ static s8 djui_poll_vertical_nav_step(void) {
 
 void djui_update(void) {
     u16 pressed = 0;
+    u16 down = 0;
     s8 navStep = 0;
 
     if (!sDjuiInitialized || gPlayer1Controller == NULL) {
@@ -1344,6 +1379,7 @@ void djui_update(void) {
     }
 
     pressed = gPlayer1Controller->buttonPressed;
+    down = gPlayer1Controller->buttonDown;
 
     if ((pressed & START_BUTTON)
         && (gPlayer1Controller->buttonDown & L_TRIG)
@@ -1366,6 +1402,8 @@ void djui_update(void) {
         sDjuiNavStickDirY = 0;
         sDjuiNavStickTimerY = 0;
         sDjuiRequireNeutralInput = false;
+        sDjuiDebounceAWaitRelease = false;
+        sDjuiDebounceBWaitRelease = false;
         return;
     }
 
@@ -1382,24 +1420,24 @@ void djui_update(void) {
         return;
     }
 
-    if (pressed & B_BUTTON) {
-        if (sDjuiMenuPage == DJUI_MENU_PAGE_MAIN) {
-            djui_close_main_menu();
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_LOBBIES) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_HOST) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_LOBBY) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_LOBBIES;
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_OPTIONS) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_MAIN;
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_HOST_SAVE) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST;
-        } else if (sDjuiMenuPage == DJUI_MENU_PAGE_HOST_SETTINGS) {
-            sDjuiMenuPage = DJUI_MENU_PAGE_HOST;
-        } else {
-            sDjuiMenuPage = sDjuiModsReturnPage;
+    if (sDjuiDebounceAWaitRelease) {
+        if (down & A_BUTTON) {
+            return;
         }
+        sDjuiDebounceAWaitRelease = false;
+    }
+
+    if (sDjuiDebounceBWaitRelease) {
+        if (down & B_BUTTON) {
+            return;
+        }
+        sDjuiDebounceBWaitRelease = false;
+    }
+
+    if (pressed & B_BUTTON) {
+        // Root-panel back is ignored so B does not auto-dismiss into gameplay.
+        sDjuiDebounceBWaitRelease = true;
+        (void)djui_page_stack_pop();
         return;
     }
 
@@ -1431,12 +1469,13 @@ void djui_update(void) {
     }
 
     if (pressed & A_BUTTON) {
+        sDjuiDebounceAWaitRelease = true;
         if (sDjuiMenuPage == DJUI_MENU_PAGE_MAIN) {
             djui_activate_main_selection();
         } else if (sDjuiMenuPage == DJUI_MENU_PAGE_LOBBIES) {
             sDjuiSelectedLobby = sDjuiLobbyListSelection;
             sDjuiLobbySelection = 0;
-            sDjuiMenuPage = DJUI_MENU_PAGE_LOBBY;
+            djui_page_stack_push(DJUI_MENU_PAGE_LOBBY);
         } else if (sDjuiMenuPage == DJUI_MENU_PAGE_HOST) {
             djui_activate_host_selection();
         } else if (sDjuiMenuPage == DJUI_MENU_PAGE_LOBBY) {

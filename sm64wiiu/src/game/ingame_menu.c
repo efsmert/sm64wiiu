@@ -2527,14 +2527,27 @@ void render_pause_course_options(s16 x, s16 y, s8 *index, s16 yIndex) {
     u8 textExitCourse[] = { TEXT_EXIT_COURSE };
     u8 textCameraAngleR[] = { TEXT_CAMERA_ANGLE_R };
 #endif
+    u8 textMainMenu[] = {
+        ASCII_TO_DIALOG('M'),
+        ASCII_TO_DIALOG('A'),
+        ASCII_TO_DIALOG('I'),
+        ASCII_TO_DIALOG('N'),
+        DIALOG_CHAR_SPACE,
+        ASCII_TO_DIALOG('M'),
+        ASCII_TO_DIALOG('E'),
+        ASCII_TO_DIALOG('N'),
+        ASCII_TO_DIALOG('U'),
+        DIALOG_CHAR_TERMINATOR
+    };
 
-    handle_menu_scrolling(MENU_SCROLL_VERTICAL, index, 1, 3);
+    handle_menu_scrolling(MENU_SCROLL_VERTICAL, index, 1, 4);
 
     gSPDisplayList(gDisplayListHead++, dl_ia_text_begin);
     gDPSetEnvColor(gDisplayListHead++, 255, 255, 255, gDialogTextAlpha);
 
     print_generic_string(x + 10, y - 2, textContinue);
     print_generic_string(x + 10, y - 17, textExitCourse);
+    print_generic_string(x + 10, y - 48, textMainMenu);
 
     if (*index != MENU_OPT_CAMERA_ANGLE_R) {
         print_generic_string(x + 10, y - 33, textCameraAngleR);
@@ -2786,7 +2799,8 @@ s16 render_pause_courses_and_castle(void) {
                 gDialogBoxState = DIALOG_STATE_OPENING;
                 gMenuMode = MENU_MODE_NONE;
 
-                if (gDialogLineNum == MENU_OPT_EXIT_COURSE) {
+                if (gDialogLineNum == MENU_OPT_EXIT_COURSE
+                    || gDialogLineNum == MENU_OPT_RETURN_TO_MAIN_MENU) {
                     index = gDialogLineNum;
                 } else { // MENU_OPT_CONTINUE or MENU_OPT_CAMERA_ANGLE_R
                     index = MENU_OPT_DEFAULT;
