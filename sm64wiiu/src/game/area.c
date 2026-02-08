@@ -22,6 +22,9 @@
 #include "save_file.h"
 #include "level_table.h"
 #include "dialog_ids.h"
+#ifndef TARGET_N64
+#include "pc/djui/djui.h"
+#endif
 
 struct SpawnInfo gPlayerSpawnInfos[1];
 struct GraphNode *D_8033A160[0x100];
@@ -378,11 +381,25 @@ void render_game(void) {
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
         render_text_labels();
         do_cutscene_handler();
+#ifndef TARGET_N64
+        if (!gDjuiInMainMenu) {
+            print_displaying_credits_entry();
+        }
+#else
         print_displaying_credits_entry();
+#endif
 
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, BORDER_HEIGHT, SCREEN_WIDTH,
                       SCREEN_HEIGHT - BORDER_HEIGHT);
+#ifndef TARGET_N64
+        if (gDjuiInMainMenu) {
+            gMenuOptSelectIndex = MENU_OPT_NONE;
+        } else {
+            gMenuOptSelectIndex = render_menus_and_dialogs();
+        }
+#else
         gMenuOptSelectIndex = render_menus_and_dialogs();
+#endif
         if (gMenuOptSelectIndex != MENU_OPT_NONE) {
             gSaveOptSelectIndex = gMenuOptSelectIndex;
         }

@@ -985,7 +985,7 @@ void basic_update(UNUSED s16 *arg) {
 }
 
 s32 play_mode_normal(void) {
-    if (gCurrDemoInput != NULL) {
+    if (!gDjuiInMainMenu && gCurrDemoInput != NULL) {
         print_intro_text();
         if (gPlayer1Controller->buttonPressed & END_DEMO) {
             level_trigger_warp(gMarioState,
@@ -1216,6 +1216,10 @@ s32 init_level(void) {
 
             if (gCurrDemoInput != NULL) {
                 set_mario_action(gMarioState, ACT_IDLE, 0);
+#ifndef TARGET_N64
+            } else if (gDjuiInMainMenu) {
+                set_mario_action(gMarioState, ACT_IDLE, 0);
+#endif
             } else if (!gDebugLevelSelect) {
                 if (gMarioState->action != ACT_UNINITIALIZED) {
                     if (save_file_exists(gCurrSaveFileNum - 1)) {
@@ -1335,6 +1339,12 @@ s32 lvl_set_current_level(UNUSED s16 arg0, s32 levelNum) {
         nop_change_course();
         disable_warp_checkpoint();
     }
+
+#ifndef TARGET_N64
+    if (gDjuiInMainMenu) {
+        return 0;
+    }
+#endif
 
     if (gCurrCourseNum > COURSE_STAGES_MAX || warpCheckpointActive) {
         return 0;

@@ -136,6 +136,13 @@ make -C sm64wiiu wuhb
 - Added DJUI render hook call in `end_master_display_list()` so future panel/UI rendering can layer in donor-aligned display-list phase.
 - Added guarded main-menu mode state (`gDjuiInMainMenu`) with temporary debug toggle (`L+R+START`) and first-pass castle-grounds menu-scene control (`djui_update_menu_level`).
 - Suppressed vanilla HUD while DJUI main-menu mode is active to match donor layering expectations.
+- Switched startup entry flow to donor-style `level_main_scripts_entry` boot (castle grounds target) instead of the vanilla intro-script loop.
+- Added a first playable DJUI menu shell for Wii U parity validation:
+  - default boot into DJUI main menu scene
+  - custom menu overlay pages (`MAIN`, `LOBBY`, `MODS`) with controller navigation
+  - active mod list rendering from runtime mod activation set
+  - menu-driven transition into gameplay (`ENTER GAME` / `START`)
+- Suppressed vanilla menu/dialog rendering and credits text while DJUI main-menu mode is active, and blocked act-select while in menu mode.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -154,6 +161,7 @@ make -C sm64wiiu wuhb
 - Expand missing Lua API/cobject coverage when runtime behavior proves necessity.
 - Continue Phase 1 against generated parity queue (`parity/phase1_lua_port_queue.md`), prioritizing donor autogen Lua coverage and hook callsite parity.
 - Continue DJUI parity slices: replace scaffold with donor panel stack/root renderer and port main/join/lobbies flows incrementally.
+- Replace temporary Wii U text-overlay DJUI shell with direct donor `src/pc/djui` panel framework parity (`djui_panel_main`, `djui_panel_join`, `djui_panel_modlist`, menu transitions/cursor/input semantics).
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
 
@@ -232,6 +240,7 @@ Notes:
 - Phase 1 Lua helper parity expansion (math/slope/act-select batch): added donor-aligned Lua bindings for `atan2f`, slope/landing helpers (`apply_slope_accel`, `apply_landing_accel`, `apply_slope_decel`), `arc_to_goal_pos`, and act-select HUD helpers (`act_select_hud_hide`, `act_select_hud_show`, `act_select_hud_is_hidden`) backed by a local mask shim; refreshed parity artifacts | files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/parity/phase0_matrix.json, sm64wiiu/parity/phase0_matrix.md, sm64wiiu/parity/phase1_lua_port_queue.md | validation: `sm64wiiu/tools/parity/generate_phase0_phase1_matrix.py`, `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Lua global parity improved to 212 Wii U globals / 207 shared / 1800 missing with no current built-in-mod missing-symbol regressions.
 - Active-mod table compatibility fix: rebuilt Lua `gActiveMods` from the actual active script list (instead of hardcoded entries) to keep mod-list UIs aligned with runtime-loaded mods and eliminate misleading mod-count displays while preserving single-player stability | files: sm64wiiu/src/pc/lua/smlua.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`, `tail -n 400 \"$HOME/Library/Application Support/Cemu/log.txt\"` | outcome: build + wuhb succeed; Cemu log confirms all six bundled root scripts are still loading (`root[0]..root[5]`), and Lua now receives a dynamic active-mod list instead of static placeholders.
 - DJUI bootstrap slice 1: added `src/pc/djui` runtime scaffold, integrated init/shutdown/render hooks into Wii U loop, added guarded `gDjuiInMainMenu` menu-scene controller (castle grounds) behind temporary `L+R+START` toggle, and hid vanilla HUD while DJUI main menu mode is active | files: sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/pc/djui/djui.h, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/game/game_init.c, sm64wiiu/src/game/level_update.c, sm64wiiu/src/game/hud.c, sm64wiiu/Makefile | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Wii U runtime now has a stable DJUI integration spine ready for panel-stack/menu parity slices.
+- DJUI main-menu flow slice 2: switched boot flow to donor-style main-scripts entry, defaulted Wii U into DJUI menu-scene mode, added custom controllable main/lobby/mod-list overlay pages, and bypassed vanilla menu/dialog rendering while DJUI main menu is active to align with Co-op DX startup behavior. | files: sm64wiiu/levels/entry.c, sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/game/area.c, sm64wiiu/src/game/level_update.c | validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb` | outcome: build + wuhb succeed; Wii U now boots directly into castle-scene DJUI menu mode with in-game transition and runtime mod-list visibility.
 
 ## 10) Required Format For Future Summary Updates
 
