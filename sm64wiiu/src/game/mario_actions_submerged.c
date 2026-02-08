@@ -17,6 +17,9 @@
 #include "level_table.h"
 #include "rumble_init.h"
 #include "pc/lua/smlua_hooks.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 #define MIN_SWIM_STRENGTH 160
 #define MIN_SWIM_SPEED 16.0f
@@ -172,8 +175,24 @@ static u32 perform_water_step(struct MarioState *m) {
     Vec3f step;
     struct Object *marioObj = m->marioObj;
     s32 stepResultOverride = 0;
+#ifdef TARGET_WII_U
+    static bool sLoggedWaterStepProbe = false;
+    static bool sLoggedWaterHookIntercept = false;
+#endif
 
+#ifdef TARGET_WII_U
+    if (!sLoggedWaterStepProbe) {
+        WHBLogPrintf("lua-probe: perform_water_step entered");
+        sLoggedWaterStepProbe = true;
+    }
+#endif
     if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_WATER, 0, &stepResultOverride)) {
+#ifdef TARGET_WII_U
+        if (!sLoggedWaterHookIntercept) {
+            WHBLogPrintf("lua-probe: water before_phys intercepted result=%d", stepResultOverride);
+            sLoggedWaterHookIntercept = true;
+        }
+#endif
         return (u32)stepResultOverride;
     }
 

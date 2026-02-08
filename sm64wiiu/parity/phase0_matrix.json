@@ -3,28 +3,20 @@
   "wiiu": "sm64wiiu",
   "lua_symbol_parity": {
     "donor_count": 2007,
-    "wiiu_count": 204,
-    "shared_count": 199,
-    "missing_count": 1808,
+    "wiiu_count": 212,
+    "shared_count": 207,
+    "missing_count": 1800,
     "wiiu_only_count": 5,
     "missing_symbols": [
-      "act_select_hud_hide",
-      "act_select_hud_is_hidden",
-      "act_select_hud_show",
       "anim_spline_init",
       "anim_spline_poll",
-      "apply_landing_accel",
       "apply_platform_displacement",
-      "apply_slope_accel",
-      "apply_slope_decel",
       "apply_water_current",
       "approach_camera_height",
-      "arc_to_goal_pos",
       "area_create_warp_node",
       "area_get_any_warp_node",
       "area_get_warp_node",
       "area_get_warp_node_from_params",
-      "atan2f",
       "audio_sample_destroy",
       "audio_stream_destroy",
       "audio_stream_get_frequency",
@@ -7858,6 +7850,15 @@
       "absf_2": [
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
+      "act_select_hud_hide": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "act_select_hud_is_hidden": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "act_select_hud_show": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
       "add_scroll_target": [
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
@@ -7891,6 +7892,15 @@
       "apply_drag_to_value": [
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
+      "apply_landing_accel": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "apply_slope_accel": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "apply_slope_decel": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
       "approach_f32": [
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
@@ -7922,6 +7932,12 @@
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
       "approach_vec3f_asymptotic": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "arc_to_goal_pos": [
+        "sm64wiiu/src/pc/lua/smlua.c"
+      ],
+      "atan2f": [
         "sm64wiiu/src/pc/lua/smlua.c"
       ],
       "atan2s": [
@@ -8823,25 +8839,17 @@
     {
       "priority": "P1",
       "donor_file": "sm64coopdx/src/pc/lua/smlua_functions_autogen.c",
-      "missing_symbol_count": 1808,
+      "missing_symbol_count": 1800,
       "missing_symbols": [
-        "act_select_hud_hide",
-        "act_select_hud_is_hidden",
-        "act_select_hud_show",
         "anim_spline_init",
         "anim_spline_poll",
-        "apply_landing_accel",
         "apply_platform_displacement",
-        "apply_slope_accel",
-        "apply_slope_decel",
         "apply_water_current",
         "approach_camera_height",
-        "arc_to_goal_pos",
         "area_create_warp_node",
         "area_get_any_warp_node",
         "area_get_warp_node",
         "area_get_warp_node_from_params",
-        "atan2f",
         "audio_sample_destroy",
         "audio_stream_destroy",
         "audio_stream_get_frequency",

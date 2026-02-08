@@ -7,8 +7,8 @@ Prioritization:
 
 ## P1 - `sm64coopdx/src/pc/lua/smlua_functions_autogen.c`
 
-- Missing symbols: 1808
+- Missing symbols: 1800
 - Referenced by built-in mods: none
-- Symbol preview: `act_select_hud_hide`, `act_select_hud_is_hidden`, `act_select_hud_show`, `anim_spline_init`, `anim_spline_poll`, `apply_landing_accel`, `apply_platform_displacement`, `apply_slope_accel`, `apply_slope_decel`, `apply_water_current`, `approach_camera_height`, `arc_to_goal_pos`, `area_create_warp_node`, `area_get_any_warp_node`, `area_get_warp_node`, `area_get_warp_node_from_params`, `atan2f`, `audio_sample_destroy`, `audio_stream_destroy`, `audio_stream_get_frequency`, `audio_stream_get_looping`, `audio_stream_get_position`, `audio_stream_get_tempo`, `audio_stream_get_volume`, `audio_stream_pause`
-- ... plus 1783 more
+- Symbol preview: `anim_spline_init`, `anim_spline_poll`, `apply_platform_displacement`, `apply_water_current`, `approach_camera_height`, `area_create_warp_node`, `area_get_any_warp_node`, `area_get_warp_node`, `area_get_warp_node_from_params`, `audio_sample_destroy`, `audio_stream_destroy`, `audio_stream_get_frequency`, `audio_stream_get_looping`, `audio_stream_get_position`, `audio_stream_get_tempo`, `audio_stream_get_volume`, `audio_stream_pause`, `audio_stream_set_position`, `audio_stream_set_speed`, `audio_stream_set_tempo`, `begin_braking_action`, `begin_walking_action`, `bhv_1up_common_init`, `bhv_1up_hidden_in_pole_loop`, `bhv_1up_hidden_in_pole_spawner_loop`
+- ... plus 1775 more
 

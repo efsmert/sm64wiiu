@@ -6,9 +6,9 @@
 ## Lua Symbol Parity
 
 - Donor registered globals: **2007**
-- Wii U registered globals: **204**
-- Shared globals: **199**
-- Missing on Wii U: **1808**
+- Wii U registered globals: **212**
+- Shared globals: **207**
+- Missing on Wii U: **1800**
 - Wii U-only globals: **5**
 
 ### Missing Globals Used By Current Wii U Built-In Mods
@@ -41,4 +41,4 @@
 
 ## High-Level Phase 1 Queue
 
-- P1 `sm64coopdx/src/pc/lua/smlua_functions_autogen.c`: 1808 missing symbols
+- P1 `sm64coopdx/src/pc/lua/smlua_functions_autogen.c`: 1800 missing symbols

@@ -59,6 +59,11 @@ static const char *SMLUA_MODAUDIO_METATABLE = "SM64.ModAudio";
 static const char *SMLUA_GRAPH_ROOT_METATABLE = "SM64.GraphNodeRoot";
 static const char *sActiveScriptPath = NULL;
 
+// Exposes the active Lua VM for subsystems that need a stable runtime pointer.
+lua_State *smlua_get_state(void) {
+    return sLuaState;
+}
+
 #ifndef BACKGROUND_CUSTOM
 #define BACKGROUND_CUSTOM 10
 #endif
@@ -158,6 +163,7 @@ static bool sLuaCameraFrozen = false;
 static bool sLuaHudHidden = false;
 static s32 sLuaHudSavedFlags = HUD_DISPLAY_DEFAULT;
 static s8 sLuaHudFlash = 0;
+static s32 sLuaActSelectHudMask = 0;
 
 struct SmluaSequenceOverride {
     bool active;
@@ -177,6 +183,8 @@ extern char gSmluaConstants[];
 static void smlua_script_budget_hook(lua_State *L, lua_Debug *ar);
 static void smlua_update_budget_hook(lua_State *L, lua_Debug *ar);
 static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L);
+static void smlua_extract_mod_relative_path(const char *script_path, char *out, size_t out_size);
+static void smlua_format_mod_display_name(const char *relative_path, char *out, size_t out_size);
 
 #define SMLUA_SCRIPT_LOAD_INSTRUCTION_BUDGET 10000000
 #define SMLUA_UPDATE_INSTRUCTION_BUDGET 5000000
@@ -4123,6 +4131,114 @@ static int smlua_func_obj_get_next_with_same_behavior_id(lua_State *L) {
     return 1;
 }
 
+// Converts an active root script path into the relative mod id used by Lua mods.
+static void smlua_extract_mod_relative_path(const char *script_path, char *out, size_t out_size) {
+    const char *start;
+    size_t len;
+
+    if (out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    if (script_path == NULL || script_path[0] == '\0') {
+        return;
+    }
+
+    start = script_path;
+    if (strncmp(start, "mods/", 5) == 0) {
+        start += 5;
+    }
+
+    len = strlen(start);
+    if (len >= 9 && strcmp(start + len - 9, "/main.lua") == 0) {
+        len -= 9;
+    } else if (len >= 10 && strcmp(start + len - 10, "/main.luac") == 0) {
+        len -= 10;
+    } else if (len >= 4 && strcmp(start + len - 4, ".lua") == 0) {
+        len -= 4;
+    } else if (len >= 5 && strcmp(start + len - 5, ".luac") == 0) {
+        len -= 5;
+    }
+
+    if (len == 0) {
+        return;
+    }
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
+// Formats a readable mod name from a relative mod id.
+static void smlua_format_mod_display_name(const char *relative_path, char *out, size_t out_size) {
+    bool capitalize = true;
+    size_t pos = 0;
+
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    if (relative_path == NULL || relative_path[0] == '\0') {
+        snprintf(out, out_size, "Unknown Mod");
+        return;
+    }
+
+    for (size_t i = 0; relative_path[i] != '\0' && pos + 1 < out_size; i++) {
+        char c = relative_path[i];
+        if (c == '-' || c == '_' || c == '/') {
+            out[pos++] = ' ';
+            capitalize = true;
+            continue;
+        }
+        if (capitalize && c >= 'a' && c <= 'z') {
+            out[pos++] = (char)(c - ('a' - 'A'));
+        } else {
+            out[pos++] = c;
+        }
+        capitalize = false;
+    }
+    out[pos] = '\0';
+}
+
+// Applies known Co-op DX mod metadata names/categories for built-in Wii U bundles.
+static void smlua_apply_known_mod_metadata(const char *relative_path, char *name, size_t name_size,
+                                           const char **category) {
+    if (relative_path == NULL || name == NULL || category == NULL) {
+        return;
+    }
+
+    if (strcmp(relative_path, "character-select-coop") == 0) {
+        snprintf(name, name_size, "Character Select");
+        *category = "cs";
+        return;
+    }
+    if (strcmp(relative_path, "char-select-the-originals") == 0) {
+        snprintf(name, name_size, "[CS] The Originals");
+        *category = "cs";
+        return;
+    }
+    if (strcmp(relative_path, "day-night-cycle") == 0) {
+        snprintf(name, name_size, "Day Night Cycle");
+        return;
+    }
+    if (strcmp(relative_path, "faster-swimming") == 0) {
+        snprintf(name, name_size, "Faster Swimming");
+        return;
+    }
+    if (strcmp(relative_path, "personal-starcount-ex") == 0) {
+        snprintf(name, name_size, "Personal Starcount");
+        return;
+    }
+    if (strcmp(relative_path, "cheats") == 0) {
+        snprintf(name, name_size, "Cheats");
+        return;
+    }
+}
+
 // Initializes lightweight globals expected by built-in mods (`gTextures.star`, etc).
 static void smlua_bind_minimal_globals(lua_State *L) {
     lua_newtable(L);
@@ -4141,23 +4257,34 @@ static void smlua_bind_minimal_globals(lua_State *L) {
     lua_setglobal(L, "gTextures");
 
     lua_newtable(L);
-    lua_newtable(L);
-    lua_pushstring(L, "Character Select");
-    lua_setfield(L, -2, "name");
-    lua_pushstring(L, "character-select-coop");
-    lua_setfield(L, -2, "relativePath");
-    lua_pushstring(L, "cs");
-    lua_setfield(L, -2, "category");
-    lua_rawseti(L, -2, 0);
+    size_t script_count = mods_get_active_script_count();
+    for (size_t i = 0; i < script_count; i++) {
+        const char *script_path = mods_get_active_script_path(i);
+        char relative_path[128];
+        char display_name[128];
+        const char *category = "";
 
-    lua_newtable(L);
-    lua_pushstring(L, "Character Select");
-    lua_setfield(L, -2, "name");
-    lua_pushstring(L, "character-select-coop");
-    lua_setfield(L, -2, "relativePath");
-    lua_pushstring(L, "cs");
-    lua_setfield(L, -2, "category");
-    lua_rawseti(L, -2, 1);
+        smlua_extract_mod_relative_path(script_path, relative_path, sizeof(relative_path));
+        if (relative_path[0] == '\0') {
+            continue;
+        }
+        smlua_format_mod_display_name(relative_path, display_name, sizeof(display_name));
+        smlua_apply_known_mod_metadata(relative_path, display_name, sizeof(display_name), &category);
+
+        if (strncmp(relative_path, "character-select", 16) == 0 ||
+            strncmp(relative_path, "char-select-", 12) == 0) {
+            category = "cs";
+        }
+
+        lua_newtable(L);
+        lua_pushstring(L, display_name);
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, relative_path);
+        lua_setfield(L, -2, "relativePath");
+        lua_pushstring(L, category);
+        lua_setfield(L, -2, "category");
+        lua_rawseti(L, -2, (lua_Integer)i);
+    }
     lua_setglobal(L, "gActiveMods");
 }
 
@@ -4518,6 +4645,88 @@ static int smlua_func_atan2s(lua_State *L) {
     f32 y = (f32)luaL_checknumber(L, 1);
     f32 x = (f32)luaL_checknumber(L, 2);
     lua_pushinteger(L, atan2s(y, x));
+    return 1;
+}
+
+// Co-op DX helper `atan2f(y, x)`.
+static int smlua_func_atan2f(lua_State *L) {
+    f32 y = (f32)luaL_checknumber(L, 1);
+    f32 x = (f32)luaL_checknumber(L, 2);
+    lua_pushnumber(L, atan2f(y, x));
+    return 1;
+}
+
+// Co-op DX helper `apply_slope_accel(m)`.
+static int smlua_func_apply_slope_accel(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        extern void apply_slope_accel(struct MarioState *m);
+        apply_slope_accel(m);
+    }
+    return 0;
+}
+
+// Co-op DX helper `apply_landing_accel(m, frictionFactor)`.
+static int smlua_func_apply_landing_accel(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    f32 friction_factor = (f32)luaL_checknumber(L, 2);
+    if (m == NULL) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    extern s32 apply_landing_accel(struct MarioState *m, f32 frictionFactor);
+    lua_pushinteger(L, apply_landing_accel(m, friction_factor));
+    return 1;
+}
+
+// Co-op DX helper `apply_slope_decel(m, decelCoef)`.
+static int smlua_func_apply_slope_decel(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    f32 decel_coef = (f32)luaL_checknumber(L, 2);
+    if (m == NULL) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    extern s32 apply_slope_decel(struct MarioState *m, f32 decelCoef);
+    lua_pushinteger(L, apply_slope_decel(m, decel_coef));
+    return 1;
+}
+
+// Co-op DX helper `arc_to_goal_pos(goal, pos, yVel, gravity)`.
+static int smlua_func_arc_to_goal_pos(lua_State *L) {
+    Vec3f goal = { 0.0f, 0.0f, 0.0f };
+    Vec3f pos = { 0.0f, 0.0f, 0.0f };
+    f32 y_vel = (f32)luaL_checknumber(L, 3);
+    f32 gravity = (f32)luaL_checknumber(L, 4);
+
+    if (!smlua_read_vec3_like(L, 1, goal) || !smlua_read_vec3_like(L, 2, pos)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    extern s32 arc_to_goal_pos(Vec3f goal, Vec3f pos, f32 yVel, f32 gravity);
+    lua_pushinteger(L, arc_to_goal_pos(goal, pos, y_vel, gravity));
+    return 1;
+}
+
+// Co-op DX helper `act_select_hud_hide(part)`.
+static int smlua_func_act_select_hud_hide(lua_State *L) {
+    s32 part = (s32)luaL_checkinteger(L, 1);
+    sLuaActSelectHudMask |= part;
+    return 0;
+}
+
+// Co-op DX helper `act_select_hud_show(part)`.
+static int smlua_func_act_select_hud_show(lua_State *L) {
+    s32 part = (s32)luaL_checkinteger(L, 1);
+    sLuaActSelectHudMask &= ~part;
+    return 0;
+}
+
+// Co-op DX helper `act_select_hud_is_hidden(part)`.
+static int smlua_func_act_select_hud_is_hidden(lua_State *L) {
+    s32 part = (s32)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, (sLuaActSelectHudMask & part) != 0);
     return 1;
 }
 
@@ -5070,6 +5279,14 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "sins", smlua_func_sins);
     smlua_set_global_function(L, "coss", smlua_func_coss);
     smlua_set_global_function(L, "atan2s", smlua_func_atan2s);
+    smlua_set_global_function(L, "atan2f", smlua_func_atan2f);
+    smlua_set_global_function(L, "apply_slope_accel", smlua_func_apply_slope_accel);
+    smlua_set_global_function(L, "apply_landing_accel", smlua_func_apply_landing_accel);
+    smlua_set_global_function(L, "apply_slope_decel", smlua_func_apply_slope_decel);
+    smlua_set_global_function(L, "arc_to_goal_pos", smlua_func_arc_to_goal_pos);
+    smlua_set_global_function(L, "act_select_hud_hide", smlua_func_act_select_hud_hide);
+    smlua_set_global_function(L, "act_select_hud_show", smlua_func_act_select_hud_show);
+    smlua_set_global_function(L, "act_select_hud_is_hidden", smlua_func_act_select_hud_is_hidden);
     smlua_set_global_function(L, "check_common_idle_cancels", smlua_func_check_common_idle_cancels);
     smlua_set_global_function(L, "stationary_ground_step", smlua_func_stationary_ground_step);
     smlua_set_global_function(L, "hud_get_flash", smlua_func_hud_get_flash);
@@ -6299,6 +6516,48 @@ static void smlua_run_script_with_companions(const char *script_path) {
     smlua_run_file(script_path);
 }
 
+#ifdef TARGET_WII_U
+// Logs hook/global snapshot so Cemu traces can confirm mods are truly active.
+static void smlua_log_runtime_hook_snapshot(lua_State *L, const char *phase) {
+    int version_number = -1;
+    bool char_select_exists = false;
+    int active_mods = 0;
+
+    if (L == NULL) {
+        return;
+    }
+
+    lua_getglobal(L, "VERSION_NUMBER");
+    if (lua_isinteger(L, -1)) {
+        version_number = (int)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "charSelectExists");
+    char_select_exists = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "gActiveMods");
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0) {
+            active_mods++;
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+
+    WHBLogPrintf("lua: snapshot[%s] ver=%d charSelectExists=%d activeMods=%d hooks{mods_loaded=%d update=%d mario_update=%d before_phys=%d hud=%d hud_behind=%d}",
+                 phase != NULL ? phase : "?", version_number, char_select_exists ? 1 : 0, active_mods,
+                 smlua_get_event_hook_count(HOOK_ON_MODS_LOADED),
+                 smlua_get_event_hook_count(HOOK_UPDATE),
+                 smlua_get_event_hook_count(HOOK_MARIO_UPDATE),
+                 smlua_get_event_hook_count(HOOK_BEFORE_PHYS_STEP),
+                 smlua_get_event_hook_count(HOOK_ON_HUD_RENDER),
+                 smlua_get_event_hook_count(HOOK_ON_HUD_RENDER_BEHIND));
+}
+#endif
+
 // Creates the Lua VM and loads active built-in scripts from the mod set.
 void smlua_init(void) {
     smlua_logf("lua: init begin");
@@ -6363,7 +6622,13 @@ void smlua_init(void) {
         smlua_run_script_with_companions(root_script);
     }
 
+#ifdef TARGET_WII_U
+    smlua_log_runtime_hook_snapshot(sLuaState, "pre_mods_loaded");
+#endif
     smlua_call_event_hooks(HOOK_ON_MODS_LOADED);
+#ifdef TARGET_WII_U
+    smlua_log_runtime_hook_snapshot(sLuaState, "post_mods_loaded");
+#endif
     smlua_refresh_mod_overlay_lines();
 
     smlua_logf("lua: initialized (%u scripts)", (unsigned)script_count);

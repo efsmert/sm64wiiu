@@ -73,6 +73,7 @@ enum LuaHookedEventType {
 
 void smlua_bind_hooks(lua_State *L);
 void smlua_clear_hooks(lua_State *L);
+int smlua_get_event_hook_count(enum LuaHookedEventType hook_type);
 bool smlua_call_event_hooks(enum LuaHookedEventType hook_type);
 bool smlua_call_event_hooks_warp(enum LuaHookedEventType hook_type, int warp_type, int level_num,
                                  int area_idx, int node_id, unsigned int warp_arg);

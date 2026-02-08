@@ -8,6 +8,8 @@
 extern "C" {
 #endif
 
+struct lua_State;
+
 struct SmluaLightingState {
     float lighting_dir[3];
     uint8_t lighting_color[3];
@@ -26,6 +28,7 @@ struct SmluaLightingState {
 void smlua_init(void);
 void smlua_update(void);
 void smlua_shutdown(void);
+struct lua_State *smlua_get_state(void);
 void smlua_render_mod_overlay(void);
 void smlua_get_lighting_state(struct SmluaLightingState *out_state);
 int16_t smlua_get_override_far(int16_t default_far);

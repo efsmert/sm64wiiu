@@ -9,6 +9,9 @@
 #include "interaction.h"
 #include "mario_step.h"
 #include "pc/lua/smlua_hooks.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 static s16 sMovingSandSpeeds[] = { 12, 8, 4, 0 };
 
@@ -325,7 +328,16 @@ s32 perform_ground_step(struct MarioState *m) {
     u32 stepResult;
     Vec3f intendedPos;
     s32 stepResultOverride = 0;
+#ifdef TARGET_WII_U
+    static bool sLoggedGroundStepProbe = false;
+#endif
 
+#ifdef TARGET_WII_U
+    if (!sLoggedGroundStepProbe) {
+        WHBLogPrintf("lua-probe: perform_ground_step entered");
+        sLoggedGroundStepProbe = true;
+    }
+#endif
     if (smlua_call_event_hooks_before_phys_step(m, STEP_TYPE_GROUND, 0, &stepResultOverride)) {
         return stepResultOverride;
     }

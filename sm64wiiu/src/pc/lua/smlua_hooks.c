@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 #include "sm64.h"
 #include "behavior_data.h"
 #include "game/mario.h"
 #include "game/object_list_processor.h"
 
+#include "smlua.h"
 #include "smlua_hooks.h"
 #include "smlua_cobject.h"
 #include <lauxlib.h>
@@ -18,7 +20,7 @@
 #define MAX_SYNC_TABLE_CHANGE_HOOKS 64
 #define MAX_MARIO_ACTION_HOOKS 128
 #define MAX_BEHAVIOR_HOOKS 64
-#define SMLUA_CALLBACK_INSTRUCTION_BUDGET 5000000
+#define SMLUA_CALLBACK_INSTRUCTION_BUDGET 20000000
 
 struct LuaHookedEvent {
     int references[MAX_HOOKED_REFERENCES];
@@ -30,6 +32,11 @@ static struct LuaHookedEvent sHookedEvents[HOOK_MAX];
 static int sNextModMenuHandle = 1;
 static bool sBeforePhysWaterHookCountLogged = false;
 static int sBeforePhysWaterVelChangeLogs = 0;
+static bool sHookDispatchLogged[HOOK_MAX] = { 0 };
+static bool sBeforePhysStepTypeLogged[4] = { false, false, false, false };
+static int sBeforePhysEarlyReturnLogs = 0;
+static bool sHookStateReboundLogged = false;
+static bool sHookStateUnavailableLogged = false;
 
 struct LuaSyncTableChangeHook {
     int tableRef;
@@ -77,6 +84,39 @@ static int sObjectSetModelDispatchDepth = 0;
 typedef void (*SmluaHookPushArgsFn)(lua_State *L, const void *ctx);
 typedef void (*SmluaHookReadResultsFn)(lua_State *L, void *ctx);
 
+// Keeps hook dispatch bound to the current Lua VM even after runtime reinit.
+static lua_State *smlua_resolve_hook_state(void) {
+    if (sHookState == NULL) {
+        sHookState = smlua_get_state();
+#ifdef TARGET_WII_U
+        if (sHookState != NULL && !sHookStateReboundLogged) {
+            WHBLogPrint("lua: hook state rebound from active VM");
+            sHookStateReboundLogged = true;
+        } else if (sHookState == NULL && !sHookStateUnavailableLogged) {
+            WHBLogPrint("lua: hook state unavailable (Lua VM null)");
+            sHookStateUnavailableLogged = true;
+        }
+#endif
+    }
+    return sHookState;
+}
+
+// Emits hook-runtime diagnostics to both stdout and Wii U OS console.
+static void smlua_hook_logf(const char *fmt, ...) {
+    va_list args;
+#ifdef TARGET_WII_U
+    char buffer[512];
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    WHBLogPrintf("%s", buffer);
+#endif
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    printf("\n");
+}
+
 // Aborts long-running Lua callbacks so one mod cannot hard-freeze frame/update loops.
 static void smlua_callback_budget_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
@@ -114,7 +154,7 @@ static int smlua_hook_event(lua_State *L) {
 
     struct LuaHookedEvent *hook = &sHookedEvents[hook_type];
     if (hook->count >= MAX_HOOKED_REFERENCES) {
-        printf("lua: hook '%d' exceeded max references\n", hook_type);
+        smlua_hook_logf("lua: hook '%d' exceeded max references", hook_type);
         return 0;
     }
 
@@ -147,7 +187,7 @@ static int smlua_hook_on_sync_table_change(lua_State *L) {
         return 0;
     }
     if (sSyncTableChangeHookCount >= MAX_SYNC_TABLE_CHANGE_HOOKS) {
-        printf("lua: sync-table hook exceeded max references\n");
+        smlua_hook_logf("lua: sync-table hook exceeded max references");
         return 0;
     }
 
@@ -269,7 +309,7 @@ static int smlua_hook_mario_action(lua_State *L) {
         return 0;
     }
     if (sMarioActionHookCount >= MAX_MARIO_ACTION_HOOKS) {
-        printf("lua: mario action hook exceeded max references\n");
+        smlua_hook_logf("lua: mario action hook exceeded max references");
         return 0;
     }
 
@@ -294,7 +334,7 @@ static int smlua_hook_behavior(lua_State *L) {
         return 0;
     }
     if (sBehaviorHookCount >= MAX_BEHAVIOR_HOOKS) {
-        printf("lua: behavior hook exceeded max references\n");
+        smlua_hook_logf("lua: behavior hook exceeded max references");
         return 0;
     }
 
@@ -339,7 +379,8 @@ static int smlua_hook_behavior(lua_State *L) {
 static bool smlua_dispatch_hook_callbacks(enum LuaHookedEventType hook_type, int arg_count, int result_count,
                                           SmluaHookPushArgsFn push_args, const void *arg_ctx,
                                           SmluaHookReadResultsFn read_results, void *result_ctx) {
-    if (sHookState == NULL || hook_type < 0 || hook_type >= HOOK_MAX) {
+    lua_State *L = smlua_resolve_hook_state();
+    if (L == NULL || hook_type < 0 || hook_type >= HOOK_MAX) {
         return false;
     }
 
@@ -347,33 +388,40 @@ static bool smlua_dispatch_hook_callbacks(enum LuaHookedEventType hook_type, int
     bool called = false;
 
     for (int i = 0; i < hook->count; i++) {
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->references[i]);
-        if (!lua_isfunction(sHookState, -1)) {
-            lua_pop(sHookState, 1);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, hook->references[i]);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
             continue;
         }
 
         if (push_args != NULL) {
-            push_args(sHookState, arg_ctx);
+            push_args(L, arg_ctx);
         }
 
-        if (smlua_pcall_with_budget(sHookState, arg_count, result_count) != LUA_OK) {
-            const char *error = lua_tostring(sHookState, -1);
-            printf("lua: hook %d failed: %s\n", hook_type, error != NULL ? error : "<unknown>");
-            lua_pop(sHookState, 1);
+        if (smlua_pcall_with_budget(L, arg_count, result_count) != LUA_OK) {
+            const char *error = lua_tostring(L, -1);
+            smlua_hook_logf("lua: hook %d failed: %s", hook_type, error != NULL ? error : "<unknown>");
+            lua_pop(L, 1);
             continue;
         }
 
         if (read_results != NULL) {
-            read_results(sHookState, result_ctx);
+            read_results(L, result_ctx);
         }
 
         if (result_count > 0) {
-            lua_pop(sHookState, result_count);
+            lua_pop(L, result_count);
         }
 
         called = true;
     }
+
+#ifdef TARGET_WII_U
+    if (called && !sHookDispatchLogged[hook_type]) {
+        WHBLogPrintf("lua: hook dispatch type=%d callbacks=%d", hook_type, hook->count);
+        sHookDispatchLogged[hook_type] = true;
+    }
+#endif
 
     return called;
 }
@@ -531,7 +579,22 @@ bool smlua_call_event_hooks_mario(enum LuaHookedEventType hook_type, const void 
 // Dispatches pre-physics hooks with step metadata and supports optional result override.
 bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_type,
                                              unsigned int step_arg, int *step_result_override) {
-    if (sHookState == NULL || mario_state == NULL) {
+    lua_State *L = smlua_resolve_hook_state();
+#ifdef TARGET_WII_U
+    if (step_type >= 0 && step_type < (int)(sizeof(sBeforePhysStepTypeLogged) / sizeof(sBeforePhysStepTypeLogged[0])) &&
+        !sBeforePhysStepTypeLogged[step_type]) {
+        WHBLogPrintf("lua: before_phys entry step_type=%d hook_state=%p mario=%p",
+                     step_type, (void *)L, mario_state);
+    }
+#endif
+    if (L == NULL || mario_state == NULL) {
+#ifdef TARGET_WII_U
+        if (sBeforePhysEarlyReturnLogs < 8) {
+            WHBLogPrintf("lua: before_phys early return hook_state=%p mario=%p",
+                         (void *)L, mario_state);
+            sBeforePhysEarlyReturnLogs++;
+        }
+#endif
         return false;
     }
 
@@ -540,6 +603,11 @@ bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_t
     const bool log_water_step = (step_type == STEP_TYPE_WATER);
 
 #ifdef TARGET_WII_U
+    if (step_type >= 0 && step_type < (int)(sizeof(sBeforePhysStepTypeLogged) / sizeof(sBeforePhysStepTypeLogged[0])) &&
+        !sBeforePhysStepTypeLogged[step_type]) {
+        WHBLogPrintf("lua: before_phys step_type=%d hooks=%d", step_type, hook->count);
+        sBeforePhysStepTypeLogged[step_type] = true;
+    }
     if (log_water_step && !sBeforePhysWaterHookCountLogged) {
         WHBLogPrintf("lua: before_phys water hooks=%d", hook->count);
         sBeforePhysWaterHookCountLogged = true;
@@ -548,9 +616,9 @@ bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_t
 
     for (int i = 0; i < hook->count; i++) {
         f32 vel_before[3];
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->references[i]);
-        if (!lua_isfunction(sHookState, -1)) {
-            lua_pop(sHookState, 1);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, hook->references[i]);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
             continue;
         }
 
@@ -560,14 +628,15 @@ bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_t
             vel_before[2] = mario->vel[2];
         }
 
-        smlua_push_mario_state(sHookState, mario_state);
-        lua_pushinteger(sHookState, step_type);
-        lua_pushinteger(sHookState, (lua_Integer)step_arg);
+        smlua_push_mario_state(L, mario_state);
+        lua_pushinteger(L, step_type);
+        lua_pushinteger(L, (lua_Integer)step_arg);
 
-        if (smlua_pcall_with_budget(sHookState, 3, 1) != LUA_OK) {
-            const char *error = lua_tostring(sHookState, -1);
-            printf("lua: hook %d failed: %s\n", HOOK_BEFORE_PHYS_STEP, error != NULL ? error : "<unknown>");
-            lua_pop(sHookState, 1);
+        if (smlua_pcall_with_budget(L, 3, 1) != LUA_OK) {
+            const char *error = lua_tostring(L, -1);
+            smlua_hook_logf("lua: hook %d failed: %s", HOOK_BEFORE_PHYS_STEP,
+                            error != NULL ? error : "<unknown>");
+            lua_pop(L, 1);
             continue;
         }
 
@@ -584,15 +653,15 @@ bool smlua_call_event_hooks_before_phys_step(const void *mario_state, int step_t
             }
         }
 
-        if (lua_isnumber(sHookState, -1)) {
+        if (lua_isnumber(L, -1)) {
             if (step_result_override != NULL) {
-                *step_result_override = (int)lua_tointeger(sHookState, -1);
+                *step_result_override = (int)lua_tointeger(L, -1);
             }
-            lua_pop(sHookState, 1);
+            lua_pop(L, 1);
             return true;
         }
 
-        lua_pop(sHookState, 1);
+        lua_pop(L, 1);
     }
 
     return false;
@@ -638,10 +707,11 @@ void smlua_call_event_hooks_object_set_model(const void *object, int model_id) {
 
 // Executes hook_mario_action callbacks for the current action and returns override in-loop state.
 bool smlua_call_mario_action_hook(const void *mario_state, int *in_loop) {
+    lua_State *L = smlua_resolve_hook_state();
     struct MarioState *m = (struct MarioState *)mario_state;
     bool called = false;
 
-    if (sHookState == NULL || m == NULL) {
+    if (L == NULL || m == NULL) {
         return false;
     }
 
@@ -651,29 +721,29 @@ bool smlua_call_mario_action_hook(const void *mario_state, int *in_loop) {
             continue;
         }
 
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->callbackRef);
-        if (!lua_isfunction(sHookState, -1)) {
-            lua_pop(sHookState, 1);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, hook->callbackRef);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
             continue;
         }
 
-        smlua_push_mario_state(sHookState, m);
-        if (smlua_pcall_with_budget(sHookState, 1, 1) != LUA_OK) {
-            const char *error = lua_tostring(sHookState, -1);
-            printf("lua: mario action hook failed: %s\n", error != NULL ? error : "<unknown>");
-            lua_pop(sHookState, 1);
+        smlua_push_mario_state(L, m);
+        if (smlua_pcall_with_budget(L, 1, 1) != LUA_OK) {
+            const char *error = lua_tostring(L, -1);
+            smlua_hook_logf("lua: mario action hook failed: %s", error != NULL ? error : "<unknown>");
+            lua_pop(L, 1);
             continue;
         }
 
         if (in_loop != NULL) {
-            if (lua_isnumber(sHookState, -1)) {
-                *in_loop = (int)lua_tointeger(sHookState, -1);
-            } else if (lua_isboolean(sHookState, -1)) {
-                *in_loop = lua_toboolean(sHookState, -1) ? 1 : 0;
+            if (lua_isnumber(L, -1)) {
+                *in_loop = (int)lua_tointeger(L, -1);
+            } else if (lua_isboolean(L, -1)) {
+                *in_loop = lua_toboolean(L, -1) ? 1 : 0;
             }
         }
 
-        lua_pop(sHookState, 1);
+        lua_pop(L, 1);
         called = true;
     }
 
@@ -682,7 +752,8 @@ bool smlua_call_mario_action_hook(const void *mario_state, int *in_loop) {
 
 // Executes hook_behavior callbacks by iterating active objects and matching behavior pointers.
 void smlua_call_behavior_hooks(void) {
-    if (sHookState == NULL || gObjectLists == NULL) {
+    lua_State *L = smlua_resolve_hook_state();
+    if (L == NULL || gObjectLists == NULL) {
         return;
     }
 
@@ -716,32 +787,32 @@ void smlua_call_behavior_hooks(void) {
 
                 if (obj->activeFlags != ACTIVE_FLAG_DEACTIVATED && obj->behavior == targetBehavior) {
                     if (hook->initRef != LUA_NOREF && obj->oTimer == 0) {
-                        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->initRef);
-                        if (lua_isfunction(sHookState, -1)) {
-                            smlua_push_object(sHookState, obj);
-                            if (smlua_pcall_with_budget(sHookState, 1, 0) != LUA_OK) {
-                                const char *error = lua_tostring(sHookState, -1);
-                                printf("lua: behavior init hook failed: %s\n",
-                                       error != NULL ? error : "<unknown>");
-                                lua_pop(sHookState, 1);
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, hook->initRef);
+                        if (lua_isfunction(L, -1)) {
+                            smlua_push_object(L, obj);
+                            if (smlua_pcall_with_budget(L, 1, 0) != LUA_OK) {
+                                const char *error = lua_tostring(L, -1);
+                                smlua_hook_logf("lua: behavior init hook failed: %s",
+                                                error != NULL ? error : "<unknown>");
+                                lua_pop(L, 1);
                             }
                         } else {
-                            lua_pop(sHookState, 1);
+                            lua_pop(L, 1);
                         }
                     }
 
                     if (hook->loopRef != LUA_NOREF) {
-                        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, hook->loopRef);
-                        if (lua_isfunction(sHookState, -1)) {
-                            smlua_push_object(sHookState, obj);
-                            if (smlua_pcall_with_budget(sHookState, 1, 0) != LUA_OK) {
-                                const char *error = lua_tostring(sHookState, -1);
-                                printf("lua: behavior loop hook failed: %s\n",
-                                       error != NULL ? error : "<unknown>");
-                                lua_pop(sHookState, 1);
+                        lua_rawgeti(L, LUA_REGISTRYINDEX, hook->loopRef);
+                        if (lua_isfunction(L, -1)) {
+                            smlua_push_object(L, obj);
+                            if (smlua_pcall_with_budget(L, 1, 0) != LUA_OK) {
+                                const char *error = lua_tostring(L, -1);
+                                smlua_hook_logf("lua: behavior loop hook failed: %s",
+                                                error != NULL ? error : "<unknown>");
+                                lua_pop(L, 1);
                             }
                         } else {
-                            lua_pop(sHookState, 1);
+                            lua_pop(L, 1);
                         }
                     }
                 }
@@ -754,7 +825,8 @@ void smlua_call_behavior_hooks(void) {
 
 // Polls watched sync-table keys and dispatches callbacks when values change.
 void smlua_poll_sync_table_change_hooks(void) {
-    if (sHookState == NULL) {
+    lua_State *L = smlua_resolve_hook_state();
+    if (L == NULL) {
         return;
     }
 
@@ -764,43 +836,51 @@ void smlua_poll_sync_table_change_hooks(void) {
             continue;
         }
 
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, watch->tableRef);
-        if (!lua_istable(sHookState, -1)) {
-            lua_pop(sHookState, 1);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, watch->tableRef);
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
             continue;
         }
 
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, watch->keyRef);
-        lua_gettable(sHookState, -2);
-        int currentValueIndex = lua_gettop(sHookState);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, watch->keyRef);
+        lua_gettable(L, -2);
+        int currentValueIndex = lua_gettop(L);
 
-        lua_rawgeti(sHookState, LUA_REGISTRYINDEX, watch->prevValueRef);
-        int previousValueIndex = lua_gettop(sHookState);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, watch->prevValueRef);
+        int previousValueIndex = lua_gettop(L);
 
-        bool changed = !lua_compare(sHookState, currentValueIndex, previousValueIndex, LUA_OPEQ);
+        bool changed = !lua_compare(L, currentValueIndex, previousValueIndex, LUA_OPEQ);
         if (changed) {
-            lua_rawgeti(sHookState, LUA_REGISTRYINDEX, watch->funcRef);
-            if (lua_isfunction(sHookState, -1)) {
-                lua_rawgeti(sHookState, LUA_REGISTRYINDEX, watch->tagRef);
-                lua_pushvalue(sHookState, previousValueIndex);
-                lua_pushvalue(sHookState, currentValueIndex);
+            lua_rawgeti(L, LUA_REGISTRYINDEX, watch->funcRef);
+            if (lua_isfunction(L, -1)) {
+                lua_rawgeti(L, LUA_REGISTRYINDEX, watch->tagRef);
+                lua_pushvalue(L, previousValueIndex);
+                lua_pushvalue(L, currentValueIndex);
 
-                if (smlua_pcall_with_budget(sHookState, 3, 0) != LUA_OK) {
-                    const char *error = lua_tostring(sHookState, -1);
-                    printf("lua: sync-table hook failed: %s\n", error != NULL ? error : "<unknown>");
-                    lua_pop(sHookState, 1);
+                if (smlua_pcall_with_budget(L, 3, 0) != LUA_OK) {
+                    const char *error = lua_tostring(L, -1);
+                    smlua_hook_logf("lua: sync-table hook failed: %s", error != NULL ? error : "<unknown>");
+                    lua_pop(L, 1);
                 }
             } else {
-                lua_pop(sHookState, 1);
+                lua_pop(L, 1);
             }
 
-            smlua_unref_registry_ref(sHookState, &watch->prevValueRef);
-            lua_pushvalue(sHookState, currentValueIndex);
-            watch->prevValueRef = luaL_ref(sHookState, LUA_REGISTRYINDEX);
+            smlua_unref_registry_ref(L, &watch->prevValueRef);
+            lua_pushvalue(L, currentValueIndex);
+            watch->prevValueRef = luaL_ref(L, LUA_REGISTRYINDEX);
         }
 
-        lua_pop(sHookState, 3);
+        lua_pop(L, 3);
     }
+}
+
+// Exposes current callback count for one hook event type.
+int smlua_get_event_hook_count(enum LuaHookedEventType hook_type) {
+    if (hook_type < 0 || hook_type >= HOOK_MAX) {
+        return 0;
+    }
+    return sHookedEvents[hook_type].count;
 }
 
 // Unrefs all callback functions for all hook categories.
@@ -851,12 +931,18 @@ void smlua_clear_hooks(lua_State *L) {
     sBehaviorHookCount = 0;
     sBeforePhysWaterHookCountLogged = false;
     sBeforePhysWaterVelChangeLogs = 0;
+    sBeforePhysEarlyReturnLogs = 0;
+    sHookStateReboundLogged = false;
+    sHookStateUnavailableLogged = false;
+    memset(sHookDispatchLogged, 0, sizeof(sHookDispatchLogged));
+    memset(sBeforePhysStepTypeLogged, 0, sizeof(sBeforePhysStepTypeLogged));
+    sHookState = NULL;
 }
 
 // Registers hook API and event constants in Lua.
 void smlua_bind_hooks(lua_State *L) {
-    sHookState = L;
     smlua_clear_hooks(L);
+    sHookState = L;
 
     lua_pushcfunction(L, smlua_hook_event);
     lua_setglobal(L, "hook_event");
