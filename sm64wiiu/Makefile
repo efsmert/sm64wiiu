@@ -337,7 +337,7 @@ SRC_DIRS := src src/engine src/game src/audio src/menu src/buffers actors levels
 ifeq ($(TARGET_N64),1)
   SRC_DIRS += asm lib
 else
-  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/mods src/pc/djui
+  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/mods src/pc/djui src/pc/utils
 endif
 BIN_DIRS := bin bin/$(VERSION)
 
@@ -709,9 +709,9 @@ load: $(ROM)
 libultra: $(BUILD_DIR)/libultra.a
 
 ifeq ($(TARGET_WII_U),1)
-$(WUHB): $(EXE)
+$(WUHB): sync-builtin-mod-assets $(EXE)
 	@$(PRINT) "$(GREEN)Packing WUHB:  $(BLUE)$@ $(NO_COL)\n"
-	$(V)wuhbtool $< $@ \
+	$(V)wuhbtool $(EXE) $@ \
 		--name="$(WUHB_NAME)" \
 		--short-name="$(WUHB_SHORT_NAME)" \
 		--author="$(WUHB_AUTHOR)" \
@@ -719,10 +719,10 @@ $(WUHB): $(EXE)
 
 wuhb: $(WUHB)
 
-cemu-sync: $(EXE)
+cemu-sync: sync-builtin-mod-assets $(EXE)
 	@$(PRINT) "$(GREEN)Syncing RPX for Cemu:  $(BLUE)$(CEMU_SYNC_RPX) $(NO_COL)\n"
 	$(V)mkdir -p $(dir $(CEMU_SYNC_RPX))
-	$(V)cp $< $(CEMU_SYNC_RPX)
+	$(V)cp $(EXE) $(CEMU_SYNC_RPX)
 	@if [ -d "$(WUHB_CONTENT_DIR)" ]; then \
 		$(PRINT) "$(GREEN)Syncing content for Cemu:  $(BLUE)$(CEMU_SYNC_CONTENT) $(NO_COL)\n"; \
 		mkdir -p "$(CEMU_SYNC_CONTENT)"; \

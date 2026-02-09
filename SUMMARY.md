@@ -168,11 +168,25 @@ make -C sm64wiiu wuhb
 - Hardened active legacy menu input path against repeated face-button activations by deriving menu `pressed` edges from `buttonDown` transitions and persisting per-frame last-button state, so transient `buttonPressed` anomalies on Wii U no longer chain unintended A/B menu actions.
 - Added donor-stack panel-transition input masking (ignore held A/B until release) plus C-button dpad support in the interactable path so Wii U D-pad mapping navigates correctly and held inputs no longer chain unintended panel transitions.
 - Reworked donor `three_panel`/`flow_layout` composition wiring to remove duplicate child-layer creation and align menu panel/body placement with Co-op DX panel-stack semantics; added extra donor-interactable release masking and an in-loop Mario input clamp while main menu is active.
+- Expanded donor DJUI compile/runtime surface to include broad panel/widget coverage (`checkbox`, `slider`, `selectionbox`, `inputbox`, `image`, `progress`, `paginated`, `bind`, host/join/options/player/modlist/pause/language/rules panels) and added Wii U-safe compatibility shims across missing donor subsystems (`pc/network`, `pc/mods`, `pc/lua/utils`, `pc/{ini,thread,update_checker,debuglog}`, DynOS/map helpers) so donor UI paths remain visible without backend crashes.
+- Completed donor DJUI link/runtime wiring fixes for Wii U parity: restored donor global state symbols (`gDjuiRoot`, pause/mod labels, theme/shutdown/player-menu flags), added root assignment safety, exposed missing render/runtime symbols (`gRenderingInterpolated`, `gChangeLevelTransition`, `gd_texture_hand_open`), exported required HUD textures through `bin/custom_textures.c`, and added a local `hmap_*` implementation used by donor unicode paths; both `make` and `wuhb` now pass with donor stack default-enabled and legacy runtime toggle still available.
+- Fixed donor DJUI texture-format fallback and donor render-path init state on Wii U: fallback texture override now handles 32b assets correctly (logo/fonts), donor render now applies shared DJUI HUD/display-list setup, and viewport reset is mapped to Wii U’s `D_8032CF00` symbol to avoid unresolved fullscreen viewport references.
+- Replaced donor DJUI fallback-macro emulation with donor custom GBI command support on Wii U (`gbi_extension` + `gfx_pc.c` handlers for `G_TEXOVERRIDE_DJUI`, `G_TEXCLIP_DJUI`, `G_EXECUTE_DJUI`, `G_TEXADDR_DJUI`, `G_VTX_EXT`, `G_TRI2_EXT`) and added direct large-atlas override upload path to prevent first-frame `gfx_run_dl` stalls/hangs from invalid/oversized placeholder texture imports.
+- Synced donor DJUI language payload into packaged Wii U content (`content/lang`) and bound Wii U `sys_resource_path()` to `/vol/content`, so donor language/panel lookups resolve from mounted WUHB assets instead of cwd-dependent paths.
+- Added renderer display-list guardrails (`gfx_run_dl` depth/command budget + branch/null abort diagnostics) to prevent hard hangs when malformed/recursive display-list chains are encountered during donor DJUI bring-up.
+- Restored donor interactable controller feed in the Wii U input path by routing `osContGetReadData()` to `gInteractablePad` when `gInteractableOverridePad` is active, so donor DJUI panel navigation can consume pad input again.
+- Corrected Wii U controller backend selection in `controller_entry_point` (use `TARGET_WII_U` path instead of accidentally falling through `__WIIU__` mismatch), so Wii U builds initialize/read `controller_wiiu` rather than SDL in donor DJUI menu flow.
+- Mapped donor join actions to deterministic Wii U stub behavior: client join availability is now surfaced through `network_client_available()`, join-direct/lobby actions fail fast with donor error UI instead of entering reconnect wait loops, and join panels disable unavailable client actions while retaining navigation/back flow.
+- Re-aligned donor main-panel quit label to `MAIN.QUIT` (donor key) after renderer glyph clipping/override fixes removed the malformed lower-case glyph path on Wii U.
+- Aligned Wii U DJUI compatibility defaults with donor visuals by setting default DJUI theme to dark (`configDjuiTheme = 1`), so first-boot panel styling matches Co-op DX.
+- Hardened donor DJUI glyph stability on Wii U by clamping/rounding per-char texture clip percentages and adding a small glyph clip margin, plus syncing override texture metadata (`fmt/siz/line_size_bytes`) after DJUI override uploads so text-at-edge rows (`BACK`/`QUIT` and selectionbox values) avoid clip artifacts and stale tile state.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
 - Runtime `.m64` injection in `smlua_audio_utils_replace_sequence` remains guarded for stability; sequence aliasing remains enabled.
 - Companion loading prioritizes deterministic fallback lists for known built-ins when applicable.
+- Donor DJUI now depends on donor GBI-extension opcode handling in the renderer; fallback `gDPLoadTextureBlock` emulation for texture override is considered unstable for Wii U donor atlases.
+- Wii U network stubs intentionally reject `NT_CLIENT`; donor join flows must gate on `network_client_available()` and provide immediate UI error feedback to avoid indefinite “joining” waits.
 
 ## 7) Known Gotchas
 - Wii U is big-endian; apply byte swaps where required.
@@ -180,13 +194,17 @@ make -C sm64wiiu wuhb
 - ProcUI/WHB lifecycle correctness is mandatory for HOME/background stability.
 - `WHBLogPrint` is non-variadic; use `WHBLogPrintf` for formatted logs.
 - Build success does not guarantee runtime stability; validate startup and gameplay paths.
+- Donor DJUI `gDPSetTextureOverrideDjui` cannot be safely emulated via vanilla `gDPLoadTextureBlock` for large font/logo atlases; use opcode-executed override upload in `gfx_pc.c` or menu rendering can corrupt/hang on frame 1.
+- Donor DJUI language files must be present in WUHB mounted content (`/vol/content/lang/*.ini`); if `content/lang` is stale/missing, UI falls back to raw keys and panel text can look wrong.
+- Without explicit client-availability checks, donor join panels can enter `JOIN MESSAGE` wait state forever on Wii U stubs; fail fast and surface `LOBBY_JOIN_FAILED` instead.
+- Donor DJUI clip commands are encoded as 0..255 percentages; on Wii U float-space drift can push values slightly out of range and wrap on `u8` conversion, causing blocky/missing glyphs near panel bounds unless values are clamped before emit/consume.
 
 ## 8) Remaining Work / Next Focus
 - Continue non-network gameplay/mod parity with stability-first validation.
 - Expand missing Lua API/cobject coverage when runtime behavior proves necessity.
 - Continue Phase 1 against generated parity queue (`parity/phase1_lua_port_queue.md`), prioritizing donor autogen Lua coverage and hook callsite parity.
-- Continue DJUI parity slices: replace scaffold with donor panel stack/root renderer and port main/join/lobbies flows incrementally.
-- Replace temporary Wii U text-overlay DJUI shell with direct donor `src/pc/djui` panel framework parity (`djui_panel_main`, `djui_panel_join`, `djui_panel_modlist`, menu transitions/cursor/input semantics).
+- Validate donor-default DJUI runtime in Cemu/hardware across all major panels/widgets (including host/join stub flows) and collect crash/log findings before removing remaining legacy assumptions.
+- Continue donor backend parity hardening for panel behavior and settings persistence while keeping legacy runtime toggle as safety fallback until donor stack is proven stable on Wii U.
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
 
@@ -333,6 +351,54 @@ Notes:
   - files: sm64wiiu/src/pc/djui/djui_cursor.c, sm64wiiu/src/pc/djui/djui_three_panel.c, SUMMARY.md
   - validation: `make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
   - outcome: build + wuhb succeed; dpad/analog navigation should no longer be one-way, and row stack spacing should be more stable against panel padding.
+- DJUI donor parity bulk sync + Wii U compatibility bridge: imported and wired donor DJUI modules broadly, added missing subsystem shims and symbol adapters (network/mods/lua utils/ini-thread-update helpers, DynOS map helpers, donor globals/texture/runtime symbols), and resolved final linker blockers so donor-default path and packaging both build cleanly again.
+  - files: sm64wiiu/src/pc/djui/*, sm64wiiu/src/pc/network/*, sm64wiiu/src/pc/mods/*, sm64wiiu/src/pc/lua/utils/*, sm64wiiu/src/pc/utils/hmap.c, sm64wiiu/src/game/level_update.c, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/goddard/renderer.c, sm64wiiu/bin/custom_textures.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4 -B`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; `sm64wiiu/build/us_wiiu/sm64.us.rpx` and `sm64wiiu/build/us_wiiu/sm64.us.wuhb` are produced with donor DJUI stack compiling by default and legacy toggle retained.
+  - gotcha: donor HUD texture externs assume globally-visible symbols, but this tree keeps many as `static` in `bin/segment2.c`; exporting donor-required aliases in `bin/custom_textures.c` avoids linker failures without destabilizing vanilla segment data.
+- DJUI donor visual fix (blank labels/garbled logo): corrected Wii U fallback texture override path so 32b donor textures are loaded as 32b (instead of forced 16b), then aligned donor render setup with shared DJUI HUD/reset/display-list init and Wii U fullscreen viewport symbol mapping.
+  - files: sm64wiiu/src/pc/djui/djui_gfx.c, sm64wiiu/src/pc/djui/djui_donor.c, sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/pc/djui/djui_hud_utils.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor main menu should no longer show the corrupted blue logo or missing text caused by incorrect RGBA32 texture handling.
+- DJUI donor opcode-path stabilization (frame-1 hang fix): ported donor `gbi_extension` command surface into Wii U (`gbi_extension.h` + renderer command handlers), added DJUI override/clipping execution and direct large-atlas upload path in `gfx_pc.c`, and hardened textured-triangle path against null rejected imports so donor menu textures no longer rely on unsafe placeholder/fallback behavior that could stall in `gfx_run_dl`.
+  - files: sm64wiiu/include/PR/gbi.h, sm64wiiu/include/PR/gbi_extension.h, sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor DJUI now uses donor opcode semantics on Wii U for texture override/clipping instead of fragile macro fallback emulation.
+  - gotcha: donor texture override commands reference large atlases that exceed the classic 4KB N64 import assumptions; processing them through standard placeholder load/import can leave stale/null texture nodes and destabilize frame 1.
+- DJUI language-content sync + run-dl watchdog hardening: extended Wii U content sync to mirror `lang/*.ini` into `content/lang`, made Wii U resource path resolve to `/vol/content`, and added defensive display-list recursion/command-budget abort guards in `gfx_run_dl` to prevent frame-1 hangs from malformed donor UI command chains.
+  - files: sm64wiiu/tools/sync_builtin_mod_assets.sh, sm64wiiu/Makefile, sm64wiiu/src/pc/platform.c, sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor panel text can load language INIs from packaged content and bad display-list loops now fail fast with diagnostics instead of hanging Cemu indefinitely.
+- DJUI donor pad-input recovery + quit-label fallback: routed controller readback to donor interactable pad when override is active (`gInteractableOverridePad`), and changed the donor main-panel quit button label source from `MAIN.QUIT` to `MAIN.QUIT_TITLE` to avoid malformed lowercase quit glyph rendering on Wii U.
+  - files: sm64wiiu/src/game/game_init.c, sm64wiiu/src/pc/djui/djui_panel_main.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor DJUI main menu can read Wii U controller input again and quit row now uses an uppercase donor key path.
+  - gotcha: donor interactable updates consume `gInteractablePad`, not `gControllerPads[0]`; if override mode is active and this feed is skipped, the menu appears alive but cannot be controlled.
+- Wii U controller backend macro fix for donor DJUI input: corrected controller implementation selection to use `TARGET_WII_U` (plus `__WIIU__` fallback) so Wii U builds no longer silently choose SDL input backend in `osContGetReadData` flow.
+  - files: sm64wiiu/src/pc/controller/controller_entry_point.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; Wii U controller backend is now selected in the input pipeline for donor DJUI menu navigation.
+  - gotcha: `wut.specs` defines `ESPRESSO`/`TARGET_WII_U` in this project, not `__WIIU__`; relying only on `__WIIU__` can silently route Wii U builds to non-Wii-U input backends.
+- DJUI donor menu-input recovery follow-up: aligned donor interaction update timing with donor render order (cursor update first, interactables second), pinned override-pad activation to active donor menu panels, added cursor fallback to first interactable when input base is missing, and exported `gd_texture_hand_closed` for donor cursor click-state rendering on Wii U.
+  - files: sm64wiiu/src/pc/djui/djui_donor.c, sm64wiiu/src/pc/djui/djui_cursor.c, sm64wiiu/src/goddard/renderer.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor menu cursor/input path now has a deterministic fallback and panel-active override wiring for Wii U retest.
+  - gotcha: donor cursor uses `gd_texture_hand_closed`, but this tree had it `static` in Goddard renderer; keeping it internal breaks donor cursor linkage once the closed-hand path is exercised.
+- DJUI join-action mapping + quit glyph fallback: added Wii U client-availability gating for donor join panels (`join`, `join_direct`, `join_lobbies`) so unavailable network actions fail fast with clear UI errors/disabled buttons, and restored main `QUIT` row label to the stable uppercase donor key for Wii U font reliability.
+  - files: sm64wiiu/src/pc/network/network.h, sm64wiiu/src/pc/network_stubs.c, sm64wiiu/src/pc/djui/djui_panel_join.c, sm64wiiu/src/pc/djui/djui_panel_join_direct.c, sm64wiiu/src/pc/djui/djui_panel_join_lobbies.c, sm64wiiu/src/pc/djui/djui_panel_main.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor menu options now map to concrete behavior on Wii U stubs (no join hang path), and quit label rendering is stabilized for the main panel.
+
+### 2026-02-09
+- DJUI glyph clip artifact hardening: clamped/rounded DJUI clip percentages in `djui_gfx`, added a tiny per-glyph clip margin in `djui_text`, and synced override texture metadata in `gfx_pc` so bottom-row/back-button glyphs and selectionbox text no longer degrade into black block fragments near clip bounds.
+  - files: sm64wiiu/src/pc/djui/djui_gfx.c, sm64wiiu/src/pc/djui/djui_text.c, sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor DJUI text clipping path is now deterministic on Wii U and prepared for runtime retest of `QUIT`/`BACK`/selectionbox labels.
+  - gotcha: clip percentages are byte-packed in display-list commands, so any out-of-range float at emit time can wrap and clip the wrong glyph region.
+- DJUI main-menu donor visual parity follow-up: removed the temporary `MAIN.QUIT_TITLE` fallback and restored donor `MAIN.QUIT` in `djui_panel_main`, then aligned Wii U donor compatibility defaults to dark DJUI theme (`configDjuiTheme = 1`) so first-boot button/text styling matches donor baseline.
+  - files: sm64wiiu/src/pc/djui/djui_panel_main.c, sm64wiiu/src/pc/configfile_djui_compat.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; main menu now uses donor-case quit text (`Quit`) and donor-default dark panel theme on Wii U.
 
 ## 10) Required Format For Future Summary Updates
 

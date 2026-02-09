@@ -1,9 +1,6 @@
 #pragma once
-
-#include <stdbool.h>
-
-#include "djui_base.h"
+#include "djui.h"
 
 extern bool gDjuiPanelMainCreated;
 
-void djui_panel_main_create(struct DjuiBase *caller);
+void djui_panel_main_create(struct DjuiBase* caller);

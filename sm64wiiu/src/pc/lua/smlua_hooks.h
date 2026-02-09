@@ -4,6 +4,8 @@
 #include <stdbool.h>
 
 #include <lua.h>
+#include <PR/ultratypes.h>
+#include "pc/mods/mod.h"
 
 // Co-op DX hook namespace. Not every hook is dispatched yet on Wii U, but the
 // full enum keeps Lua mod scripts source-compatible with upstream names.
@@ -71,10 +73,40 @@ enum LuaHookedEventType {
     HOOK_MAX,
 };
 
+#define ACTION_HOOK_CONTINUE_EXECUTION -1
+#define MAX_HOOKED_MOD_MENU_ELEMENTS 256
+
+enum LuaModMenuElementType {
+    MOD_MENU_ELEMENT_TEXT,
+    MOD_MENU_ELEMENT_BUTTON,
+    MOD_MENU_ELEMENT_CHECKBOX,
+    MOD_MENU_ELEMENT_SLIDER,
+    MOD_MENU_ELEMENT_INPUTBOX,
+    MOD_MENU_ELEMENT_MAX,
+};
+
+struct LuaHookedModMenuElement {
+    enum LuaModMenuElementType element;
+    char name[64];
+    bool boolValue;
+    u32 uintValue;
+    char stringValue[256];
+    u32 length;
+    u32 sliderMin;
+    u32 sliderMax;
+    int reference;
+    struct Mod *mod;
+    struct ModFile *modFile;
+};
+
+extern u32 gLuaMarioActionIndex[];
+extern struct LuaHookedModMenuElement gHookedModMenuElements[];
+extern int gHookedModMenuElementsCount;
+
 void smlua_bind_hooks(lua_State *L);
 void smlua_clear_hooks(lua_State *L);
 int smlua_get_event_hook_count(enum LuaHookedEventType hook_type);
-bool smlua_call_event_hooks(enum LuaHookedEventType hook_type);
+bool smlua_call_event_hooks(enum LuaHookedEventType hook_type, ...);
 bool smlua_call_event_hooks_warp(enum LuaHookedEventType hook_type, int warp_type, int level_num,
                                  int area_idx, int node_id, unsigned int warp_arg);
 bool smlua_call_event_hooks_interact(const void *mario_state, const void *object,
@@ -93,5 +125,13 @@ void smlua_call_event_hooks_object_set_model(const void *object, int model_id);
 void smlua_poll_sync_table_change_hooks(void);
 bool smlua_call_mario_action_hook(const void *mario_state, int *in_loop);
 void smlua_call_behavior_hooks(void);
+bool smlua_call_chat_command_hook(char *command);
+void smlua_display_chat_commands(void);
+char **smlua_get_chat_player_list(void);
+char **smlua_get_chat_maincommands_list(void);
+char **smlua_get_chat_subcommands_list(const char *maincommand);
+bool smlua_maincommand_exists(const char *maincommand);
+bool smlua_subcommand_exists(const char *maincommand, const char *subcommand);
+void smlua_call_mod_menu_element_hook(struct LuaHookedModMenuElement *hooked, int index);
 
 #endif

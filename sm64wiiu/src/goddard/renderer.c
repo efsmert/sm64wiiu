@@ -238,7 +238,7 @@ UNUSED static Gfx gd_texture1_dummy_aligner1[] = { // @ 801A8728
     gsSPEndDisplayList(),
 };
 
-ALIGNED8 static Texture gd_texture_hand_open[] = {
+ALIGNED8 Texture gd_texture_hand_open[] = {
 #include "textures/intro_raw/hand_open.rgba16.inc.c"
 };
 
@@ -246,7 +246,7 @@ UNUSED static Gfx gd_texture2_dummy_aligner1[] = {
     gsSPEndDisplayList()
 };
 
-ALIGNED8 static Texture gd_texture_hand_closed[] = {
+ALIGNED8 Texture gd_texture_hand_closed[] = {
 #include "textures/intro_raw/hand_closed.rgba16.inc.c"
 };
 

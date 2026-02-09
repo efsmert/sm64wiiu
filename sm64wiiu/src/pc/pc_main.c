@@ -38,6 +38,7 @@
 #include "pc_diag.h"
 
 #include "compat.h"
+#include "pc_main.h"
 
 #ifdef TARGET_WII_U
 #include <whb/log.h>
@@ -51,9 +52,10 @@ s8 gNmiResetBarsTimer;
 s8 gDebugLevelSelect;
 s8 gShowProfiler;
 s8 gShowDebugText;
+u8 gRenderingInterpolated = 0;
 
 static struct AudioAPI *audio_api;
-static struct GfxWindowManagerAPI *wm_api;
+struct GfxWindowManagerAPI *wm_api;
 static struct GfxRenderingAPI *rendering_api;
 static uint32_t sFrameMarkerCount = 0;
 
@@ -320,3 +322,18 @@ int main(UNUSED int argc, UNUSED char *argv[]) {
     return 0;
 }
 #endif
+
+void produce_one_dummy_frame(void (*callback)(), UNUSED u8 clearColorR, UNUSED u8 clearColorG, UNUSED u8 clearColorB) {
+    if (callback != NULL) {
+        callback();
+    }
+}
+
+void game_deinit(void) {
+}
+
+void game_exit(void) {
+#ifdef TARGET_WII_U
+    WHBLogPrint("pc: game_exit requested");
+#endif
+}

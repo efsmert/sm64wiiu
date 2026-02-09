@@ -31,6 +31,7 @@ extern f32 gCosineTable[];
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
 #define sqr(x) ((x) * (x))
+#define clamp(x, a, b) (min(max((x), (a)), (b)))
 
 #ifdef NON_MATCHING
 #include "math_util.inline.h"

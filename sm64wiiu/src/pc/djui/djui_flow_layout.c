@@ -1,83 +1,61 @@
-#include "djui_flow_layout.h"
+#include "djui.h"
 
-#include <stdlib.h>
+  ////////////////
+ // properties //
+////////////////
 
-static bool djui_flow_layout_render(struct DjuiBase *base) {
-    struct DjuiFlowLayout *flow = (struct DjuiFlowLayout *)base;
-    struct DjuiBaseChild *child = NULL;
-    f32 cursor = 0.0f;
-    f32 margin = 0.0f;
-
-    if (flow == NULL) {
-        return false;
-    }
-
-    margin = (flow->margin.type == DJUI_SVT_RELATIVE) ? (base->comp.height * flow->margin.value)
-                                                       : flow->margin.value;
-    cursor = margin;
-    child = base->child;
-
-    while (child != NULL) {
-        struct DjuiBase *childBase = child->base;
-        if (childBase != NULL) {
-            if (flow->direction == DJUI_FLOW_DIR_DOWN) {
-                djui_base_set_location_type(childBase, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-                djui_base_set_location(childBase, 0.0f, base->comp.height - cursor - childBase->height.value);
-                cursor += childBase->height.value + margin;
-            } else if (flow->direction == DJUI_FLOW_DIR_UP) {
-                djui_base_set_location_type(childBase, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-                djui_base_set_location(childBase, 0.0f, cursor);
-                cursor += childBase->height.value + margin;
-            } else if (flow->direction == DJUI_FLOW_DIR_RIGHT) {
-                djui_base_set_location_type(childBase, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-                djui_base_set_location(childBase, cursor, 0.0f);
-                cursor += childBase->width.value + margin;
-            } else if (flow->direction == DJUI_FLOW_DIR_LEFT) {
-                djui_base_set_location_type(childBase, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-                djui_base_set_location(childBase, base->comp.width - cursor - childBase->width.value, 0.0f);
-                cursor += childBase->width.value + margin;
-            }
-        }
-        child = child->next;
-    }
-
-    return true;
+void djui_flow_layout_set_flow_direction(struct DjuiFlowLayout* layout, enum DjuiFlowDirection flowDirection) {
+    layout->flowDirection = flowDirection;
 }
 
-static void djui_flow_layout_destroy(struct DjuiBase *base) {
-    free((struct DjuiFlowLayout *)base);
+void djui_flow_layout_set_margin(struct DjuiFlowLayout* layout, f32 margin) {
+    layout->margin.value = margin;
 }
 
-struct DjuiFlowLayout *djui_flow_layout_create(struct DjuiBase *parent) {
-    struct DjuiFlowLayout *flow = calloc(1, sizeof(struct DjuiFlowLayout));
-    if (flow == NULL) {
-        return NULL;
-    }
-
-    djui_base_init(parent, &flow->base, djui_flow_layout_render, djui_flow_layout_destroy);
-    flow->margin.type = DJUI_SVT_ABSOLUTE;
-    flow->margin.value = 8.0f;
-    flow->direction = DJUI_FLOW_DIR_DOWN;
-    return flow;
+void djui_flow_layout_set_margin_type(struct DjuiFlowLayout* layout, enum DjuiScreenValueType marginType) {
+    layout->margin.type = marginType;
 }
 
-void djui_flow_layout_set_margin(struct DjuiFlowLayout *flow, f32 margin) {
-    if (flow == NULL) {
-        return;
+  ////////////
+ // events //
+////////////
+
+static void djui_flow_layout_on_child_render(struct DjuiBase* base, struct DjuiBase* child) {
+    if (!child->visible) { return; }
+    struct DjuiFlowLayout* layout = (struct DjuiFlowLayout*)base;
+    switch (layout->flowDirection) {
+        case DJUI_FLOW_DIR_DOWN:
+            base->comp.y      += (child->elem.height + layout->margin.value);
+            base->comp.height -= (child->elem.height + layout->margin.value);
+            break;
+        case DJUI_FLOW_DIR_UP:
+            base->comp.height -= (child->elem.height + layout->margin.value);
+            break;
+        case DJUI_FLOW_DIR_RIGHT:
+            base->comp.x     += (child->elem.width + layout->margin.value);
+            base->comp.width -= (child->elem.width + layout->margin.value);
+            break;
+        case DJUI_FLOW_DIR_LEFT:
+            base->comp.width -= (child->elem.width + layout->margin.value);
+            break;
     }
-    flow->margin.value = margin;
 }
 
-void djui_flow_layout_set_margin_type(struct DjuiFlowLayout *flow, enum DjuiScreenValueType type) {
-    if (flow == NULL) {
-        return;
-    }
-    flow->margin.type = type;
+static void djui_flow_layout_destroy(struct DjuiBase* base) {
+    struct DjuiFlowLayout* layout = (struct DjuiFlowLayout*)base;
+    free(layout);
 }
 
-void djui_flow_layout_set_flow_direction(struct DjuiFlowLayout *flow, enum DjuiFlowDirection direction) {
-    if (flow == NULL) {
-        return;
-    }
-    flow->direction = direction;
+struct DjuiFlowLayout* djui_flow_layout_create(struct DjuiBase* parent) {
+    struct DjuiFlowLayout* layout = calloc(1, sizeof(struct DjuiFlowLayout));
+    struct DjuiBase* base         = &layout->base;
+
+    djui_base_init(parent, base, djui_rect_render, djui_flow_layout_destroy);
+    djui_base_set_size(base, 256, 512);
+
+    djui_flow_layout_set_flow_direction(layout, DJUI_FLOW_DIR_DOWN);
+    djui_flow_layout_set_margin(layout, 8);
+
+    layout->base.on_child_render = djui_flow_layout_on_child_render;
+    return layout;
 }

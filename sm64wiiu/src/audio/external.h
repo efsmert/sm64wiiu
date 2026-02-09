@@ -28,6 +28,7 @@ extern u8 gAudioSPTaskYieldBuffer[]; // ucode yield data ptr; only used in JP
 
 struct SPTask *create_next_audio_frame_task(void);
 void play_sound(s32 soundBits, f32 *pos);
+void play_character_sound(struct MarioState *m, s32 soundId);
 void audio_signal_game_loop_tick(void);
 void seq_player_fade_out(u8 player, u16 fadeDuration);
 void fade_volume_scale(u8 player, u8 targetScale, u16 fadeDuration);

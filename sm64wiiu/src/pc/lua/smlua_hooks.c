@@ -2,6 +2,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 #include "sm64.h"
 #include "behavior_data.h"
@@ -540,7 +541,7 @@ static void smlua_read_dialog_hook_results(lua_State *L, void *ctx) {
 }
 
 // Dispatches callbacks for a zero-argument hook event.
-bool smlua_call_event_hooks(enum LuaHookedEventType hook_type) {
+bool smlua_call_event_hooks(enum LuaHookedEventType hook_type, ...) {
     return smlua_dispatch_hook_callbacks(hook_type, 0, 0, NULL, NULL, NULL, NULL);
 }
 
@@ -1023,4 +1024,50 @@ void smlua_bind_hooks(lua_State *L) {
     smlua_set_global_integer(L, "HOOK_ON_ADD_SURFACE", HOOK_ON_ADD_SURFACE);
     smlua_set_global_integer(L, "HOOK_ON_CLEAR_AREAS", HOOK_ON_CLEAR_AREAS);
     smlua_set_global_integer(L, "HOOK_ON_PACKET_BYTESTRING_RECEIVE", HOOK_ON_PACKET_BYTESTRING_RECEIVE);
+}
+
+u32 gLuaMarioActionIndex[8] = { 0 };
+struct LuaHookedModMenuElement gHookedModMenuElements[MAX_HOOKED_MOD_MENU_ELEMENTS] = { 0 };
+int gHookedModMenuElementsCount = 0;
+
+bool smlua_call_chat_command_hook(char *command) {
+    (void)command;
+    return false;
+}
+
+void smlua_display_chat_commands(void) {
+}
+
+static char **smlua_alloc_empty_string_array(void) {
+    char **list = calloc(1, sizeof(char *));
+    return list;
+}
+
+char **smlua_get_chat_player_list(void) {
+    return smlua_alloc_empty_string_array();
+}
+
+char **smlua_get_chat_maincommands_list(void) {
+    return smlua_alloc_empty_string_array();
+}
+
+char **smlua_get_chat_subcommands_list(const char *maincommand) {
+    (void)maincommand;
+    return smlua_alloc_empty_string_array();
+}
+
+bool smlua_maincommand_exists(const char *maincommand) {
+    (void)maincommand;
+    return false;
+}
+
+bool smlua_subcommand_exists(const char *maincommand, const char *subcommand) {
+    (void)maincommand;
+    (void)subcommand;
+    return false;
+}
+
+void smlua_call_mod_menu_element_hook(struct LuaHookedModMenuElement *hooked, int index) {
+    (void)hooked;
+    (void)index;
 }

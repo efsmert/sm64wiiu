@@ -53,19 +53,19 @@ static void set_keyboard_mapping(int index, int mask, int scancode) {
 static void keyboard_bindkeys(void) {
     int i = 0;
 
-    set_keyboard_mapping(i++, STICK_UP,     configKeyStickUp);
-    set_keyboard_mapping(i++, STICK_LEFT,   configKeyStickLeft);
-    set_keyboard_mapping(i++, STICK_DOWN,   configKeyStickDown);
-    set_keyboard_mapping(i++, STICK_RIGHT,  configKeyStickRight);
-    set_keyboard_mapping(i++, A_BUTTON,     configKeyA);
-    set_keyboard_mapping(i++, B_BUTTON,     configKeyB);
-    set_keyboard_mapping(i++, Z_TRIG,       configKeyZ);
-    set_keyboard_mapping(i++, U_CBUTTONS,   configKeyCUp);
-    set_keyboard_mapping(i++, L_CBUTTONS,   configKeyCLeft);
-    set_keyboard_mapping(i++, D_CBUTTONS,   configKeyCDown);
-    set_keyboard_mapping(i++, R_CBUTTONS,   configKeyCRight);
-    set_keyboard_mapping(i++, R_TRIG,       configKeyR);
-    set_keyboard_mapping(i++, START_BUTTON, configKeyStart);
+    set_keyboard_mapping(i++, STICK_UP,     configKeyStickUp[0]);
+    set_keyboard_mapping(i++, STICK_LEFT,   configKeyStickLeft[0]);
+    set_keyboard_mapping(i++, STICK_DOWN,   configKeyStickDown[0]);
+    set_keyboard_mapping(i++, STICK_RIGHT,  configKeyStickRight[0]);
+    set_keyboard_mapping(i++, A_BUTTON,     configKeyA[0]);
+    set_keyboard_mapping(i++, B_BUTTON,     configKeyB[0]);
+    set_keyboard_mapping(i++, Z_TRIG,       configKeyZ[0]);
+    set_keyboard_mapping(i++, U_CBUTTONS,   configKeyCUp[0]);
+    set_keyboard_mapping(i++, L_CBUTTONS,   configKeyCLeft[0]);
+    set_keyboard_mapping(i++, D_CBUTTONS,   configKeyCDown[0]);
+    set_keyboard_mapping(i++, R_CBUTTONS,   configKeyCRight[0]);
+    set_keyboard_mapping(i++, R_TRIG,       configKeyR[0]);
+    set_keyboard_mapping(i++, START_BUTTON, configKeyStart[0]);
 }
 
 static void keyboard_init(void) {

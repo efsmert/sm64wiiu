@@ -1,15 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "mods.h"
 #include "../fs/fs.h"
 #include "../platform.h"
+#include "../configfile.h"
 
 struct Mods gLocalMods;
+struct Mods gRemoteMods;
+struct Mods gActiveMods;
+char gRemoteModsBasePath[SYS_MAX_PATH] = "";
 static struct Mods *sActiveMods = &gLocalMods;
 static char *sDynamicScriptPaths[MODS_MAX_ACTIVE_SCRIPTS];
 static size_t sDynamicScriptCount = 0;
+static char sLocalModNames[MODS_MAX_ACTIVE_SCRIPTS][MAX_CONFIG_STRING];
+static const char sDefaultModDescription[] = "Wii U donor compatibility mod entry.";
+static const char sDefaultModCategory[] = "misc";
 
 // Keep a deterministic script catalog for the current process lifetime.
 static const char *sBuiltinScripts[] = {
@@ -20,6 +28,94 @@ static const char *sBuiltinScripts[] = {
     "mods/faster-swimming.lua",
     "mods/personal-starcount-ex.lua",
 };
+
+static void mods_extract_name_from_path(const char *path, char *out, size_t outSize) {
+    const char *start = NULL;
+    const char *leaf = NULL;
+    const char *dot = NULL;
+    size_t len = 0;
+    size_t i = 0;
+
+    if (out == NULL || outSize == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+    if (path == NULL || path[0] == '\0') {
+        snprintf(out, outSize, "Mod");
+        return;
+    }
+
+    start = path;
+    if (strncmp(start, "mods/", 5) == 0) {
+        start += 5;
+    }
+
+    leaf = strrchr(start, '/');
+    if (leaf != NULL) {
+        start = leaf + 1;
+    }
+    dot = strrchr(start, '.');
+    len = (dot != NULL && dot > start) ? (size_t)(dot - start) : strlen(start);
+    if (len == 0) {
+        snprintf(out, outSize, "Mod");
+        return;
+    }
+    if (len >= outSize) {
+        len = outSize - 1;
+    }
+
+    for (i = 0; i < len; i++) {
+        char c = start[i];
+        if (c == '_' || c == '-') {
+            out[i] = ' ';
+        } else if (i == 0 || out[i - 1] == ' ') {
+            out[i] = (char)toupper((unsigned char)c);
+        } else {
+            out[i] = c;
+        }
+    }
+    out[len] = '\0';
+}
+
+static void mods_build_compat_views(void) {
+    size_t activeCount = 0;
+
+    gLocalMods.entries = gLocalMods.entry_ptrs;
+    gLocalMods.entryCount = (u16)gLocalMods.available_script_count;
+    gLocalMods.size = gLocalMods.available_script_count;
+
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        struct Mod *mod = &gLocalMods.entry_objects[i];
+        memset(mod, 0, sizeof(*mod));
+        mods_extract_name_from_path(gLocalMods.available_script_paths[i], sLocalModNames[i], sizeof(sLocalModNames[i]));
+        mod->name = sLocalModNames[i];
+        mod->description = (char *)sDefaultModDescription;
+        mod->category = (char *)sDefaultModCategory;
+        snprintf(mod->relativePath, sizeof(mod->relativePath), "%s",
+                 gLocalMods.available_script_paths[i] != NULL ? gLocalMods.available_script_paths[i] : "");
+        mod->index = (s32)i;
+        mod->enabled = gLocalMods.available_script_enabled[i];
+        mod->selectable = true;
+        mod->pausable = true;
+        mod->size = 0;
+        gLocalMods.entry_ptrs[i] = mod;
+    }
+
+    memset(&gActiveMods, 0, sizeof(gActiveMods));
+    gActiveMods.entries = gActiveMods.entry_ptrs;
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        if (!gLocalMods.available_script_enabled[i]) {
+            continue;
+        }
+        if (activeCount >= MODS_MAX_ACTIVE_SCRIPTS) {
+            break;
+        }
+        gActiveMods.entry_ptrs[activeCount++] = gLocalMods.entry_ptrs[i];
+    }
+    gActiveMods.entryCount = (u16)activeCount;
+    gActiveMods.size = activeCount;
+}
 
 // Returns true if `path` ends with `suffix`.
 static bool mods_path_has_suffix(const char *path, const char *suffix) {
@@ -169,6 +265,7 @@ static void mods_rebuild_active_script_list(void) {
     }
 
     gLocalMods.script_count = out_count;
+    mods_build_compat_views();
 }
 
 // Adds a built-in script only if it exists in the mounted virtual filesystem.
@@ -211,6 +308,9 @@ static size_t mods_discover_root_scripts(void) {
 // Selects which mod set should be consumed by Lua/runtime systems.
 void mods_activate(struct Mods *mods) {
     sActiveMods = (mods != NULL) ? mods : &gLocalMods;
+    if (sActiveMods == &gLocalMods) {
+        mods_build_compat_views();
+    }
 }
 
 // Builds local script catalog and default active set for single-player Wii U runtime.
@@ -241,6 +341,8 @@ void mods_init(void) {
 void mods_shutdown(void) {
     mods_clear_dynamic_script_paths();
     memset(&gLocalMods, 0, sizeof(gLocalMods));
+    memset(&gActiveMods, 0, sizeof(gActiveMods));
+    memset(&gRemoteMods, 0, sizeof(gRemoteMods));
     sActiveMods = &gLocalMods;
 }
 
@@ -286,4 +388,55 @@ const char *mods_get_active_script_path(size_t index) {
         return NULL;
     }
     return sActiveMods->script_paths[index];
+}
+
+void mods_refresh_local(void) {
+    mods_rebuild_active_script_list();
+}
+
+void mods_enable(char *relativePath) {
+    if (relativePath == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        const char *path = gLocalMods.available_script_paths[i];
+        if (path != NULL && strcmp(path, relativePath) == 0) {
+            gLocalMods.available_script_enabled[i] = true;
+            mods_rebuild_active_script_list();
+            return;
+        }
+    }
+}
+
+u16 mods_get_enabled_count(void) {
+    u16 count = 0;
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        if (gLocalMods.available_script_enabled[i]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+u16 mods_get_character_select_count(void) {
+    u16 count = 0;
+    for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
+        const char *path = gLocalMods.available_script_paths[i];
+        if (!gLocalMods.available_script_enabled[i] || path == NULL) {
+            continue;
+        }
+        if (strstr(path, "character-select") != NULL || strstr(path, "char-select") != NULL) {
+            count++;
+        }
+    }
+    return count;
+}
+
+bool mods_get_all_pausable(void) {
+    return true;
+}
+
+bool mods_generate_remote_base_path(void) {
+    gRemoteModsBasePath[0] = '\0';
+    return false;
 }

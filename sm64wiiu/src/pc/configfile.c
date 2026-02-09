@@ -31,20 +31,46 @@ struct ConfigOption {
  *Config options and default values
  */
 bool configFullscreen            = false;
+ConfigWindow configWindow        = {
+    .x = 0,
+    .y = 0,
+    .w = 640,
+    .h = 480,
+    .vsync = true,
+    .reset = false,
+    .fullscreen = false,
+    .exiting_fullscreen = false,
+    .settings_changed = false,
+    .msaa = 0,
+};
+ConfigStick configStick = { 0 };
 // Keyboard mappings (scancode values)
-unsigned int configKeyA          = 0x26;
-unsigned int configKeyB          = 0x33;
-unsigned int configKeyStart      = 0x39;
-unsigned int configKeyR          = 0x36;
-unsigned int configKeyZ          = 0x25;
-unsigned int configKeyCUp        = 0x148;
-unsigned int configKeyCDown      = 0x150;
-unsigned int configKeyCLeft      = 0x14B;
-unsigned int configKeyCRight     = 0x14D;
-unsigned int configKeyStickUp    = 0x11;
-unsigned int configKeyStickDown  = 0x1F;
-unsigned int configKeyStickLeft  = 0x1E;
-unsigned int configKeyStickRight = 0x20;
+unsigned int configKeyA[MAX_BINDS]          = { 0x26, 0, 0 };
+unsigned int configKeyB[MAX_BINDS]          = { 0x33, 0, 0 };
+unsigned int configKeyStart[MAX_BINDS]      = { 0x39, 0, 0 };
+unsigned int configKeyL[MAX_BINDS]          = { 0x2A, 0, 0 };
+unsigned int configKeyR[MAX_BINDS]          = { 0x36, 0, 0 };
+unsigned int configKeyZ[MAX_BINDS]          = { 0x25, 0, 0 };
+unsigned int configKeyCUp[MAX_BINDS]        = { 0x148, 0, 0 };
+unsigned int configKeyCDown[MAX_BINDS]      = { 0x150, 0, 0 };
+unsigned int configKeyCLeft[MAX_BINDS]      = { 0x14B, 0, 0 };
+unsigned int configKeyCRight[MAX_BINDS]     = { 0x14D, 0, 0 };
+unsigned int configKeyStickUp[MAX_BINDS]    = { 0x11, 0, 0 };
+unsigned int configKeyStickDown[MAX_BINDS]  = { 0x1F, 0, 0 };
+unsigned int configKeyStickLeft[MAX_BINDS]  = { 0x1E, 0, 0 };
+unsigned int configKeyStickRight[MAX_BINDS] = { 0x20, 0, 0 };
+unsigned int configKeyX[MAX_BINDS]          = { 0x17, 0, 0 };
+unsigned int configKeyY[MAX_BINDS]          = { 0x32, 0, 0 };
+unsigned int configKeyChat[MAX_BINDS]       = { 0x1C, 0, 0 };
+unsigned int configKeyPlayerList[MAX_BINDS] = { 0x0F, 0, 0 };
+unsigned int configKeyDUp[MAX_BINDS]        = { 0x147, 0, 0 };
+unsigned int configKeyDDown[MAX_BINDS]      = { 0x14F, 0, 0 };
+unsigned int configKeyDLeft[MAX_BINDS]      = { 0x153, 0, 0 };
+unsigned int configKeyDRight[MAX_BINDS]     = { 0x151, 0, 0 };
+unsigned int configKeyConsole[MAX_BINDS]    = { 0x29, 0, 0 };
+unsigned int configKeyPrevPage[MAX_BINDS]   = { 0x16, 0, 0 };
+unsigned int configKeyNextPage[MAX_BINDS]   = { 0x18, 0, 0 };
+unsigned int configKeyDisconnect[MAX_BINDS] = { 0, 0, 0 };
 #ifdef TARGET_WII_U
 bool configN64FaceButtons = 0;
 #endif
@@ -54,19 +80,19 @@ static const struct ConfigOption options[] = {
     {.name = "n64_face_buttons", .type = CONFIG_TYPE_BOOL, .boolValue = &configN64FaceButtons},
 #else
     {.name = "fullscreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configFullscreen},
-    {.name = "key_a",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyA},
-    {.name = "key_b",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyB},
-    {.name = "key_start",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStart},
-    {.name = "key_r",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyR},
-    {.name = "key_z",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyZ},
-    {.name = "key_cup",        .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCUp},
-    {.name = "key_cdown",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCDown},
-    {.name = "key_cleft",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCLeft},
-    {.name = "key_cright",     .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCRight},
-    {.name = "key_stickup",    .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickUp},
-    {.name = "key_stickdown",  .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickDown},
-    {.name = "key_stickleft",  .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickLeft},
-    {.name = "key_stickright", .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickRight},
+    {.name = "key_a",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyA[0]},
+    {.name = "key_b",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyB[0]},
+    {.name = "key_start",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStart[0]},
+    {.name = "key_r",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyR[0]},
+    {.name = "key_z",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyZ[0]},
+    {.name = "key_cup",        .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCUp[0]},
+    {.name = "key_cdown",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCDown[0]},
+    {.name = "key_cleft",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCLeft[0]},
+    {.name = "key_cright",     .type = CONFIG_TYPE_UINT, .uintValue = &configKeyCRight[0]},
+    {.name = "key_stickup",    .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickUp[0]},
+    {.name = "key_stickdown",  .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickDown[0]},
+    {.name = "key_stickleft",  .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickLeft[0]},
+    {.name = "key_stickright", .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStickRight[0]},
 #endif
 };
 

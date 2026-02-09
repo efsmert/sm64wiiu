@@ -86,6 +86,24 @@ static uint32_t sTextureImportRejectLogCount = 0;
 
 #define GFX_TEXTURE_SLOTS 2
 
+struct DjuiTextureOverride {
+    const uint8_t *texture;
+    uint32_t width;
+    uint32_t height;
+    uint8_t fmt;
+    uint8_t siz;
+};
+
+static bool sDjuiClip = false;
+static uint8_t sDjuiClipX1 = 0;
+static uint8_t sDjuiClipY1 = 0;
+static uint8_t sDjuiClipX2 = 0;
+static uint8_t sDjuiClipY2 = 0;
+
+static bool sDjuiTextureOverridePending = false;
+static struct DjuiTextureOverride sDjuiTextureOverride = { 0 };
+static bool sOnlyTextureChangeOnAddrChange = false;
+
 // Maps TMEM/tile inputs into the two texture slots this renderer supports.
 static uint8_t gfx_map_load_tile_to_slot(uint8_t tile, uint32_t tmem) {
     if (tile == G_TX_LOADTILE_6_UNKNOWN) {
@@ -182,6 +200,12 @@ static struct RenderingState {
 struct GfxDimensions gfx_current_dimensions;
 
 static bool dropped_frame;
+// Defensive guardrails for malformed/recursive display lists on Wii U.
+#define GFX_DL_MAX_DEPTH 64
+#define GFX_DL_MAX_COMMANDS 200000
+static bool sGfxDlAbortFrame = false;
+static uint32_t sGfxDlCommandCount = 0;
+static uint32_t sGfxDlAbortLogCount = 0;
 static bool sLoggedFrame1GfxRunEnter = false;
 static bool sLoggedFrame1GfxRunAfterStart = false;
 static bool sLoggedFrame1GfxRunAfterDl = false;
@@ -199,6 +223,10 @@ static size_t buf_vbo_num_tris;
 
 static struct GfxWindowManagerAPI *gfx_wapi;
 static struct GfxRenderingAPI *gfx_rapi;
+
+static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, const void* addr);
+static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette, uint32_t cmt, uint32_t maskt, uint32_t shiftt, uint32_t cms, uint32_t masks, uint32_t shifts);
+static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt);
 
 /*
 #include <time.h>
@@ -360,6 +388,8 @@ static bool gfx_texture_cache_lookup(int tile, struct TextureHashmapNode **n, co
 
 static void import_texture_rgba16(int tile) {
     uint8_t rgba32_buf[8192];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 2 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes / 2; i++) {
         uint16_t col16 = (rdp.loaded_texture[tile].addr[2 * i] << 8) | rdp.loaded_texture[tile].addr[2 * i + 1];
@@ -380,6 +410,7 @@ static void import_texture_rgba16(int tile) {
 }
 
 static void import_texture_rgba32(int tile) {
+    if (!rdp.loaded_texture[tile].addr) { return; }
     uint32_t width = rdp.texture_tile.line_size_bytes / 2;
     uint32_t height = (rdp.loaded_texture[tile].size_bytes / 2) / rdp.texture_tile.line_size_bytes;
     gfx_rapi->upload_texture(rdp.loaded_texture[tile].addr, width, height);
@@ -387,6 +418,8 @@ static void import_texture_rgba32(int tile) {
 
 static void import_texture_ia4(int tile) {
     uint8_t rgba32_buf[32768];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 8 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes * 2; i++) {
         uint8_t byte = rdp.loaded_texture[tile].addr[i / 2];
@@ -410,6 +443,8 @@ static void import_texture_ia4(int tile) {
 
 static void import_texture_ia8(int tile) {
     uint8_t rgba32_buf[16384];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 4 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes; i++) {
         uint8_t intensity = rdp.loaded_texture[tile].addr[i] >> 4;
@@ -431,6 +466,8 @@ static void import_texture_ia8(int tile) {
 
 static void import_texture_ia16(int tile) {
     uint8_t rgba32_buf[8192];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 2 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes / 2; i++) {
         uint8_t intensity = rdp.loaded_texture[tile].addr[2 * i];
@@ -452,6 +489,8 @@ static void import_texture_ia16(int tile) {
 
 static void import_texture_i4(int tile) {
     uint8_t rgba32_buf[32768];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 8 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes * 2; i++) {
         uint8_t byte = rdp.loaded_texture[tile].addr[i / 2];
@@ -474,6 +513,8 @@ static void import_texture_i4(int tile) {
 
 static void import_texture_i8(int tile) {
     uint8_t rgba32_buf[16384];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 4 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes; i++) {
         uint8_t intensity = rdp.loaded_texture[tile].addr[i];
@@ -495,6 +536,8 @@ static void import_texture_i8(int tile) {
 
 static void import_texture_ci4(int tile) {
     uint8_t rgba32_buf[32768];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 8 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes * 2; i++) {
         uint8_t byte = rdp.loaded_texture[tile].addr[i / 2];
@@ -518,6 +561,8 @@ static void import_texture_ci4(int tile) {
 
 static void import_texture_ci8(int tile) {
     uint8_t rgba32_buf[16384];
+    if (!rdp.loaded_texture[tile].addr) { return; }
+    if (rdp.loaded_texture[tile].size_bytes * 4 > sizeof(rgba32_buf)) { return; }
 
     for (uint32_t i = 0; i < rdp.loaded_texture[tile].size_bytes; i++) {
         uint8_t idx = rdp.loaded_texture[tile].addr[i];
@@ -542,8 +587,7 @@ static void import_texture(int tile) {
     tile &= 1;
     if (rdp.texture_tile.line_size_bytes == 0 ||
         rdp.loaded_texture[tile].addr == NULL ||
-        rdp.loaded_texture[tile].size_bytes == 0 ||
-        rdp.loaded_texture[tile].size_bytes > 4096) {
+        rdp.loaded_texture[tile].size_bytes == 0) {
 #ifdef TARGET_WII_U
         if (sTextureImportRejectLogCount < 16) {
             WHBLogPrintf("gfx: reject texture import tile=%d addr=%p size=%u line=%u",
@@ -554,6 +598,7 @@ static void import_texture(int tile) {
             sTextureImportRejectLogCount++;
         }
 #endif
+        rendering_state.textures[tile] = NULL;
         return;
     }
 
@@ -604,6 +649,175 @@ static void import_texture(int tile) {
     }
     //int t1 = get_time();
     //printf("Time diff: %d\n", t1 - t0);
+}
+
+static const struct {
+    uint8_t LOAD_BLOCK;
+    uint8_t SHIFT;
+    uint8_t INCR;
+    uint8_t LINE_NIBBLES;
+} sDjuiImSiz[] = {
+    [G_IM_SIZ_4b]  = { G_IM_SIZ_4b_LOAD_BLOCK,  G_IM_SIZ_4b_SHIFT,  G_IM_SIZ_4b_INCR,  1                           },
+    [G_IM_SIZ_8b]  = { G_IM_SIZ_8b_LOAD_BLOCK,  G_IM_SIZ_8b_SHIFT,  G_IM_SIZ_8b_INCR,  2 * G_IM_SIZ_8b_LINE_BYTES  },
+    [G_IM_SIZ_16b] = { G_IM_SIZ_16b_LOAD_BLOCK, G_IM_SIZ_16b_SHIFT, G_IM_SIZ_16b_INCR, 2 * G_IM_SIZ_16b_LINE_BYTES },
+    [G_IM_SIZ_32b] = { G_IM_SIZ_32b_LOAD_BLOCK, G_IM_SIZ_32b_SHIFT, G_IM_SIZ_32b_INCR, 2 * G_IM_SIZ_32b_LINE_BYTES },
+};
+
+static void djui_gfx_dp_execute_clipping(void) {
+    size_t start_index = 0;
+    size_t dest_index = 4;
+    float minX = 0.0f;
+    float maxX = 0.0f;
+    float minY = 0.0f;
+    float maxY = 0.0f;
+    float minU = 0.0f;
+    float maxU = 0.0f;
+    float minV = 0.0f;
+    float maxV = 0.0f;
+    float midY = 0.0f;
+    float midX = 0.0f;
+    float midU = 0.0f;
+    float midV = 0.0f;
+
+    if (!sDjuiClip) { return; }
+    sDjuiClip = false;
+
+    minX = rsp.loaded_vertices[start_index].x;
+    maxX = rsp.loaded_vertices[start_index].x;
+    minY = rsp.loaded_vertices[start_index].y;
+    maxY = rsp.loaded_vertices[start_index].y;
+
+    minU = rsp.loaded_vertices[start_index].u;
+    maxU = rsp.loaded_vertices[start_index].u;
+    minV = rsp.loaded_vertices[start_index].v;
+    maxV = rsp.loaded_vertices[start_index].v;
+
+    for (size_t i = start_index; i < dest_index; i++) {
+        struct LoadedVertex* d = &rsp.loaded_vertices[i];
+        minX = fminf(minX, d->x);
+        maxX = fmaxf(maxX, d->x);
+        minY = fminf(minY, d->y);
+        maxY = fmaxf(maxY, d->y);
+
+        minU = fminf(minU, d->u);
+        maxU = fmaxf(maxU, d->u);
+        minV = fminf(minV, d->v);
+        maxV = fmaxf(maxV, d->v);
+    }
+
+    midY = (minY + maxY) * 0.5f;
+    midX = (minX + maxX) * 0.5f;
+    midU = (minU + maxU) * 0.5f;
+    midV = (minV + maxV) * 0.5f;
+    for (size_t i = start_index; i < dest_index; i++) {
+        struct LoadedVertex* d = &rsp.loaded_vertices[i];
+        if (d->x <= midX) {
+            d->x += (maxX - minX) * (sDjuiClipX1 / 255.0f);
+        } else {
+            d->x -= (maxX - minX) * (sDjuiClipX2 / 255.0f);
+        }
+        if (d->y <= midY) {
+            d->y += (maxY - minY) * (sDjuiClipY2 / 255.0f);
+        } else {
+            d->y -= (maxY - minY) * (sDjuiClipY1 / 255.0f);
+        }
+
+        if (d->u <= midU) {
+            d->u += (maxU - minU) * (sDjuiClipX1 / 255.0f);
+        } else {
+            d->u -= (maxU - minU) * (sDjuiClipX2 / 255.0f);
+        }
+        if (d->v <= midV) {
+            d->v += (maxV - minV) * (sDjuiClipY1 / 255.0f);
+        } else {
+            d->v -= (maxV - minV) * (sDjuiClipY2 / 255.0f);
+        }
+    }
+}
+
+static void djui_gfx_dp_execute_override(void) {
+    if (!sDjuiTextureOverridePending) { return; }
+    sDjuiTextureOverridePending = false;
+
+    if (sDjuiTextureOverride.texture == NULL || sDjuiTextureOverride.width == 0 || sDjuiTextureOverride.height == 0) {
+        return;
+    }
+
+    if (sDjuiTextureOverride.siz > G_IM_SIZ_32b) {
+        return;
+    }
+
+    // Donor behavior: execute override through normal texture-image/tile/load path.
+    // This keeps UV/format semantics aligned with the renderer backend.
+    gfx_dp_set_texture_image(
+        sDjuiTextureOverride.fmt,
+        sDjuiImSiz[sDjuiTextureOverride.siz].LOAD_BLOCK,
+        sDjuiTextureOverride.width,
+        sDjuiTextureOverride.texture
+    );
+    gfx_dp_set_tile(
+        sDjuiTextureOverride.fmt,
+        sDjuiTextureOverride.siz,
+        0,
+        0,
+        G_TX_LOADTILE,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    );
+    gfx_dp_load_block(
+        G_TX_LOADTILE,
+        0,
+        0,
+        ((sDjuiTextureOverride.width * sDjuiTextureOverride.height + sDjuiImSiz[sDjuiTextureOverride.siz].INCR) >> sDjuiImSiz[sDjuiTextureOverride.siz].SHIFT) - 1,
+        0
+    );
+    gfx_dp_set_tile(
+        sDjuiTextureOverride.fmt,
+        sDjuiTextureOverride.siz,
+        (((sDjuiTextureOverride.width * sDjuiImSiz[sDjuiTextureOverride.siz].LINE_NIBBLES) + 15) >> 4),
+        0,
+        G_TX_RENDERTILE,
+        0,
+        rdp.texture_tile.cmt,
+        0,
+        0,
+        rdp.texture_tile.cms,
+        0,
+        0
+    );
+}
+
+static void djui_gfx_dp_set_clipping(uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2) {
+    sDjuiClipX1 = (uint8_t)x1;
+    sDjuiClipY1 = (uint8_t)y1;
+    sDjuiClipX2 = (uint8_t)x2;
+    sDjuiClipY2 = (uint8_t)y2;
+    sDjuiClip = true;
+}
+
+static void djui_gfx_dp_set_override(void* texture, uint32_t w, uint32_t h, uint8_t fmt, uint8_t siz) {
+    sDjuiTextureOverride.texture = texture;
+    sDjuiTextureOverride.width = w;
+    sDjuiTextureOverride.height = h;
+    sDjuiTextureOverride.fmt = fmt;
+    sDjuiTextureOverride.siz = siz;
+    sDjuiTextureOverridePending = (texture != NULL);
+}
+
+static void djui_gfx_dp_execute_djui(uint32_t opcode) {
+    switch (opcode) {
+        case G_TEXOVERRIDE_DJUI:
+            djui_gfx_dp_execute_override();
+            break;
+        case G_TEXCLIP_DJUI:
+            djui_gfx_dp_execute_clipping();
+            break;
+    }
 }
 
 static void gfx_transposed_matrix_mul(float res[3], const float a[3], const float b[4][4]) {
@@ -943,10 +1157,13 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
 
     for (int i = 0; i < 2; i++) {
         if (used_textures[i]) {
-            if (rdp.textures_changed[i]) {
+            if (rdp.textures_changed[i] || rendering_state.textures[i] == NULL) {
                 gfx_flush();
                 import_texture(i);
                 rdp.textures_changed[i] = false;
+            }
+            if (rendering_state.textures[i] == NULL) {
+                return;
             }
             bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
             if (linear_filter != rendering_state.textures[i]->linear_filter || rdp.texture_tile.cms != rendering_state.textures[i]->cms || rdp.texture_tile.cmt != rendering_state.textures[i]->cmt) {
@@ -1220,10 +1437,12 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
 
     uint32_t size_bytes = (lrs + 1) << word_size_shift;
     rdp.loaded_texture[slot].size_bytes = size_bytes;
-    assert(size_bytes <= 4096 && "bug: too big texture");
+    if (!sOnlyTextureChangeOnAddrChange) {
+        rdp.textures_changed[slot] = true;
+    } else if (!rdp.textures_changed[slot]) {
+        rdp.textures_changed[slot] = (rdp.loaded_texture[slot].addr != rdp.texture_to_load.addr);
+    }
     rdp.loaded_texture[slot].addr = rdp.texture_to_load.addr;
-
-    rdp.textures_changed[slot] = true;
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -1256,14 +1475,16 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     uint32_t size_bytes = (((lrs >> G_TEXTURE_IMAGE_FRAC) + 1) * ((lrt >> G_TEXTURE_IMAGE_FRAC) + 1)) << word_size_shift;
     rdp.loaded_texture[slot].size_bytes = size_bytes;
 
-    assert(size_bytes <= 4096 && "bug: too big texture");
+    if (!sOnlyTextureChangeOnAddrChange) {
+        rdp.textures_changed[slot] = true;
+    } else if (!rdp.textures_changed[slot]) {
+        rdp.textures_changed[slot] = (rdp.loaded_texture[slot].addr != rdp.texture_to_load.addr);
+    }
     rdp.loaded_texture[slot].addr = rdp.texture_to_load.addr;
     rdp.texture_tile.uls = uls;
     rdp.texture_tile.ult = ult;
     rdp.texture_tile.lrs = lrs;
     rdp.texture_tile.lrt = lrt;
-
-    rdp.textures_changed[slot] = true;
 }
 
 
@@ -1508,9 +1729,59 @@ static inline void *seg_addr(uintptr_t w1) {
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
 
-static void gfx_run_dl(Gfx* cmd) {
-    int dummy = 0;
+static void gfx_run_dl_abort(const char *reason, const Gfx *cmd, uint32_t opcode, uint32_t depth) {
+    sGfxDlAbortFrame = true;
+
+    // Keep diagnostics bounded to avoid flooding OSConsole during a bad frame.
+    if (sGfxDlAbortLogCount >= 8) {
+        return;
+    }
+    sGfxDlAbortLogCount++;
+
+#ifdef TARGET_WII_U
+    WHBLogPrintf("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u",
+                 reason != NULL ? reason : "?",
+                 (const void *)cmd,
+                 (unsigned)opcode,
+                 (unsigned)depth,
+                 (unsigned)sGfxDlCommandCount);
+#else
+    fprintf(stderr, "gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u\n",
+            reason != NULL ? reason : "?",
+            (const void *)cmd,
+            (unsigned)opcode,
+            (unsigned)depth,
+            (unsigned)sGfxDlCommandCount);
+#endif
+}
+
+static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
+    if (sGfxDlAbortFrame) { return; }
+
+    if (cmd == NULL) {
+        gfx_run_dl_abort("null_command_pointer", cmd, 0xFF, depth);
+        return;
+    }
+
+    if (depth > GFX_DL_MAX_DEPTH) {
+        gfx_run_dl_abort("max_depth_exceeded", cmd, 0xFF, depth);
+        return;
+    }
+
     for (;;) {
+        if (sGfxDlAbortFrame) { return; }
+
+        if (cmd == NULL) {
+            gfx_run_dl_abort("null_command_pointer", cmd, 0xFF, depth);
+            return;
+        }
+
+        sGfxDlCommandCount++;
+        if (sGfxDlCommandCount > GFX_DL_MAX_COMMANDS) {
+            gfx_run_dl_abort("max_command_budget_exceeded", cmd, 0xFF, depth);
+            return;
+        }
+
         uint32_t opcode = cmd->words.w0 >> 24;
 
         switch (opcode) {
@@ -1550,6 +1821,39 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_sp_texture(C1(16, 16), C1(0, 16), C0(11, 3), C0(8, 3), C0(0, 8));
 #endif
                 break;
+            case G_TEXCLIP_DJUI:
+                djui_gfx_dp_set_clipping(C0(16, 8), C0(8, 8), C1(16, 8), C1(8, 8));
+                break;
+            case G_TEXOVERRIDE_DJUI:
+            {
+                uint32_t wPow = C0(16, 8);
+                uint32_t hPow = C0(8, 8);
+                if (wPow < 31 && hPow < 31) {
+                    djui_gfx_dp_set_override(seg_addr(cmd->words.w1), 1U << wPow, 1U << hPow, C0(4, 4), C0(0, 4));
+                } else {
+                    djui_gfx_dp_set_override(NULL, 0, 0, C0(4, 4), C0(0, 4));
+                }
+                break;
+            }
+            case G_TEXADDR_DJUI:
+                sOnlyTextureChangeOnAddrChange = !(C0(0, 24) & 0x01);
+                break;
+            case G_EXECUTE_DJUI:
+                djui_gfx_dp_execute_djui(cmd->words.w1);
+                break;
+            case G_VTX_EXT:
+#ifdef F3DEX_GBI_2
+                gfx_sp_vertex(C0(12, 8), C0(1, 7) - C0(12, 8), seg_addr(cmd->words.w1));
+#elif defined(F3DEX_GBI) || defined(F3DLP_GBI)
+                gfx_sp_vertex(C0(10, 6), C0(16, 8) / 2, seg_addr(cmd->words.w1));
+#else
+                gfx_sp_vertex((C0(0, 16)) / sizeof(Vtx), C0(16, 4), seg_addr(cmd->words.w1));
+#endif
+                break;
+            case G_TRI2_EXT:
+                gfx_sp_tri1(C0(16, 8) / 2, C0(8, 8) / 2, C0(0, 8) / 2);
+                gfx_sp_tri1(C1(16, 8) / 2, C1(8, 8) / 2, C1(0, 8) / 2);
+                break;
             case G_VTX:
 #ifdef F3DEX_GBI_2
                 gfx_sp_vertex(C0(12, 8), C0(1, 7) - C0(12, 8), seg_addr(cmd->words.w1));
@@ -1562,9 +1866,19 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_DL:
                 if (C0(16, 1) == 0) {
                     // Push return address
-                    gfx_run_dl((Gfx *)seg_addr(cmd->words.w1));
+                    gfx_run_dl((Gfx *)seg_addr(cmd->words.w1), depth + 1);
+                    if (sGfxDlAbortFrame) { return; }
                 } else {
-                    cmd = (Gfx *)seg_addr(cmd->words.w1);
+                    Gfx *branch = (Gfx *)seg_addr(cmd->words.w1);
+                    if (branch == NULL) {
+                        gfx_run_dl_abort("branch_to_null", cmd, opcode, depth);
+                        return;
+                    }
+                    if (branch == cmd) {
+                        gfx_run_dl_abort("branch_to_self", cmd, opcode, depth);
+                        return;
+                    }
+                    cmd = branch;
                     --cmd; // increase after break
                 }
                 break;
@@ -1749,6 +2063,9 @@ static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
+    sDjuiClip = false;
+    sDjuiTextureOverridePending = false;
+    sOnlyTextureChangeOnAddrChange = false;
 }
 
 void gfx_get_dimensions(uint32_t *width, uint32_t *height) {
@@ -1843,7 +2160,9 @@ void gfx_run(Gfx *commands) {
     //double t0 = gfx_wapi->get_time();
     gfx_rapi->start_frame();
     pc_diag_mark_stage("gfx_run:post_rapi_start_frame");
-    gfx_run_dl(commands);
+    sGfxDlAbortFrame = false;
+    sGfxDlCommandCount = 0;
+    gfx_run_dl(commands, 0);
     pc_diag_mark_stage("gfx_run:post_run_dl");
 #ifdef TARGET_WII_U
     if (!sLoggedFrame1GfxRunAfterDl) {

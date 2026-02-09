@@ -326,4 +326,15 @@ struct MarioState
     /*0xC4*/ f32 unkC4;
 };
 
+struct TextureInfo {
+    const Texture *texture;
+    const char *name;
+    u32 width;
+    u32 height;
+    u8 format;
+    u8 size;
+};
+
+#define MAX_PLAYERS 16
+
 #endif // TYPES_H

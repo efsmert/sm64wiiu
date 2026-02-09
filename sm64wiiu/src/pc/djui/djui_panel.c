@@ -1,75 +1,60 @@
+#include "djui.h"
 #include "djui_panel.h"
-
-#include <stdlib.h>
-
-#include "audio/external.h"
+#include "djui_panel_main.h"
+#include "djui_panel_pause.h"
+#include "djui_panel_join_message.h"
+#include "pc/debuglog.h"
+#include "pc/utils/misc.h"
 #include "sounds.h"
-#include "djui_cursor.h"
-#include "djui_interactable.h"
+#include "audio/external.h"
+#include "game/bettercamera.h"
 
-static struct DjuiPanel *sPanelList = NULL;
-static struct DjuiPanel *sPanelRemoving = NULL;
-static f32 sMoveAmount = 0.0f;
+static struct DjuiPanel* sPanelList = NULL;
+static struct DjuiPanel* sPanelRemoving = NULL;
+static f32 sMoveAmount = 0;
 
 bool gDjuiPanelDisableBack = false;
 
-static f32 djui_panel_smooth_step(f32 value) {
-    if (value <= 0.0f) {
-        return 0.0f;
-    }
-    if (value >= 1.0f) {
-        return 1.0f;
-    }
-    return value * value * (3.0f - 2.0f * value);
-}
-
 bool djui_panel_is_active(void) {
-    return sPanelList != NULL;
+    return (sPanelList != NULL);
 }
 
-static struct DjuiBase *djui_panel_find_first_interactable(struct DjuiBaseChild *child) {
-    while (child != NULL) {
-        if (child->base != NULL && child->base->interactable != NULL && child->base->interactable->enabled) {
+static struct DjuiBase* djui_panel_find_first_interactable(struct DjuiBaseChild* child) {
+    while (child) {
+        if (child->base->interactable && child->base->interactable->enabled) {
             return child->base;
         }
-        if (child->base != NULL) {
-            struct DjuiBase *check = djui_panel_find_first_interactable(child->base->child);
-            if (check != NULL) {
-                return check;
-            }
-        }
+        struct DjuiBase* check = djui_panel_find_first_interactable(child->base->child);
+        if (check) { return check; }
         child = child->next;
     }
 
+    // If we didn't find anything at all. Return NULL.
+    // LOG_ERROR("Failed to find a interactable for child %p.", child);
     return NULL;
 }
 
-struct DjuiPanel *djui_panel_add(struct DjuiBase *caller, struct DjuiThreePanel *threePanel, struct DjuiBase *defaultElementBase) {
-    struct DjuiPanel *panel = NULL;
-    struct DjuiBase *panelBase = NULL;
+struct DjuiPanel* djui_panel_add(struct DjuiBase* caller, struct DjuiThreePanel* threePanel, struct DjuiBase* defaultElementBase) {
+    if (sPanelRemoving != NULL) { return NULL; }
+    struct DjuiBase* panelBase = &threePanel->base;
     bool firstPanel = (sPanelList == NULL);
+    gDjuiPanelJoinMessageVisible = false;
 
-    if (threePanel == NULL || sPanelRemoving != NULL) {
-        return NULL;
-    }
-
-    panelBase = &threePanel->base;
-
+    // remember element that triggered this panel add
     if (sPanelList != NULL) {
         sPanelList->defaultElementBase = caller;
     }
 
+    // hide second from the top immediately
     if (sPanelList != NULL && sPanelList->parent != NULL) {
         djui_base_set_visible(sPanelList->parent->base, false);
     }
 
+    // calculate 3panel body height
     djui_three_panel_recalculate_body_size(threePanel);
 
-    panel = calloc(1, sizeof(struct DjuiPanel));
-    if (panel == NULL) {
-        return NULL;
-    }
-
+    // allocate panel
+    struct DjuiPanel* panel = calloc(1, sizeof(struct DjuiPanel));
     panel->parent = sPanelList;
     panel->base = panelBase;
     panel->defaultElementBase = defaultElementBase;
@@ -78,25 +63,29 @@ struct DjuiPanel *djui_panel_add(struct DjuiBase *caller, struct DjuiThreePanel 
     panel->temporary = threePanel->temporary;
     sPanelList = panel;
 
+    // find better defaultElementBase
     if (panel->defaultElementBase == NULL) {
         panel->defaultElementBase = djui_panel_find_first_interactable(panel->base->child);
     }
 
+    // deselect cursor input
     djui_cursor_input_controlled_center(NULL);
-    djui_interactable_ignore_until_release();
 
+    // hide new panel off screen initially
     djui_base_set_location_type(panelBase, DJUI_SVT_ABSOLUTE, DJUI_SVT_RELATIVE);
-    djui_base_set_location(panelBase, 0.0f, -1.0f);
+    djui_base_set_location(panelBase, 0, -1.0f);
 
+    // disable panels
     djui_base_set_enabled(panel->base, false);
     if (panel->parent != NULL) {
         djui_base_set_enabled(panel->parent->base, false);
     }
 
-    sMoveAmount = 0.0f;
+    // reset move amount
+    sMoveAmount = 0;
 
     if (firstPanel) {
-        djui_base_set_location(panelBase, 0.0f, 0.0f);
+        djui_base_set_location(panelBase, 0, 0);
         djui_cursor_input_controlled_center(panel->defaultElementBase);
         djui_base_set_enabled(panel->base, true);
     } else {
@@ -107,126 +96,141 @@ struct DjuiPanel *djui_panel_add(struct DjuiBase *caller, struct DjuiThreePanel 
 }
 
 void djui_panel_back(void) {
-    if (sPanelRemoving != NULL || sPanelList == NULL || gDjuiPanelDisableBack) {
-        return;
-    }
-
+    if (sPanelRemoving != NULL) { return; }
+    if (sPanelList == NULL) { return; }
+    if (gDjuiPanelDisableBack) { return; }
     if (sPanelList->parent == NULL) {
+        if (gDjuiPanelPauseCreated) { djui_panel_shutdown(); }
         return;
     }
 
-    if (sPanelList->on_back != NULL && sPanelList->on_back(sPanelList->base)) {
-        return;
+    // call back hook, return true to cancel back
+    if (sPanelList->on_back) {
+        if (sPanelList->on_back(sPanelList->base)) {
+            return;
+        }
     }
 
+    // deselect cursor input
     djui_cursor_input_controlled_center(NULL);
-    djui_interactable_ignore_until_release();
 
+    // remember which panel to remove
     sPanelRemoving = sPanelList;
+
+    // disable old active
     djui_base_set_enabled(sPanelRemoving->base, false);
 
+    // set the previous active
     sPanelList = sPanelList->parent;
-    while (sPanelList != NULL && sPanelList->temporary) {
-        sPanelList = sPanelList->parent;
-    }
+    if (sPanelList->temporary) { sPanelList = sPanelList->parent; }
 
-    if (sPanelList != NULL) {
-        djui_base_set_visible(sPanelList->base, true);
-    }
+    // reset move amount
+    sMoveAmount = 0;
 
-    sMoveAmount = 0.0f;
+    // set new active as visible
+    djui_base_set_visible(sPanelList->base, true);
+
+    // play a sound
     play_sound(SOUND_MENU_CLICK_FILE_SELECT, gGlobalSoundSource);
+
+    gDjuiPanelJoinMessageVisible = false;
 }
 
 void djui_panel_update(void) {
-    struct DjuiBase *activeBase = NULL;
-    struct DjuiBase *parentBase = NULL;
-    struct DjuiBase *removingBase = NULL;
-    f32 t = 0.0f;
+    if (sPanelList == NULL) { return; }
+    if (sPanelList->base == NULL) { return; }
+    if (sPanelList->base->elem.height == 0) { return; }
 
-    if (sPanelList == NULL || sPanelList->base == NULL || sPanelList->base->elem.height == 0.0f) {
-        return;
-    }
+    struct DjuiBase* activeBase   = sPanelList->base;
+    struct DjuiBase* parentBase   = (sPanelList->parent == NULL) ? NULL : sPanelList->parent->base;
+    struct DjuiBase* removingBase = (sPanelRemoving     == NULL) ? NULL : sPanelRemoving->base;
 
-    activeBase = sPanelList->base;
-    parentBase = (sPanelList->parent == NULL) ? NULL : sPanelList->parent->base;
-    removingBase = (sPanelRemoving == NULL) ? NULL : sPanelRemoving->base;
-
-    if (sMoveAmount >= DJUI_PANEL_MOVE_MAX) {
-        sMoveAmount = DJUI_PANEL_MOVE_MAX;
+    float moveMax = 1.0f;
+    if (sMoveAmount >= moveMax) {
+        sMoveAmount = moveMax;
         djui_base_set_enabled(activeBase, true);
-        activeBase->y.value = 0.0f;
+        activeBase->y.value = 0;
         return;
     }
 
-    sMoveAmount += DJUI_PANEL_MOVE_MAX / 10.0f;
-    if (sMoveAmount >= DJUI_PANEL_MOVE_MAX) {
-        struct DjuiPanel *panel = NULL;
-
-        sMoveAmount = DJUI_PANEL_MOVE_MAX;
+    extern u8 gRenderingInterpolated;
+    sMoveAmount += (gRenderingInterpolated ? 1.0f : 2.0f) * (moveMax / 10.0f);
+    if (sMoveAmount >= moveMax) {
+        sMoveAmount = moveMax;
         if (parentBase != NULL) {
             djui_base_set_visible(parentBase, false);
         }
-
         djui_base_set_enabled(activeBase, true);
-        activeBase->y.value = 0.0f;
+        activeBase->y.value = 0;
         djui_cursor_input_controlled_center(sPanelList->defaultElementBase);
 
         if (removingBase != NULL) {
-            panel = sPanelRemoving;
+            struct DjuiPanel* panel = sPanelRemoving;
             sPanelRemoving = NULL;
-
-            if (panel->on_panel_destroy != NULL) {
+            if (panel->on_panel_destroy) {
                 panel->on_panel_destroy(NULL);
             }
-
+            if (activeBase == removingBase) { activeBase = NULL; }
+            if (parentBase == removingBase) { parentBase = NULL; }
             djui_base_destroy(removingBase);
             free(panel);
+            removingBase = NULL;
+            return;
         }
-        return;
     }
 
-    t = djui_panel_smooth_step(sMoveAmount / DJUI_PANEL_MOVE_MAX);
-
-    if (activeBase != NULL && removingBase != NULL) {
-        activeBase->y.value = DJUI_PANEL_MOVE_MAX - DJUI_PANEL_MOVE_MAX * t;
-        if (sPanelRemoving != NULL) {
-            removingBase->y.value = activeBase->y.value - DJUI_PANEL_MOVE_MAX;
+    if (activeBase && removingBase) {
+        activeBase->y.value = moveMax - moveMax * smooth_step(0, moveMax, sMoveAmount);
+        if (sPanelRemoving) {
+            removingBase->y.value = activeBase->y.value - 1.0f;
         }
-    } else if (activeBase != NULL && parentBase != NULL) {
-        activeBase->y.value = DJUI_PANEL_MOVE_MAX * t - DJUI_PANEL_MOVE_MAX;
-        parentBase->y.value = activeBase->y.value + DJUI_PANEL_MOVE_MAX;
+    } else if (activeBase && parentBase) {
+        activeBase->y.value = moveMax * smooth_step(0, moveMax, sMoveAmount) - moveMax;
+        parentBase->y.value = activeBase->y.value + moveMax;
     }
 }
 
+extern bool gDjuiShuttingDown;
+extern bool gDjuiChangingTheme;
 void djui_panel_shutdown(void) {
-    struct DjuiPanel *panel = sPanelList;
-
+    static bool sShuttingDown = false;
+    if (sShuttingDown) { return; }
+    sShuttingDown = true;
+    struct DjuiPanel* panel = sPanelList;
     while (panel != NULL) {
-        struct DjuiPanel *next = panel->parent;
-
-        if (panel->on_panel_destroy != NULL) {
+        struct DjuiPanel* next = panel->parent;
+        if (panel->on_panel_destroy) {
             panel->on_panel_destroy(NULL);
         }
-
         djui_base_destroy(panel->base);
         free(panel);
         panel = next;
     }
 
     if (sPanelRemoving != NULL) {
-        panel = sPanelRemoving;
+        struct DjuiPanel* panel = sPanelRemoving;
         sPanelRemoving = NULL;
-
-        if (panel->on_panel_destroy != NULL) {
+        if (panel->on_panel_destroy) {
             panel->on_panel_destroy(NULL);
         }
-
         djui_base_destroy(panel->base);
         free(panel);
     }
 
     sPanelList = NULL;
     sPanelRemoving = NULL;
-    sMoveAmount = 0.0f;
+    sMoveAmount = 0;
+    gInteractableOverridePad = false;
+    gDjuiPanelJoinMessageVisible = false;
+    gDjuiPanelMainCreated = false;
+    gDjuiPanelPauseCreated = false;
+    djui_cursor_set_visible(false);
+    if (!gDjuiShuttingDown && !gDjuiChangingTheme) {
+        configfile_save();
+        if (gDjuiInMainMenu) {
+            gDjuiInMainMenu = false;
+            newcam_init_settings();
+        }
+    }
+    sShuttingDown = false;
 }

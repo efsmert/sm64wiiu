@@ -1,40 +1,41 @@
-#include "djui_root.h"
+#include "djui.h"
+#include "pc/pc_main.h"
+#include "pc/gfx/gfx_window_manager_api.h"
 
-#include <stdlib.h>
+static bool djui_root_render(struct DjuiBase* base) {
+    // grab window height
+    u32 windowWidth, windowHeight;
+    gfx_get_dimensions(&windowWidth, &windowHeight);
 
-struct DjuiRoot *gDjuiRoot = NULL;
+    // fill the screen
+    djui_base_set_location(base, 0, 0);
+    djui_base_set_size(base, windowWidth / djui_gfx_get_scale(), windowHeight / djui_gfx_get_scale());
 
-static bool djui_root_render(struct DjuiBase *base) {
-    if (base == NULL) {
-        return false;
-    }
-
-    // Keep root in fixed internal UI space for now; donor scale logic is added in later slices.
-    djui_base_set_location(base, 0.0f, 0.0f);
-    djui_base_set_size(base, 320.0f, 240.0f);
+    // compute base
     djui_base_compute(base);
     return true;
 }
 
-static void djui_root_destroy(struct DjuiBase *base) {
-    struct DjuiRoot *root = (struct DjuiRoot *)base;
+static void djui_root_destroy(struct DjuiBase* base) {
+    struct DjuiRoot* root = (struct DjuiRoot*)base;
     if (gDjuiRoot == root) {
         gDjuiRoot = NULL;
     }
     free(root);
 }
 
-struct DjuiRoot *djui_root_create(void) {
-    struct DjuiRoot *root = calloc(1, sizeof(struct DjuiRoot));
-    if (root == NULL) {
-        return NULL;
+struct DjuiRoot* djui_root_create(void) {
+    struct DjuiRoot* root = calloc(1, sizeof(struct DjuiRoot));
+    struct DjuiBase* base = &root->base;
+
+    djui_base_init(NULL, base, djui_root_render, djui_root_destroy);
+
+    djui_base_set_location(base, 0, 0);
+    djui_base_set_size(base, 1280, 720);
+    djui_base_set_color(base, 0, 0, 0, 0);
+
+    if (gDjuiRoot == NULL) {
+        gDjuiRoot = root;
     }
-
-    djui_base_init(NULL, &root->base, djui_root_render, djui_root_destroy);
-    djui_base_set_location(&root->base, 0.0f, 0.0f);
-    djui_base_set_size(&root->base, 320.0f, 240.0f);
-    djui_base_set_color(&root->base, 0, 0, 0, 0);
-    gDjuiRoot = root;
-
     return root;
 }

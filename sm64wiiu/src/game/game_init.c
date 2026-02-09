@@ -556,7 +556,7 @@ void read_controller_inputs(void) {
     // If any controllers are plugged in, update the controller information.
     if (gControllerBits) {
         osRecvMesg(&gSIEventMesgQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
-        osContGetReadData(&gControllerPads[0]);
+        osContGetReadData(gInteractableOverridePad ? &gInteractablePad : &gControllerPads[0]);
 #if ENABLE_RUMBLE
         release_rumble_pak_control();
 #endif

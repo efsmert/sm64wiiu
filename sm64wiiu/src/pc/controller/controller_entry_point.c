@@ -22,7 +22,7 @@ static struct ControllerAPI *controller_implementations[] = {
     &controller_recorded_tas,
 #if defined(_WIN32) || defined(_WIN64)
     &controller_xinput,
-#elif defined(__WIIU__)
+#elif defined(TARGET_WII_U) || defined(__WIIU__)
     &controller_wiiu,
 #else
     &controller_sdl,

@@ -177,6 +177,7 @@ s16 sDelayedWarpOp;
 s16 sDelayedWarpTimer;
 s16 sSourceWarpNodeId;
 s32 sDelayedWarpArg;
+s16 gChangeLevelTransition = -1;
 #if defined(VERSION_EU) || defined(VERSION_SH)
 s16 unusedEULevelUpdateBss1;
 #endif
@@ -1175,6 +1176,15 @@ s32 update_level(void) {
     djui_update();
     djui_update_menu_level();
 #endif
+
+    if (!gWarpTransition.isActive && sDelayedWarpOp == WARP_OP_NONE && gChangeLevelTransition != -1) {
+        gHudDisplay.flags = HUD_DISPLAY_NONE;
+        sTransitionTimer = 0;
+        sTransitionUpdate = NULL;
+        changeLevel = gChangeLevelTransition;
+        gChangeLevelTransition = -1;
+        return changeLevel;
+    }
 
     switch (sCurrPlayMode) {
         case PLAY_MODE_NORMAL:

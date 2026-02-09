@@ -1,150 +1,121 @@
-#include "djui_three_panel.h"
+#include "djui.h"
 
-#include <stdlib.h>
-
-static struct DjuiBase *djui_three_panel_child_at(struct DjuiThreePanel *threePanel, s32 index) {
-    struct DjuiBaseChild *child = NULL;
-    s32 i = 0;
-
-    if (threePanel == NULL) {
-        return NULL;
-    }
-
-    child = threePanel->base.child;
-    while (child != NULL) {
-        if (i == index) {
-            return child->base;
-        }
+struct DjuiBase* djui_three_panel_get_header(struct DjuiThreePanel* threePanel) {
+    struct DjuiBase* children[3] = { NULL };
+    struct DjuiBaseChild* child = threePanel->base.child;
+    for (int i = 0; i < 3; i++) {
+        if (child == NULL || child->base == NULL) { break; }
+        children[i] = child->base;
         child = child->next;
-        i++;
     }
-
-    return NULL;
+    return children[0];
 }
 
-struct DjuiBase *djui_three_panel_get_header(struct DjuiThreePanel *threePanel) {
-    return djui_three_panel_child_at(threePanel, 0);
-}
-
-struct DjuiBase *djui_three_panel_get_body(struct DjuiThreePanel *threePanel) {
-    return djui_three_panel_child_at(threePanel, 1);
-}
-
-struct DjuiBase *djui_three_panel_get_footer(struct DjuiThreePanel *threePanel) {
-    return djui_three_panel_child_at(threePanel, 2);
-}
-
-void djui_three_panel_set_min_header_size_type(struct DjuiThreePanel *threePanel, enum DjuiScreenValueType minHeaderSizeType) {
-    if (threePanel != NULL) {
-        threePanel->minHeaderSize.type = minHeaderSizeType;
+struct DjuiBase* djui_three_panel_get_body(struct DjuiThreePanel* threePanel) {
+    struct DjuiBase* children[3] = { NULL };
+    struct DjuiBaseChild* child = threePanel->base.child;
+    for (int i = 0; i < 3; i++) {
+        if (child == NULL || child->base == NULL) { break; }
+        children[i] = child->base;
+        child = child->next;
     }
+    return children[1];
 }
 
-void djui_three_panel_set_min_header_size(struct DjuiThreePanel *threePanel, f32 minHeaderSize) {
-    if (threePanel != NULL) {
-        threePanel->minHeaderSize.value = minHeaderSize;
+struct DjuiBase* djui_three_panel_get_footer(struct DjuiThreePanel* threePanel) {
+    struct DjuiBase* children[3] = { NULL };
+    struct DjuiBaseChild* child = threePanel->base.child;
+    for (int i = 0; i < 3; i++) {
+        if (child == NULL || child->base == NULL) { break; }
+        children[i] = child->base;
+        child = child->next;
     }
+    return children[2];
 }
 
-void djui_three_panel_set_body_size_type(struct DjuiThreePanel *threePanel, enum DjuiScreenValueType bodySizeType) {
-    if (threePanel != NULL) {
-        threePanel->bodySize.type = bodySizeType;
-    }
+void djui_three_panel_set_min_header_size_type(struct DjuiThreePanel* threePanel, enum DjuiScreenValueType minHeaderSizeType) {
+    threePanel->minHeaderSize.type = minHeaderSizeType;
 }
 
-void djui_three_panel_set_body_size(struct DjuiThreePanel *threePanel, f32 bodySize) {
-    if (threePanel != NULL) {
-        threePanel->bodySize.value = bodySize;
-    }
+void djui_three_panel_set_min_header_size(struct DjuiThreePanel* threePanel, f32 minHeaderSize) {
+    threePanel->minHeaderSize.value = minHeaderSize;
 }
 
-void djui_three_panel_set_min_footer_size_type(struct DjuiThreePanel *threePanel, enum DjuiScreenValueType minFooterSizeType) {
-    if (threePanel != NULL) {
-        threePanel->minFooterSize.type = minFooterSizeType;
-    }
+void djui_three_panel_set_body_size_type(struct DjuiThreePanel* threePanel, enum DjuiScreenValueType bodySizeType) {
+    threePanel->bodySize.type = bodySizeType;
 }
 
-void djui_three_panel_set_min_footer_size(struct DjuiThreePanel *threePanel, f32 minFooterSize) {
-    if (threePanel != NULL) {
-        threePanel->minFooterSize.value = minFooterSize;
-    }
+void djui_three_panel_set_body_size(struct DjuiThreePanel* threePanel, f32 bodySize) {
+    threePanel->bodySize.value = bodySize;
 }
 
-void djui_three_panel_recalculate_body_size(struct DjuiThreePanel *threePanel) {
-    struct DjuiBase *bodyBase = NULL;
-    struct DjuiFlowLayout *body = NULL;
-    struct DjuiBaseChild *child = NULL;
-    f32 bodyHeight = 0.0f;
+void djui_three_panel_set_min_footer_size_type(struct DjuiThreePanel* threePanel, enum DjuiScreenValueType minFooterSizeType) {
+    threePanel->minFooterSize.type = minFooterSizeType;
+}
 
-    if (threePanel == NULL || threePanel->bodySize.value != 0.0f) {
-        return;
-    }
+void djui_three_panel_set_min_footer_size(struct DjuiThreePanel* threePanel, f32 minFooterSize) {
+    threePanel->minFooterSize.value = minFooterSize;
+}
 
-    bodyBase = djui_three_panel_get_body(threePanel);
-    if (bodyBase == NULL) {
-        return;
-    }
+void djui_three_panel_recalculate_body_size(struct DjuiThreePanel* threePanel) {
+    struct DjuiFlowLayout* body = (struct DjuiFlowLayout*)djui_three_panel_get_body(threePanel);
+    struct DjuiBaseChild* child = body->base.child;
 
-    body = (struct DjuiFlowLayout *)bodyBase;
+    if (threePanel->bodySize.value != 0) { return; }
+
     if (body->margin.type != DJUI_SVT_ABSOLUTE) {
         return;
     }
-    bodyHeight = body->margin.value;
-    child = body->base.child;
+
+    f32 bodyHeight = body->margin.value;
     while (child != NULL) {
+        bodyHeight += body->margin.value;
+        bodyHeight += child->base->height.value;
         if (child->base->height.type != DJUI_SVT_ABSOLUTE) {
             return;
         }
-        bodyHeight += body->margin.value;
-        bodyHeight += child->base->height.value;
         child = child->next;
     }
-    if (bodyHeight < 0.0f) {
-        bodyHeight = 0.0f;
-    }
+    if (bodyHeight < 0) { bodyHeight = 0; }
     djui_three_panel_set_body_size(threePanel, bodyHeight);
 }
 
-static bool djui_three_panel_render(struct DjuiBase *base) {
-    struct DjuiThreePanel *threePanel = (struct DjuiThreePanel *)base;
-    struct DjuiBase *header = djui_three_panel_get_header(threePanel);
-    struct DjuiBase *body = djui_three_panel_get_body(threePanel);
-    struct DjuiBase *footer = djui_three_panel_get_footer(threePanel);
-    struct DjuiBaseRect *parentComp = NULL;
-    f32 tPad = 0.0f;
-    f32 bPad = 0.0f;
-    f32 myHeight = 0.0f;
-    f32 minHeaderSize = 0.0f;
-    f32 minFooterSize = 0.0f;
-    f32 largestMinSize = 0.0f;
-    f32 headerSize = 0.0f;
-    f32 bodySize = 0.0f;
-    f32 footerSize = 0.0f;
+  ////////////
+ // events //
+////////////
 
-    if (body == NULL) {
-        return false;
+bool djui_three_panel_render(struct DjuiBase* base) {
+    struct DjuiThreePanel* threePanel = (struct DjuiThreePanel*)base;
+
+    struct DjuiBase* children[3] = { NULL };
+    struct DjuiBaseChild* child = base->child;
+    for (int i = 0; i < 3; i++) {
+        if (child == NULL || child->base == NULL) { break; }
+        children[i] = child->base;
+        child = child->next;
     }
 
-    parentComp = &base->comp;
-    tPad = (base->padding.top.type == DJUI_SVT_RELATIVE) ? parentComp->height * base->padding.top.value
-                                                          : base->padding.top.value;
-    bPad = (base->padding.bottom.type == DJUI_SVT_RELATIVE) ? parentComp->height * base->padding.bottom.value
-                                                             : base->padding.bottom.value;
+    struct DjuiBase* head = children[0];
+    struct DjuiBase* body = children[1];
+    struct DjuiBase* foot = children[2];
 
-    myHeight = base->comp.height - tPad - bPad;
-    minHeaderSize = (threePanel->minHeaderSize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->minHeaderSize.value
-                                                                           : threePanel->minHeaderSize.value;
-    minFooterSize = (threePanel->minFooterSize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->minFooterSize.value
-                                                                           : threePanel->minFooterSize.value;
-    largestMinSize = (minHeaderSize > minFooterSize) ? minHeaderSize : minFooterSize;
+    if (body == NULL) { return false; }
 
-    headerSize = minHeaderSize;
-    bodySize = (threePanel->bodySize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->bodySize.value
-                                                                 : threePanel->bodySize.value;
-    footerSize = minFooterSize;
+    struct DjuiBaseRect* parentComp = &base->comp;
+    f32 tPad = (base->padding.top.type == DJUI_SVT_RELATIVE)    ? parentComp->height * base->padding.top.value    : base->padding.top.value;
+    f32 bPad = (base->padding.bottom.type == DJUI_SVT_RELATIVE) ? parentComp->height * base->padding.bottom.value : base->padding.bottom.value;
+
+    f32 myHeight = base->comp.height - tPad - bPad;
+    f32 minHeaderSize = (threePanel->minHeaderSize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->minHeaderSize.value : threePanel->minHeaderSize.value;
+    f32 minFooterSize = (threePanel->minFooterSize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->minFooterSize.value : threePanel->minFooterSize.value;
+    f32 largestMinSize = fmax(minHeaderSize, minFooterSize);
+
+    f32 headerSize = minHeaderSize;
+    f32 bodySize   = (threePanel->bodySize.type == DJUI_SVT_RELATIVE) ? base->comp.height * threePanel->bodySize.value : threePanel->bodySize.value;
+    f32 footerSize = minFooterSize;
 
     if (minHeaderSize + minFooterSize >= myHeight) {
-        bodySize = 0.0f;
+        bodySize = 0;
         headerSize = myHeight * (minHeaderSize / (minHeaderSize + minFooterSize));
         footerSize = myHeight * (minFooterSize / (minHeaderSize + minFooterSize));
     } else if (minHeaderSize + bodySize + minFooterSize >= myHeight) {
@@ -156,48 +127,48 @@ static bool djui_three_panel_render(struct DjuiBase *base) {
             headerSize = myHeight - footerSize - bodySize;
         }
     } else {
-        headerSize = (myHeight - bodySize) * 0.5f;
-        footerSize = (myHeight - bodySize) * 0.5f;
+        headerSize = (myHeight - bodySize) / 2.0f;
+        footerSize = (myHeight - bodySize) / 2.0f;
     }
 
-    if (header != NULL) {
-        djui_base_set_location_type(header, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-        djui_base_set_location(header, 0.0f, myHeight - headerSize);
-        djui_base_set_size_type(header, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
-        djui_base_set_size(header, 1.0f, headerSize);
+    if (head != NULL) {
+        //djui_base_set_location_type(head, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
+        //djui_base_set_location(head, 0, 0);
+        djui_base_set_size_type(head, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
+        djui_base_set_size(head, 1.0f, headerSize);
+        djui_base_set_alignment(head, DJUI_HALIGN_LEFT, DJUI_VALIGN_TOP);
     }
 
-    djui_base_set_location_type(body, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-    djui_base_set_location(body, 0.0f, footerSize);
-    djui_base_set_size_type(body, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
-    djui_base_set_size(body, 1.0f, bodySize);
-
-    if (footer != NULL) {
-        djui_base_set_location_type(footer, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
-        djui_base_set_location(footer, 0.0f, 0.0f);
-        djui_base_set_size_type(footer, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
-        djui_base_set_size(footer, 1.0f, footerSize);
+    if (body != NULL) {
+        djui_base_set_location_type(body, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
+        djui_base_set_location(body, 0, headerSize);
+        djui_base_set_size_type(body, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
+        djui_base_set_size(body, 1.0f, bodySize);
+        djui_base_set_alignment(body, DJUI_HALIGN_LEFT, DJUI_VALIGN_TOP);
     }
 
-    return djui_rect_render(base);
+    if (foot != NULL) {
+        djui_base_set_location_type(foot, DJUI_SVT_ABSOLUTE, DJUI_SVT_ABSOLUTE);
+        djui_base_set_location(foot, 0, headerSize + bodySize);
+        djui_base_set_size_type(foot, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
+        djui_base_set_size(foot, 1.0f, footerSize);
+        djui_base_set_alignment(foot, DJUI_HALIGN_LEFT, DJUI_VALIGN_TOP);
+    }
+
+    djui_rect_render(base);
+    return true;
 }
 
-static void djui_three_panel_destroy(struct DjuiBase *base) {
-    struct DjuiThreePanel *threePanel = (struct DjuiThreePanel *)base;
+static void djui_three_panel_destroy(struct DjuiBase* base) {
+    struct DjuiThreePanel* threePanel = (struct DjuiThreePanel*)base;
     free(threePanel);
 }
 
-struct DjuiThreePanel *djui_three_panel_create(struct DjuiBase *parent, f32 minHeaderSize, f32 bodySize, f32 minFooterSize) {
-    struct DjuiThreePanel *threePanel = calloc(1, sizeof(struct DjuiThreePanel));
+struct DjuiThreePanel* djui_three_panel_create(struct DjuiBase* parent, f32 minHeaderSize, f32 bodySize, f32 minFooterSize) {
+    struct DjuiThreePanel* threePanel = calloc(1, sizeof(struct DjuiThreePanel));
+    struct DjuiBase* base = &threePanel->base;
 
-    if (threePanel == NULL) {
-        return NULL;
-    }
-
-    djui_base_init(parent, &threePanel->base, djui_three_panel_render, djui_three_panel_destroy);
-    djui_three_panel_set_min_header_size_type(threePanel, DJUI_SVT_ABSOLUTE);
-    djui_three_panel_set_body_size_type(threePanel, DJUI_SVT_ABSOLUTE);
-    djui_three_panel_set_min_footer_size_type(threePanel, DJUI_SVT_ABSOLUTE);
+    djui_base_init(parent, base, djui_three_panel_render, djui_three_panel_destroy);
     djui_three_panel_set_min_header_size(threePanel, minHeaderSize);
     djui_three_panel_set_body_size(threePanel, bodySize);
     djui_three_panel_set_min_footer_size(threePanel, minFooterSize);

@@ -106,6 +106,10 @@ const char *sys_user_path(void) {
 }
 
 const char *sys_resource_path(void) {
+#ifdef TARGET_WII_U
+    // WUHB-bundled runtime assets (lang/mod content payload) are mounted here.
+    return "/vol/content";
+#endif
     return sys_exe_path_dir();
 }
 

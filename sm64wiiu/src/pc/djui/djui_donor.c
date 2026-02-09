@@ -12,9 +12,13 @@
 #include "game/segment2.h"
 #include "djui_cursor.h"
 #include "djui_interactable.h"
+#include "djui_language.h"
 #include "djui_panel_main.h"
 #include "djui_panel.h"
 #include "djui_root.h"
+#include "djui_theme.h"
+#include "djui_unicode.h"
+#include "pc/configfile.h"
 
 extern bool gDjuiInMainMenu;
 extern bool gDjuiDisabled;
@@ -41,6 +45,12 @@ void djui_donor_init(void) {
     if (sDonorInitialized) {
         return;
     }
+
+    djui_unicode_init();
+    if (!djui_language_init(configLanguage)) {
+        djui_language_init("English");
+    }
+    djui_themes_init();
 
     djui_root_create();
     djui_cursor_create();
@@ -73,20 +83,25 @@ void djui_donor_update(void) {
     u16 down = 0;
     u16 pressed = 0;
 
-    if (!sDonorInitialized || gPlayer1Controller == NULL) {
+    if (!sDonorInitialized) {
         return;
+    }
+
+    gInteractableOverridePad = (gDjuiInMainMenu && djui_panel_is_active());
+
+    if (gInteractableOverridePad) {
+        down = gInteractablePad.button;
+    } else if (gPlayer1Controller != NULL) {
+        down = gPlayer1Controller->buttonDown;
     }
 
     if (!gDjuiInMainMenu) {
-        sLastButtons = gPlayer1Controller->buttonDown;
+        sLastButtons = down;
         return;
     }
 
-    down = gPlayer1Controller->buttonDown;
     pressed = (u16)(down & (u16)~sLastButtons);
     sLastButtons = down;
-
-    djui_interactable_update();
 
     if (pressed & START_BUTTON) {
         djui_donor_close_main_menu();
@@ -159,11 +174,18 @@ void djui_donor_render(void) {
     }
 
     create_dl_ortho_matrix();
+    djui_gfx_displaylist_begin();
+    djui_reset_hud_params();
     djui_panel_update();
     if (gDjuiRoot != NULL) {
         djui_base_render(&gDjuiRoot->base);
     }
     djui_cursor_update();
+    extern u8 gRenderingInterpolated;
+    if (!gRenderingInterpolated) {
+        djui_interactable_update();
+    }
+    djui_gfx_displaylist_end();
 }
 
 void djui_donor_open_main_menu(void) {

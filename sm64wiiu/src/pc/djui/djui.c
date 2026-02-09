@@ -1,5 +1,6 @@
 #include "djui.h"
 #include "djui_donor.h"
+#include "djui_hud_utils.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -23,6 +24,12 @@
 
 bool gDjuiInMainMenu = true;
 bool gDjuiDisabled = false;
+struct DjuiRoot* gDjuiRoot = NULL;
+struct DjuiText* gDjuiPauseOptions = NULL;
+struct DjuiText* gDjuiModReload = NULL;
+bool gDjuiInPlayerMenu = false;
+bool gDjuiShuttingDown = false;
+bool gDjuiChangingTheme = false;
 #ifndef DJUI_DEFAULT_DONOR_STACK
 #define DJUI_DEFAULT_DONOR_STACK 1
 #endif
@@ -989,12 +996,31 @@ static bool djui_input_is_neutral(void) {
     return true;
 }
 
+void djui_set_use_donor_stack(bool useDonorStack) {
+    gDjuiUseDonorStack = useDonorStack;
+}
+
+bool djui_get_use_donor_stack(void) {
+    return gDjuiUseDonorStack;
+}
+
+// Compatibility aliases for callsites that used earlier naming.
 void djui_set_donor_stack_enabled(bool enabled) {
-    gDjuiUseDonorStack = enabled;
+    djui_set_use_donor_stack(enabled);
 }
 
 bool djui_is_donor_stack_enabled(void) {
-    return gDjuiUseDonorStack;
+    return djui_get_use_donor_stack();
+}
+
+void djui_reset_hud_params(void) {
+    djui_hud_set_resolution(RESOLUTION_DJUI);
+    djui_hud_set_font(FONT_NORMAL);
+    djui_hud_set_rotation(0, 0, 0);
+    djui_hud_reset_color();
+    djui_hud_set_filter(FILTER_NEAREST);
+    djui_hud_reset_viewport();
+    djui_hud_reset_scissor();
 }
 
 void djui_init(void) {
