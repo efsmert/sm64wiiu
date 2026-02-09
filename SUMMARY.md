@@ -184,6 +184,10 @@ make -C sm64wiiu wuhb
 - Wired donor menu-options runtime behavior into the active donor backend: menu-level selection/randomization/staff-roll/music selectors now drive `djui_donor_update_menu_level()` with donor-scene presets (warp target + camera/mario pose), so option changes are reflected while the donor main menu is live instead of staying hardcoded to castle grounds.
 - Restored donor runtime overlays in the donor path (`djui_fps_display`, `djui_ctx_display`, `djui_lua_profiler`) and added FPS update plumbing in `pc_main`, so related display/profiler options are no longer inert in Wii U donor mode.
 - Hardened host-mod selector parity by routing checkbox toggles through `mods_set_available_script_enabled()` before selectable recompute/save, ensuring donor host-mod panel toggles mutate canonical runtime script-enable state directly.
+- Adjusted host-mod activation timing to match Wii U session expectations: startup remains modless even with persisted `enable-mod:` selections, and selected mods are now applied in-session when `HOST`/`APPLY` is confirmed in donor host flow.
+- Hardened donor menu-scene stability for non-castle levels by using deferred level transition routing (`gChangeLevelTransition`) for level mismatches, reserving direct `initiate_warp()` only for same-level area switches, and hard-locking Lakitu focus/position/speeds during active menu scenes to avoid startup wobble/respawn loops.
+- Added Wii U renderer safety guards for malformed frame data: clamp zero texture dimensions in `gfx_pc.c` UV normalization and skip GX2 draw submission when transient VBO allocation fails.
+- Hardened GX2 frame-end pacing safety: Wii U now keeps the stable 30Hz swap cadence even when the DJUI `vsync` toggle is disabled (with one-time log warning), and swap-end now always waits for pending flips with bounded retries to avoid unsynced buffer corruption.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -191,7 +195,8 @@ make -C sm64wiiu wuhb
 - Companion loading prioritizes deterministic fallback lists for known built-ins when applicable.
 - Donor DJUI now depends on donor GBI-extension opcode handling in the renderer; fallback `gDPLoadTextureBlock` emulation for texture override is considered unstable for Wii U donor atlases.
 - Wii U network stubs intentionally reject `NT_CLIENT`; donor join flows must gate on `network_client_available()` and provide immediate UI error feedback to avoid indefinite “joining” waits.
-- Donor DJUI settings now persist through `sm64config.txt` (including enabled host mods via `enable-mod:` entries) and queued mod enables are applied immediately after `mods_init()` during startup.
+- Donor DJUI settings now persist through `sm64config.txt` (including enabled host mods via `enable-mod:` entries); queued mod enables are restored after startup Lua init so boot stays modless, and selected host mods are applied on donor `HOST`/`APPLY`.
+- Wii U currently keeps swap interval fixed to the stable 30Hz cadence; true unsynced/60Hz frame pacing remains deferred until Co-op DX interpolation/frame-timing support is ported end-to-end.
 
 ## 7) Known Gotchas
 - Wii U is big-endian; apply byte swaps where required.
@@ -203,6 +208,7 @@ make -C sm64wiiu wuhb
 - Donor DJUI language files must be present in WUHB mounted content (`/vol/content/lang/*.ini`); if `content/lang` is stale/missing, UI falls back to raw keys and panel text can look wrong.
 - Without explicit client-availability checks, donor join panels can enter `JOIN MESSAGE` wait state forever on Wii U stubs; fail fast and surface `LOBBY_JOIN_FAILED` instead.
 - Donor DJUI clip commands are encoded as 0..255 percentages; on Wii U float-space drift can push values slightly out of range and wrap on `u8` conversion, causing blocky/missing glyphs near panel bounds unless values are clamped before emit/consume.
+- Donor menu-level changes should only force warps while play mode is normal and area data is loaded; issuing repeated level/area warps during transition phases can cause visible respawn loops and unstable camera settle in Cemu.
 
 ## 8) Remaining Work / Next Focus
 - Continue non-network gameplay/mod parity with stability-first validation.
@@ -212,6 +218,7 @@ make -C sm64wiiu wuhb
 - Continue donor backend parity hardening for panel behavior and remaining runtime-only options (notably interpolation/audio/camera backend parity) while keeping legacy runtime toggle as safety fallback until donor stack is proven stable on Wii U.
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
+- Port Co-op DX interpolation/timer pacing to Wii U so menu/display `60fps` options are truly functional (without simulation speed-up or swap-path instability).
 
 ## 9) Milestone Ledger (Compact Chronology)
 
@@ -413,6 +420,18 @@ Notes:
   - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
   - outcome: build + wuhb succeed; donor menu options now drive active menu-level runtime state (instead of fixed castle-only behavior) and host-mod toggles now update canonical script-enable flags directly.
   - gotcha: running `make` and `make wuhb` in parallel can race RPX strip/pack (`powerpc-eabi-strip ... invalid operation`); run them sequentially.
+- Donor menu-scene hang mitigation + renderer guards: moved donor menu-level changes to deferred level transitions (`gChangeLevelTransition`) for level swaps, limited direct warps to area-only changes, and added explicit Lakitu focus/position/speed locks while menu mode is active; also added GX2/renderer safety checks for zero texture dimensions and null transient VBO allocation to reduce frame-1 stall risk.
+  - files: sm64wiiu/src/pc/djui/djui_donor.c, sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/gfx/gfx_gx2.cpp, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor menu-level changes now follow level-update transition flow for level swaps, area-only warps stop repeating, and renderer guards remain in place for malformed startup draw data.
+- Wii U menu-level option unlock with startup safety retained: removed the temporary Wii U force-lock of donor menu-level/random/staff-roll controls while keeping Wii U framerate safety defaults (`vsync=true`, `framerate_mode=auto`, `interpolation=accurate`) enforced in config/display paths to preserve stable launches.
+  - files: sm64wiiu/src/pc/configfile.c, sm64wiiu/src/pc/djui/djui_panel_menu_options.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; menu-level options are editable again on Wii U while launch-stable display defaults remain guarded.
+- Host-mod apply-now wiring in donor host panel: kept persisted host-mod selections restored at boot without auto-loading Lua scripts, and wired donor host actions so selected mods reload into the current runtime when `HOST` (new server) or `APPLY` (already hosting) is pressed.
+  - files: sm64wiiu/src/pc/djui/djui_panel_host.c, sm64wiiu/src/pc/djui/djui_panel_host_message.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; host-mod selections remain persisted for next boot, while runtime activation now occurs on explicit host/apply action instead of requiring restart.
 
 ## 10) Required Format For Future Summary Updates
 

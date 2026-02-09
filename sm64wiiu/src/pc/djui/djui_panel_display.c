@@ -16,6 +16,12 @@ static u32 sMsaaSelection = 0;
 static u32 sMsaaOriginal = MSAA_ORIGINAL_UNSET;
 
 static void djui_panel_display_apply(UNUSED struct DjuiBase* caller) {
+#ifdef TARGET_WII_U
+    // Keep Wii U on the known-stable cadence path for now.
+    configWindow.vsync = true;
+    configFramerateMode = RRM_AUTO;
+    configInterpolationMode = 1;
+#endif
     configWindow.settings_changed = true;
 }
 
@@ -56,18 +62,26 @@ void djui_panel_display_create(struct DjuiBase* caller) {
     struct DjuiThreePanel* panel = djui_panel_menu_create(DLANG(DISPLAY, DISPLAY), false);
     struct DjuiBase* body = djui_three_panel_get_body(panel);
     struct DjuiSelectionbox* msaa = NULL;
+    struct DjuiCheckbox* vsyncCheckbox = NULL;
+    struct DjuiSelectionbox* framerateSelection = NULL;
 
     // save original msaa value
     if (sMsaaOriginal == MSAA_ORIGINAL_UNSET) { sMsaaOriginal = configWindow.msaa; }
+
+#ifdef TARGET_WII_U
+    configWindow.vsync = true;
+    configFramerateMode = RRM_AUTO;
+    configInterpolationMode = 1;
+#endif
 
     {
         djui_checkbox_create(body, DLANG(DISPLAY, FULLSCREEN), &configWindow.fullscreen, djui_panel_display_apply);
         djui_checkbox_create(body, DLANG(DISPLAY, FORCE_4BY3), &configForce4By3, djui_panel_display_apply);
         djui_checkbox_create(body, DLANG(DISPLAY, SHOW_FPS), &configShowFPS, NULL);
-        djui_checkbox_create(body, DLANG(DISPLAY, VSYNC), &configWindow.vsync, djui_panel_display_apply);
+        vsyncCheckbox = djui_checkbox_create(body, DLANG(DISPLAY, VSYNC), &configWindow.vsync, djui_panel_display_apply);
 
         char* framerateModeChoices[3] = { DLANG(DISPLAY, AUTO), DLANG(DISPLAY, MANUAL), DLANG(DISPLAY, UNCAPPED) };
-        djui_selectionbox_create(body, DLANG(DISPLAY, FRAMERATE_MODE), framerateModeChoices, 3, &configFramerateMode, djui_panel_display_framerate_mode_change);
+        framerateSelection = djui_selectionbox_create(body, DLANG(DISPLAY, FRAMERATE_MODE), framerateModeChoices, 3, &configFramerateMode, djui_panel_display_framerate_mode_change);
 
         struct DjuiRect* rect1 = djui_rect_container_create(body, 32);
         {
@@ -128,6 +142,21 @@ void djui_panel_display_create(struct DjuiBase* caller) {
         djui_base_set_size_type(&sRestartText->base, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
         djui_base_set_size(&sRestartText->base, 1.0f, 64);
     }
+
+#ifdef TARGET_WII_U
+    if (vsyncCheckbox != NULL) {
+        djui_base_set_enabled(&vsyncCheckbox->base, false);
+    }
+    if (framerateSelection != NULL) {
+        djui_base_set_enabled(&framerateSelection->base, false);
+    }
+    if (sFrameLimitInput != NULL) {
+        djui_base_set_enabled(&sFrameLimitInput->base, false);
+    }
+    if (sInterpolationSelectionBox != NULL) {
+        djui_base_set_enabled(&sInterpolationSelectionBox->base, false);
+    }
+#endif
 
     // force the restart text to update
     if (msaa) {

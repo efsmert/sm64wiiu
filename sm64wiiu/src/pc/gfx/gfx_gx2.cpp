@@ -663,6 +663,9 @@ static void gfx_gx2_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t b
     vbo_array[idx] = static_cast<float*>(memalign(0x40, vbo_len));
 
     float* new_vbo = vbo_array[idx];
+    if (new_vbo == nullptr) {
+        return;
+    }
     memcpy(new_vbo, buf_vbo, vbo_len);
 
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, new_vbo, vbo_len);

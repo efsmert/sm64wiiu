@@ -6,6 +6,7 @@
 #include "pc/network/network.h"
 #include "pc/utils/misc.h"
 #include "pc/configfile.h"
+#include "pc/lua/smlua.h"
 #include "pc/utils/misc.h"
 #include "game/characters.h"
 #include "game/level_update.h"
@@ -30,6 +31,8 @@ void djui_panel_do_host(bool reconnecting, bool playSound) {
     network_set_system(configNetworkSystem);
 
     network_init(NT_SERVER, reconnecting);
+    // Apply currently-selected host mods in-session when hosting starts.
+    smlua_init();
     djui_panel_modlist_create(NULL);
     fake_lvl_init_from_save_file();
 

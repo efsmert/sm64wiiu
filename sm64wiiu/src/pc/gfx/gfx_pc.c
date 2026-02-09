@@ -84,6 +84,8 @@ static size_t color_combiner_pool_size;
 static bool sColorCombinerPoolOverflowLogged = false;
 static uint32_t sTextureTileRemapLogCount = 0;
 static uint32_t sTextureImportRejectLogCount = 0;
+static uint32_t sTextureImportBeginLogCount = 0;
+static uint32_t sTextureImportEndLogCount = 0;
 
 #define GFX_TEXTURE_SLOTS 2
 
@@ -213,6 +215,9 @@ static bool sLoggedFrame1GfxRunAfterDl = false;
 static bool sLoggedFrame1GfxRunAfterFlush = false;
 static bool sLoggedFrame1GfxRunAfterEnd = false;
 static bool sLoggedFrame1GfxRunAfterSwapBegin = false;
+static uint32_t sGfxDlProgressLogCount = 0;
+static uint32_t sCombinerCreateBeginLogCount = 0;
+static uint32_t sGfxDlCommandExitLogCount = 0;
 
 #ifdef TARGET_WII_U
 static float buf_vbo[MAX_BUFFERED * (28 * 3)]; // 3 vertices in a triangle and 28 floats per vtx
@@ -338,6 +343,14 @@ static struct ColorCombiner *gfx_lookup_or_create_color_combiner(uint32_t cc_id)
 
     gfx_flush();
     struct ColorCombiner *comb = &color_combiner_pool[color_combiner_pool_size++];
+#ifdef TARGET_WII_U
+    if (sCombinerCreateBeginLogCount < 32) {
+        WHBLogPrintf("gfx: combiner_create_begin[%u] cc_id=0x%08x",
+                     (unsigned)(color_combiner_pool_size - 1),
+                     (unsigned)cc_id);
+        sCombinerCreateBeginLogCount++;
+    }
+#endif
     gfx_generate_cc(comb, cc_id);
 #ifdef TARGET_WII_U
     if (color_combiner_pool_size <= 8 || (color_combiner_pool_size % 16) == 0) {
@@ -606,6 +619,18 @@ static void import_texture(int tile) {
     uint8_t fmt = rdp.texture_tile.fmt;
     uint8_t siz = rdp.texture_tile.siz;
 
+#ifdef TARGET_WII_U
+    if (sTextureImportBeginLogCount < 48) {
+        WHBLogPrintf("gfx: tex_import_begin tile=%d fmt=%u siz=%u line=%u bytes=%u",
+                     tile,
+                     (unsigned)fmt,
+                     (unsigned)siz,
+                     (unsigned)rdp.texture_tile.line_size_bytes,
+                     (unsigned)rdp.loaded_texture[tile].size_bytes);
+        sTextureImportBeginLogCount++;
+    }
+#endif
+
     if (gfx_texture_cache_lookup(tile, &rendering_state.textures[tile], rdp.loaded_texture[tile].addr, fmt, siz)) {
         return;
     }
@@ -648,6 +673,15 @@ static void import_texture(int tile) {
     } else {
         abort();
     }
+#ifdef TARGET_WII_U
+    if (sTextureImportEndLogCount < 48) {
+        WHBLogPrintf("gfx: tex_import_end tile=%d fmt=%u siz=%u",
+                     tile,
+                     (unsigned)fmt,
+                     (unsigned)siz);
+        sTextureImportEndLogCount++;
+    }
+#endif
     //int t1 = get_time();
     //printf("Time diff: %d\n", t1 - t0);
 }
@@ -1184,6 +1218,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
     bool use_texture = used_textures[0] || used_textures[1];
     uint32_t tex_width = (rdp.texture_tile.lrs - rdp.texture_tile.uls + 4) / 4;
     uint32_t tex_height = (rdp.texture_tile.lrt - rdp.texture_tile.ult + 4) / 4;
+    if (tex_width == 0) { tex_width = 1; }
+    if (tex_height == 0) { tex_height = 1; }
 
     bool z_is_from_0_to_1 = gfx_rapi->z_is_from_0_to_1();
 
@@ -1788,6 +1824,17 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
         }
 
         uint32_t opcode = cmd->words.w0 >> 24;
+#ifdef TARGET_WII_U
+        if (sGfxDlProgressLogCount < 96
+            && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
+            WHBLogPrintf("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p",
+                         (unsigned)sGfxDlCommandCount,
+                         (unsigned)depth,
+                         (unsigned)opcode,
+                         (void *)cmd);
+            sGfxDlProgressLogCount++;
+        }
+#endif
 
         switch (opcode) {
             // RSP commands:
@@ -2060,6 +2107,17 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                 gfx_dp_set_color_image(C0(21, 3), C0(19, 2), C0(0, 11), seg_addr(cmd->words.w1));
                 break;
         }
+#ifdef TARGET_WII_U
+        if (sGfxDlCommandExitLogCount < 96
+            && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
+            WHBLogPrintf("gfx: dl_command_exit count=%u depth=%u opcode=0x%02x cmd=%p",
+                         (unsigned)sGfxDlCommandCount,
+                         (unsigned)depth,
+                         (unsigned)opcode,
+                         (void *)cmd);
+            sGfxDlCommandExitLogCount++;
+        }
+#endif
         ++cmd;
     }
 }

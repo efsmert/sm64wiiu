@@ -42,6 +42,7 @@ static bool sDonorLastMenuRandom = false;
 static bool sDonorLastMenuStaffRoll = false;
 static unsigned int sDonorLastMenuLevel = 0;
 
+#define WARP_TYPE_NOT_WARPING 0
 #define DJUI_MENU_LEVEL_COUNT 18
 #define DJUI_MENU_RANDOM_MIN 1
 #define DJUI_MENU_RANDOM_MAX 17
@@ -229,6 +230,8 @@ void djui_donor_update_menu_level(void) {
     u8 levelIndex = 0;
     const struct DjuiMenuPreset* preset = NULL;
     bool needsMenuLevelWarp = false;
+    bool levelMismatch = false;
+    bool areaMismatch = false;
 
     if (!sDonorInitialized || !gDjuiInMainMenu || gMarioState == NULL) {
         return;
@@ -249,6 +252,11 @@ void djui_donor_update_menu_level(void) {
     sDonorLastMenuStaffRoll = configMenuStaffRoll;
     sDonorLastMenuLevel = configMenuLevel;
 
+    // level_update.c keeps play-mode constants private; 0 is PLAY_MODE_NORMAL.
+    if (sCurrPlayMode != 0 || gCurrentArea == NULL) {
+        return;
+    }
+
     levelIndex = djui_donor_resolve_menu_level_index();
     if (levelIndex >= DJUI_MENU_LEVEL_COUNT) {
         levelIndex = 0;
@@ -268,23 +276,30 @@ void djui_donor_update_menu_level(void) {
     sDonorStaffRollTriggered = false;
     gCurrCreditsEntry = NULL;
 
-    needsMenuLevelWarp = (gCurrLevelNum != preset->level
-                          || gCurrAreaIndex != preset->area);
+    levelMismatch = (gCurrLevelNum != preset->level);
+    areaMismatch = (gCurrAreaIndex != preset->area);
+    needsMenuLevelWarp = levelMismatch || areaMismatch;
 
-    // Do not force a warp when we're already in the menu destination level/area.
-    // This avoids a visible startup camera jump before the menu pose is applied.
     if (needsMenuLevelWarp) {
         sDonorMenuWarpPending = true;
     }
-    if (sDonorMenuWarpPending) {
-        if (needsMenuLevelWarp) {
-            initiate_warp(preset->level, preset->area, preset->node, 0);
+
+    // Donor-like behavior: transition levels via level_update's deferred change path.
+    // Reserve direct initiate_warp() only for same-level area switches (e.g. THI area 2).
+    if (sDonorMenuWarpPending && needsMenuLevelWarp) {
+        if (levelMismatch) {
+            gChangeLevelTransition = preset->level;
             return;
         }
-        sDonorMenuWarpPending = false;
-    }
 
-    set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (areaMismatch
+            && sWarpDest.type == WARP_TYPE_NOT_WARPING
+            && sDelayedWarpOp == WARP_OP_NONE) {
+            initiate_warp(preset->level, preset->area, preset->node, 0);
+        }
+        return;
+    }
+    sDonorMenuWarpPending = false;
 
     gMarioState->vel[0] = 0.0f;
     gMarioState->vel[1] = 0.0f;
@@ -299,9 +314,29 @@ void djui_donor_update_menu_level(void) {
     gMarioState->pos[2] = preset->marioZ;
     gMarioState->faceAngle[1] = preset->yaw;
 
+    gLakituState.curFocus[0] = preset->marioX;
+    gLakituState.curFocus[1] = preset->marioY;
+    gLakituState.curFocus[2] = preset->marioZ;
+    gLakituState.goalFocus[0] = preset->marioX;
+    gLakituState.goalFocus[1] = preset->marioY;
+    gLakituState.goalFocus[2] = preset->marioZ;
+    gLakituState.focus[0] = preset->marioX;
+    gLakituState.focus[1] = preset->marioY;
+    gLakituState.focus[2] = preset->marioZ;
     gLakituState.curPos[0] = preset->camX;
     gLakituState.curPos[1] = preset->camY;
     gLakituState.curPos[2] = preset->camZ;
+    gLakituState.goalPos[0] = preset->camX;
+    gLakituState.goalPos[1] = preset->camY;
+    gLakituState.goalPos[2] = preset->camZ;
+    gLakituState.pos[0] = preset->camX;
+    gLakituState.pos[1] = preset->camY;
+    gLakituState.pos[2] = preset->camZ;
+    gLakituState.focHSpeed = 0.0f;
+    gLakituState.focVSpeed = 0.0f;
+    gLakituState.posHSpeed = 0.0f;
+    gLakituState.posVSpeed = 0.0f;
+    gLakituState.yaw = gMarioState->faceAngle[1] + 0x8000;
     gLakituState.nextYaw = gMarioState->faceAngle[1] + 0x8000;
 
     if (gMarioState->controller != NULL) {

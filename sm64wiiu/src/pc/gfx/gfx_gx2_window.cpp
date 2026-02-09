@@ -6,6 +6,8 @@
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/memfrmheap.h>
 #include <coreinit/memheap.h>
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
 #include <gx2/display.h>
@@ -25,11 +27,16 @@
 
 #include "gfx_window_manager_api.h"
 #include "gfx_gx2.h"
+#include "../configfile.h"
 
 uint32_t g_window_width = 0;
 uint32_t g_window_height = 0;
 
 static bool is_running = false;
+static uint32_t sAppliedSwapInterval = UINT32_MAX;
+static OSTime sTimeOriginTicks = 0;
+static bool sWarnedUnsupportedVsyncOff = false;
+static void gfx_gx2_window_apply_swap_interval(void);
 
 static void*            g_cmd_list                = nullptr;
 static GX2ContextState* g_context                 = nullptr;
@@ -369,9 +376,9 @@ static void gfx_gx2_window_init(UNUSED const char*, UNUSED bool)
     GX2SetColorBuffer(&g_color_buffer, GX2_RENDER_TARGET_0);
     GX2SetDepthBuffer(&g_depth_buffer);
 
-    // Set swap interval to 2 by default
-    // (Set it to 1 when using the 60FPS patch)
-    GX2SetSwapInterval(2);
+    // Keep donor-compat default cadence (30Hz), while allowing runtime DJUI vsync toggle.
+    sAppliedSwapInterval = UINT32_MAX;
+    gfx_gx2_window_apply_swap_interval();
 
     // Set the default viewport and scissor
     GX2SetViewport(0, 0, g_window_width, g_window_height, 0.0f, 1.0f);
@@ -398,6 +405,24 @@ static void gfx_gx2_window_set_fullscreen(UNUSED bool)
 
 static void gfx_gx2_window_set_scroll_callback(UNUSED void (*on_scroll)(float, float))
 {
+}
+
+static void gfx_gx2_window_apply_swap_interval(void)
+{
+    // Wii U currently runs fixed 30Hz game simulation in this branch.
+    // Allowing unsynced swap here can overrun render buffers and desync simulation.
+    // Keep the stable donor cadence until full interpolation/frame-pacing parity lands.
+    if (!configWindow.vsync && !sWarnedUnsupportedVsyncOff) {
+        WHBLogPrint("gfx: vsync-off swap path is unsupported on Wii U; using stable 30Hz cadence");
+        sWarnedUnsupportedVsyncOff = true;
+    }
+
+    uint32_t desired = 2U;
+    if (desired == sAppliedSwapInterval) {
+        return;
+    }
+    GX2SetSwapInterval(desired);
+    sAppliedSwapInterval = desired;
 }
 
 static void gfx_gx2_window_main_loop(void (*run_one_game_iter)(void))
@@ -436,6 +461,8 @@ static bool gfx_gx2_window_start_frame(void)
 {
     if (!is_running)
         return false;
+
+    gfx_gx2_window_apply_swap_interval();
 
     // Rebind the render targets before draw submission each frame.
     GX2SetContextState(g_context);
@@ -483,9 +510,6 @@ static void gfx_gx2_window_swap_buffers_begin(void)
     GX2SetDRCEnable(true);
 }
 
-// 2022/05/13: OSSecondsToTicks provided by WUT does not allow for fractions of seconds
-#define OSSecondsF32ToTicks(val) (uint64_t)((float)(val) * OSTimerClockSpeed)
-
 static void gfx_gx2_window_swap_buffers_end(void)
 {
     uint32_t swap_count, flip_count;
@@ -493,38 +517,31 @@ static void gfx_gx2_window_swap_buffers_end(void)
     uint32_t spin_count = 0;
     const uint32_t max_spins = 8;
 
-    uint32_t swap_interval = GX2GetSwapInterval();
-    OSTime swap_interval_ticks = swap_interval * OSSecondsF32ToTicks(0.75f / 59.94f);
+    while (true) {
+        GX2GetSwapStatus(&swap_count, &flip_count, &prev_flip, &prev_vsync);
+        (void)prev_flip;
+        (void)prev_vsync;
+        if (flip_count >= swap_count) {
+            break;
+        }
 
-    if (swap_interval > 0)
-    {
-        while (true)
-        {
-            GX2GetSwapStatus(&swap_count, &flip_count, &prev_flip, &prev_vsync);
-            if (flip_count >= swap_count)
-                break;
+        GX2WaitForVsync();
 
-            if (prev_vsync - prev_flip < swap_interval_ticks)
-                GX2WaitForVsync();
-
-            else
-            {
-                // Swapping is going to happen at the next vsync
-                // Do not wait for it (hopefully this does not cause issues)
-                break;
-            }
-
-            // Prevent indefinite stalls in emulators if swap status stops advancing.
-            if (++spin_count >= max_spins) {
-                break;
-            }
+        // Prevent indefinite stalls in emulators if swap status stops advancing.
+        if (++spin_count >= max_spins) {
+            break;
         }
     }
 }
 
 static double gfx_gx2_window_get_time(void)
 {
-    return 0.0;
+    OSTime now = OSGetTime();
+    if (sTimeOriginTicks == 0) {
+        sTimeOriginTicks = now;
+        return 0.0;
+    }
+    return (double)(now - sTimeOriginTicks) / (double)OSTimerClockSpeed;
 }
 
 static void gfx_gx2_window_shutdown(void)
@@ -553,8 +570,12 @@ static void gfx_gx2_window_set_cursor_visible(UNUSED bool visible)
 {
 }
 
-static void gfx_gx2_window_delay(UNUSED unsigned int ms)
+static void gfx_gx2_window_delay(unsigned int ms)
 {
+    if (ms == 0) {
+        return;
+    }
+    OSSleepTicks(OSMillisecondsToTicks(ms));
 }
 
 static int gfx_gx2_window_get_max_msaa(void)

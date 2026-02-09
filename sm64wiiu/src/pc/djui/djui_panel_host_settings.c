@@ -12,12 +12,17 @@ static unsigned int sKnockbackIndex = 0;
 struct DjuiInputbox* sPlayerAmount = NULL;
 static bool sFalse = false;
 
+static void djui_panel_host_settings_value_change(UNUSED struct DjuiBase* caller) {
+    network_send_player_settings();
+}
+
 static void djui_panel_host_settings_knockback_change(UNUSED struct DjuiBase* caller) {
     switch (sKnockbackIndex) {
         case 0:  configPlayerKnockbackStrength = 10; break;
         case 1:  configPlayerKnockbackStrength = 25; break;
         default: configPlayerKnockbackStrength = 60; break;
     }
+    djui_panel_host_settings_value_change(caller);
 }
 
 static bool djui_panel_host_limit_valid(void) {
@@ -41,6 +46,7 @@ static void djui_panel_host_player_text_change(struct DjuiBase* caller) {
         return;
     }
 	configAmountOfPlayers = atoi(sPlayerAmount->buffer);
+    djui_panel_host_settings_value_change(caller);
 }
 
 void djui_panel_host_settings_create(struct DjuiBase* caller) {
@@ -48,7 +54,7 @@ void djui_panel_host_settings_create(struct DjuiBase* caller) {
     struct DjuiBase* body = djui_three_panel_get_body(panel);
     {
         char* iChoices[3] = { DLANG(HOST_SETTINGS, NONSOLID), DLANG(HOST_SETTINGS, SOLID), DLANG(HOST_SETTINGS, FRIENDLY_FIRE) };
-        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, PLAYER_INTERACTION), iChoices, 3, &configPlayerInteraction, NULL);
+        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, PLAYER_INTERACTION), iChoices, 3, &configPlayerInteraction, djui_panel_host_settings_value_change);
 
         sKnockbackIndex = (configPlayerKnockbackStrength <= 20)
                         ? 0
@@ -57,20 +63,20 @@ void djui_panel_host_settings_create(struct DjuiBase* caller) {
         djui_selectionbox_create(body, DLANG(HOST_SETTINGS, KNOCKBACK_STRENGTH), kChoices, 3, &sKnockbackIndex, djui_panel_host_settings_knockback_change);
 
         char* pChoices[2] = { DLANG(HOST_SETTINGS, CLASSIC_PVP), DLANG(HOST_SETTINGS, REVAMPED_PVP) };
-        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, PVP_MODE), pChoices, 2, &configPvpType, NULL);
+        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, PVP_MODE), pChoices, 2, &configPvpType, djui_panel_host_settings_value_change);
 
         char* lChoices[3] = { DLANG(HOST_SETTINGS, LEAVE_LEVEL), DLANG(HOST_SETTINGS, STAY_IN_LEVEL), DLANG(HOST_SETTINGS, NONSTOP) };
-        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, ON_STAR_COLLECTION), lChoices, 3, &configStayInLevelAfterStar, NULL);
+        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, ON_STAR_COLLECTION), lChoices, 3, &configStayInLevelAfterStar, djui_panel_host_settings_value_change);
 
         char* bChoices[3] = { DLANG(HOST_SETTINGS, BOUNCY_BOUNDS_OFF), DLANG(HOST_SETTINGS, BOUNCY_BOUNDS_ON), DLANG(HOST_SETTINGS, BOUNCY_BOUNDS_ON_CAP) };
-        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, BOUNCY_LEVEL_BOUNDS), bChoices, 3, &configBouncyLevelBounds, NULL);
+        djui_selectionbox_create(body, DLANG(HOST_SETTINGS, BOUNCY_LEVEL_BOUNDS), bChoices, 3, &configBouncyLevelBounds, djui_panel_host_settings_value_change);
 
-        djui_checkbox_create(body, DLANG(HOST_SETTINGS, SKIP_INTRO_CUTSCENE), &configSkipIntro, NULL);
-        djui_checkbox_create(body, DLANG(HOST_SETTINGS, PAUSE_ANYWHERE), &configPauseAnywhere, NULL);
-        djui_checkbox_create(body, DLANG(HOST_SETTINGS, BUBBLE_ON_DEATH), &configBubbleDeath, NULL);
-        djui_checkbox_create(body, DLANG(HOST_SETTINGS, NAMETAGS), &configNametags, NULL);
+        djui_checkbox_create(body, DLANG(HOST_SETTINGS, SKIP_INTRO_CUTSCENE), &configSkipIntro, djui_panel_host_settings_value_change);
+        djui_checkbox_create(body, DLANG(HOST_SETTINGS, PAUSE_ANYWHERE), &configPauseAnywhere, djui_panel_host_settings_value_change);
+        djui_checkbox_create(body, DLANG(HOST_SETTINGS, BUBBLE_ON_DEATH), &configBubbleDeath, djui_panel_host_settings_value_change);
+        djui_checkbox_create(body, DLANG(HOST_SETTINGS, NAMETAGS), &configNametags, djui_panel_host_settings_value_change);
 
-        struct DjuiCheckbox* chkDevMode = djui_checkbox_create(body, DLANG(HOST_SETTINGS, MOD_DEV_MODE), (configNetworkSystem == NS_SOCKET) ? &configModDevMode : &sFalse, NULL);
+        struct DjuiCheckbox* chkDevMode = djui_checkbox_create(body, DLANG(HOST_SETTINGS, MOD_DEV_MODE), (configNetworkSystem == NS_SOCKET) ? &configModDevMode : &sFalse, djui_panel_host_settings_value_change);
         djui_base_set_enabled(&chkDevMode->base, configNetworkSystem == NS_SOCKET);
 
         struct DjuiRect* rect1 = djui_rect_container_create(body, 32);

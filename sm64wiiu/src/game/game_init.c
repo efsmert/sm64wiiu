@@ -376,7 +376,10 @@ void select_gfx_pool(void) {
     gGfxSPTask = &gGfxPool->spTask;
 #ifdef USE_SYSTEM_MALLOC
     gDisplayListHeadInChunk = gGfxPool->buffer;
-    gDisplayListEndInChunk = gDisplayListHeadInChunk + 1;
+    // Prefer the fixed per-frame gfx pool first for deterministic frame-0 startup.
+    // If the frame actually exhausts GFX_POOL_SIZE, gDisplayListHead macro will
+    // still fall back to alloc_next_dl() and branch into alloc-only chunks.
+    gDisplayListEndInChunk = gGfxPool->buffer + GFX_POOL_SIZE;
     alloc_only_pool_clear(gGfxAllocOnlyPool);
 #else
     gDisplayListHead = gGfxPool->buffer;

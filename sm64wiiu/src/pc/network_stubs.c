@@ -32,6 +32,34 @@ char gCoopNetPassword[64] = "";
 static bool sNetworkReconnecting = false;
 static enum NetworkSystemType sNetworkSystem = NS_SOCKET;
 
+static u8 network_stub_clamp_u8(unsigned int value, u8 min, u8 max) {
+    if (value < (unsigned int)min) {
+        return min;
+    }
+    if (value > (unsigned int)max) {
+        return max;
+    }
+    return (u8)value;
+}
+
+// Mirrors donor network_init settings wiring so host settings meaningfully feed runtime/Lua state.
+static void network_stub_sync_server_settings(enum NetworkType inNetworkType) {
+    gServerSettings.playerInteractions = network_stub_clamp_u8(configPlayerInteraction, 0, 2);
+    gServerSettings.bouncyLevelBounds = network_stub_clamp_u8(configBouncyLevelBounds, 0, 2);
+    gServerSettings.pvpType = network_stub_clamp_u8(configPvpType, 0, 1);
+    gServerSettings.playerKnockbackStrength = network_stub_clamp_u8(configPlayerKnockbackStrength, 0, 255);
+    gServerSettings.stayInLevelAfterStar = network_stub_clamp_u8(configStayInLevelAfterStar, 0, 2);
+    gServerSettings.skipIntro = configSkipIntro ? 1 : 0;
+    gServerSettings.bubbleDeath = configBubbleDeath ? 1 : 0;
+    gServerSettings.enablePlayersInLevelDisplay = 1;
+    gServerSettings.enablePlayerList = 1;
+    (void)inNetworkType;
+    gServerSettings.headlessServer = 0;
+    gServerSettings.nametags = configNametags ? 1 : 0;
+    gServerSettings.maxPlayers = network_stub_clamp_u8(configAmountOfPlayers, 1, MAX_PLAYERS);
+    gServerSettings.pauseAnywhere = configPauseAnywhere ? 1 : 0;
+}
+
 static void network_stub_init_local_player(void) {
     gNetworkPlayers[0].connected = true;
     gNetworkPlayers[0].type = (gNetworkType == NT_SERVER) ? NPT_SERVER : NPT_LOCAL;
@@ -73,12 +101,14 @@ bool network_init(enum NetworkType inNetworkType, bool reconnecting) {
     if (inNetworkType == NT_CLIENT) {
         gNetworkType = NT_NONE;
         sNetworkReconnecting = false;
+        network_stub_sync_server_settings(NT_NONE);
         network_stub_init_local_player();
         return false;
     }
 
     gNetworkType = inNetworkType;
     sNetworkReconnecting = reconnecting;
+    network_stub_sync_server_settings(inNetworkType);
     network_stub_init_local_player();
     return true;
 }
@@ -101,6 +131,7 @@ bool network_is_reconnecting(void) {
 
 void network_rehost_begin(void) {
     gNetworkType = NT_SERVER;
+    network_stub_sync_server_settings(NT_SERVER);
     network_stub_init_local_player();
 }
 
@@ -120,6 +151,7 @@ void network_send_chat(const char *message, u8 fromGlobalIndex) {
 }
 
 void network_send_player_settings(void) {
+    network_stub_sync_server_settings(gNetworkType);
     network_stub_init_local_player();
 }
 

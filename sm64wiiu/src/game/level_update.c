@@ -31,6 +31,7 @@
 #ifndef TARGET_N64
 #include "pc/lua/smlua_hooks.h"
 #include "pc/djui/djui.h"
+#include "pc/configfile.h"
 #endif
 
 #define PLAY_MODE_NORMAL 0
@@ -223,10 +224,20 @@ u32 pressed_pause(void) {
     }
 #endif
 
-    u32 dialogActive = get_dialog_id() >= 0;
+    u32 dialogActive = (get_dialog_id() != DIALOG_NONE);
     u32 intangible = (gMarioState->action & ACT_FLAG_INTANGIBLE) != 0;
+    u32 firstPerson = (gMarioState->action == ACT_FIRST_PERSON);
 
-    if (!intangible && !dialogActive && !gWarpTransition.isActive && sDelayedWarpOp == WARP_OP_NONE
+#ifndef TARGET_N64
+    if (configPauseAnywhere) {
+        if (!dialogActive && sCurrPlayMode == PLAY_MODE_NORMAL && sDelayedWarpOp == WARP_OP_NONE) {
+            return (gPlayer1Controller->buttonPressed & START_BUTTON) != 0;
+        }
+        return FALSE;
+    }
+#endif
+
+    if (!intangible && !dialogActive && !firstPerson && !gWarpTransition.isActive && sDelayedWarpOp == WARP_OP_NONE
         && (gPlayer1Controller->buttonPressed & START_BUTTON)) {
         return TRUE;
     }
@@ -1252,7 +1263,11 @@ s32 init_level(void) {
 #endif
             } else if (!gDebugLevelSelect) {
                 if (gMarioState->action != ACT_UNINITIALIZED) {
+#ifndef TARGET_N64
+                    if (configSkipIntro || save_file_exists(gCurrSaveFileNum - 1)) {
+#else
                     if (save_file_exists(gCurrSaveFileNum - 1)) {
+#endif
                         set_mario_action(gMarioState, ACT_IDLE, 0);
                     } else {
                         set_mario_action(gMarioState, ACT_INTRO_CUTSCENE, 0);
@@ -1329,7 +1344,11 @@ s32 lvl_init_from_save_file(UNUSED s16 arg0, s32 levelNum) {
 #endif
     sWarpDest.type = WARP_TYPE_NOT_WARPING;
     sDelayedWarpOp = WARP_OP_NONE;
+#ifndef TARGET_N64
+    gNeverEnteredCastle = !save_file_exists(gCurrSaveFileNum - 1) && !configSkipIntro;
+#else
     gNeverEnteredCastle = !save_file_exists(gCurrSaveFileNum - 1);
+#endif
 
     gCurrLevelNum = levelNum;
     gCurrCourseNum = COURSE_NONE;

@@ -341,11 +341,13 @@ void main_func(void) {
     WHBLogPrint("pc: mods init begin");
 #endif
     mods_init();
-    enable_queued_mods();
 #ifdef TARGET_WII_U
     WHBLogPrint("pc: lua init begin");
 #endif
     smlua_init();
+    // Restore persisted host-mod selections after Lua startup so boot remains modless;
+    // selected mods are applied when the user starts hosting.
+    enable_queued_mods();
 #ifdef TARGET_WII_U
     WHBLogPrint("pc: djui init begin");
 #endif

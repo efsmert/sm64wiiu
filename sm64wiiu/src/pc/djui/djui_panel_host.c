@@ -13,6 +13,7 @@
 #include "pc/utils/misc.h"
 #include "pc/configfile.h"
 #include "pc/update_checker.h"
+#include "pc/lua/smlua.h"
 
 static struct DjuiRect* sRectPort = NULL;
 static struct DjuiInputbox* sInputboxPort = NULL;
@@ -79,6 +80,8 @@ static void djui_panel_host_do_host(struct DjuiBase* caller) {
 
     if (gNetworkType == NT_SERVER) {
         network_rehost_begin();
+        // Apply host-mod selection immediately on server "Apply".
+        smlua_init();
     } else if (configNetworkSystem == NS_COOPNET || configAmountOfPlayers == 1) {
         network_reset_reconnect_and_rehost();
         djui_panel_do_host(false, true);

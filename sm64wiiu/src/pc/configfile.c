@@ -415,6 +415,13 @@ void configfile_load(void) {
     if (configMenuLevel > 17) { configMenuLevel = 0; }
     if (configMenuSound > 13) { configMenuSound = 0; }
     if (configDjuiThemeFont > 1) { configDjuiThemeFont = 0; }
+
+#ifdef TARGET_WII_U
+    // Wii U safety defaults while donor frame-pacing/menu-scene parity is still in progress.
+    configWindow.vsync = true;
+    configFramerateMode = RRM_AUTO;
+    configInterpolationMode = 1;
+#endif
 }
 
 // Writes the config file to the writable virtual filesystem location.
