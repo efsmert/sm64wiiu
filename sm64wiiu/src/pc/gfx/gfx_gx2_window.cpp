@@ -409,15 +409,26 @@ static void gfx_gx2_window_set_scroll_callback(UNUSED void (*on_scroll)(float, f
 
 static void gfx_gx2_window_apply_swap_interval(void)
 {
-    // Wii U currently runs fixed 30Hz game simulation in this branch.
-    // Allowing unsynced swap here can overrun render buffers and desync simulation.
-    // Keep the stable donor cadence until full interpolation/frame-pacing parity lands.
+    // Keep vsync-off disabled on Wii U until unsynced frame pacing is ported safely.
     if (!configWindow.vsync && !sWarnedUnsupportedVsyncOff) {
         WHBLogPrint("gfx: vsync-off swap path is unsupported on Wii U; using stable 30Hz cadence");
         sWarnedUnsupportedVsyncOff = true;
     }
 
+    uint32_t target_refresh = 60U;
+    if (configFramerateMode == RRM_MANUAL) {
+        target_refresh = configFrameLimit;
+    } else if (configFramerateMode == RRM_UNLIMITED) {
+        target_refresh = 3000U;
+    }
+
+    // 30Hz simulation + interpolation path can present at 60Hz when interval is 1.
+    // Fallback to interval 2 for standard 30Hz presentation.
     uint32_t desired = 2U;
+    if (configWindow.vsync && configInterpolationMode != 0 && target_refresh >= 60U) {
+        desired = 1U;
+    }
+
     if (desired == sAppliedSwapInterval) {
         return;
     }

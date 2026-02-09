@@ -39,6 +39,7 @@
 #include "platform.h"
 #include "fs/fs.h"
 #include "pc_diag.h"
+#include "utils/misc.h"
 
 #include "compat.h"
 #include "pc_main.h"
@@ -56,6 +57,7 @@ s8 gDebugLevelSelect;
 s8 gShowProfiler;
 s8 gShowDebugText;
 u8 gRenderingInterpolated = 0;
+f32 gRenderingDelta = 1.0f;
 f32 gMasterVolume = 1.0f;
 u8 gLuaVolumeMaster = 127;
 u8 gLuaVolumeLevel = 127;
@@ -68,6 +70,7 @@ static struct GfxRenderingAPI *rendering_api;
 static uint32_t sFrameMarkerCount = 0;
 static double sFpsWindowStart = 0.0;
 static u32 sFpsFrameCount = 0;
+static f64 sFrameTimeStart = 0.0;
 
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
@@ -100,9 +103,113 @@ void exec_display_list(struct SPTask *spTask) {
 #define SAMPLES_LOW 528
 #endif
 
+#define FRAMERATE 30
+static const f64 sFrameTime = (1.0 / (f64)FRAMERATE);
+
+static u32 get_display_refresh_rate(void) {
+    return 60;
+}
+
+static u32 get_target_refresh_rate(void) {
+    if (configFramerateMode == RRM_MANUAL) {
+        return configFrameLimit;
+    }
+    if (configFramerateMode == RRM_UNLIMITED) {
+        return 3000;
+    }
+    return get_display_refresh_rate();
+}
+
+static s32 get_num_frames_to_draw(f64 t, u32 frame_limit) {
+    if (frame_limit < FRAMERATE) {
+        frame_limit = FRAMERATE;
+    }
+    if (frame_limit % FRAMERATE == 0) {
+        return (s32)(frame_limit / FRAMERATE);
+    }
+
+    s64 num_frames_curr = (s64)(t * (f64)frame_limit);
+    s64 num_frames_next = (s64)((t + sFrameTime) * (f64)frame_limit);
+    s32 frames = (s32)(num_frames_next - num_frames_curr);
+    return frames > 0 ? frames : 1;
+}
+
+static void compute_fps(f64 now, u32 frames_drawn) {
+    if (sFpsWindowStart <= 0.0) {
+        sFpsWindowStart = now;
+        sFpsFrameCount = 0;
+    }
+    sFpsFrameCount += frames_drawn;
+    if (now >= sFpsWindowStart + 1.0) {
+        f64 elapsed = now - sFpsWindowStart;
+        if (elapsed > 0.0) {
+            u32 fps = (u32)(((f64)sFpsFrameCount / elapsed) + 0.5);
+            djui_fps_display_update(fps);
+        }
+        sFpsWindowStart = now;
+        sFpsFrameCount = 0;
+    }
+}
+
+static u32 produce_interpolation_frames_and_delay(void) {
+    u32 refresh_rate = get_target_refresh_rate();
+    bool should_delay = (configFramerateMode != RRM_UNLIMITED);
+    f64 frame_target = sFrameTimeStart + sFrameTime;
+    s32 frames_to_draw = get_num_frames_to_draw(sFrameTimeStart, refresh_rate);
+    u32 drawn = 0;
+
+    if (configInterpolationMode == 0) {
+        frames_to_draw = 1;
+    }
+    if (frames_to_draw > 4) {
+        frames_to_draw = 4;
+    }
+
+    for (s32 i = 0; i < frames_to_draw; i++) {
+        f32 delta = 1.0f;
+        bool interpolation_active = (configInterpolationMode != 0 && frames_to_draw > 1);
+        if (configInterpolationMode != 0 && frames_to_draw > 1) {
+            delta = (f32)(i + 1) / (f32)frames_to_draw;
+        }
+        gRenderingDelta = delta;
+        // Match donor pacing semantics: interpolated pass stays "on" for all subframes.
+        gRenderingInterpolated = interpolation_active;
+        gfx_start_frame();
+        exec_display_list(gGfxSPTask);
+        gfx_end_frame();
+        drawn++;
+
+        if (should_delay) {
+            f64 ideal = sFrameTimeStart + (sFrameTime * (f64)(i + 1) / (f64)frames_to_draw);
+            f64 now = clock_elapsed_f64();
+            if (now < ideal) {
+                precise_delay_f64(ideal - now);
+            }
+        }
+    }
+
+    gRenderingInterpolated = 0;
+    gRenderingDelta = 1.0f;
+
+    if (should_delay) {
+        f64 now = clock_elapsed_f64();
+        if (now < frame_target) {
+            precise_delay_f64(frame_target - now);
+        }
+    }
+
+    f64 now = clock_elapsed_f64();
+    if (now > sFrameTimeStart + (2.0 * sFrameTime)) {
+        sFrameTimeStart = now;
+    } else {
+        sFrameTimeStart += sFrameTime;
+    }
+
+    return drawn;
+}
+
 void produce_one_frame(void) {
     pc_diag_mark_stage("produce_one_frame:begin");
-    gfx_start_frame();
     if (configWindow.settings_changed) {
         configWindow.settings_changed = false;
         if (wm_api != NULL && wm_api->set_fullscreen != NULL) {
@@ -117,6 +224,11 @@ void produce_one_frame(void) {
     sFrameMarkerCount++;
 #endif
     pc_diag_mark_frame(sFrameMarkerCount);
+#ifdef TARGET_WII_U
+    if (sFrameTimeStart <= 0.0) {
+        sFrameTimeStart = clock_elapsed_f64();
+    }
+#endif
 #ifdef TARGET_WII_U
     if (sFrameMarkerCount == 1) {
         WHBLogPrint("pc: frame1 pre game_loop_one_iteration");
@@ -178,31 +290,14 @@ void produce_one_frame(void) {
     }
 #endif
 
-    gfx_end_frame();
+    u32 rendered_frames = produce_interpolation_frames_and_delay();
     pc_diag_mark_stage("produce_one_frame:after_gfx_end_frame");
 #ifdef TARGET_WII_U
     if (sFrameMarkerCount == 1) {
         WHBLogPrint("pc: frame1 post gfx_end_frame");
     }
 #endif
-
-    if (wm_api != NULL && wm_api->get_time != NULL) {
-        double now = wm_api->get_time();
-        if (sFpsWindowStart <= 0.0) {
-            sFpsWindowStart = now;
-            sFpsFrameCount = 0;
-        }
-        sFpsFrameCount++;
-        if (now >= sFpsWindowStart + 1.0) {
-            double elapsed = now - sFpsWindowStart;
-            if (elapsed > 0.0) {
-                u32 fps = (u32)(((double)sFpsFrameCount / elapsed) + 0.5);
-                djui_fps_display_update(fps);
-            }
-            sFpsWindowStart = now;
-            sFpsFrameCount = 0;
-        }
-    }
+    compute_fps(clock_elapsed_f64(), rendered_frames);
 }
 
 #ifdef TARGET_WEB

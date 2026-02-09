@@ -22,6 +22,12 @@
 #include "../lua/smlua.h"
 #ifdef TARGET_WII_U
 #include <whb/log.h>
+#define GFX_WIIU_VERBOSE_LOGS 0
+#if GFX_WIIU_VERBOSE_LOGS
+#define GFX_WIIU_LOGF(...) WHBLogPrintf(__VA_ARGS__)
+#else
+#define GFX_WIIU_LOGF(...) ((void)0)
+#endif
 #endif
 
 #define SUPPORT_CHECK(x) assert(x)
@@ -123,7 +129,7 @@ static uint8_t gfx_map_load_tile_to_slot(uint8_t tile, uint32_t tmem) {
 
 #ifdef TARGET_WII_U
     if (sTextureTileRemapLogCount < 16) {
-        WHBLogPrintf("gfx: unsupported tmem tile index raw=%u tmem=0x%04x",
+        GFX_WIIU_LOGF("gfx: unsupported tmem tile index raw=%u tmem=0x%04x",
                      (unsigned)raw_index, (unsigned)tmem);
         sTextureTileRemapLogCount++;
     }
@@ -229,6 +235,20 @@ static size_t buf_vbo_num_tris;
 
 static struct GfxWindowManagerAPI *gfx_wapi;
 static struct GfxRenderingAPI *gfx_rapi;
+extern u8 gRenderingInterpolated;
+extern f32 gRenderingDelta;
+extern bool gDjuiInMainMenu;
+
+#define GFX_INTERP_MAX_MTX_CMDS 4096
+static float sInterpPrevMatrices[GFX_INTERP_MAX_MTX_CMDS][4][4];
+static float sInterpCurrMatrices[GFX_INTERP_MAX_MTX_CMDS][4][4];
+static uint32_t sInterpPrevMatrixCount = 0;
+static uint32_t sInterpCurrMatrixCount = 0;
+static uint32_t sInterpMatrixCmdIndex = 0;
+
+static inline bool gfx_matrix_interpolation_active(void) {
+    return !gDjuiInMainMenu && (gRenderingDelta < 0.999f);
+}
 
 static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, const void* addr);
 static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette, uint32_t cmt, uint32_t maskt, uint32_t shiftt, uint32_t cms, uint32_t masks, uint32_t shifts);
@@ -331,7 +351,7 @@ static struct ColorCombiner *gfx_lookup_or_create_color_combiner(uint32_t cc_id)
 #ifdef TARGET_WII_U
         if (!sColorCombinerPoolOverflowLogged) {
             sColorCombinerPoolOverflowLogged = true;
-            WHBLogPrintf("gfx: color combiner pool full (%u), reusing previous cc_id for 0x%08x",
+            GFX_WIIU_LOGF("gfx: color combiner pool full (%u), reusing previous cc_id for 0x%08x",
                          (unsigned)color_combiner_pool_size, (unsigned)cc_id);
         }
 #endif
@@ -345,7 +365,7 @@ static struct ColorCombiner *gfx_lookup_or_create_color_combiner(uint32_t cc_id)
     struct ColorCombiner *comb = &color_combiner_pool[color_combiner_pool_size++];
 #ifdef TARGET_WII_U
     if (sCombinerCreateBeginLogCount < 32) {
-        WHBLogPrintf("gfx: combiner_create_begin[%u] cc_id=0x%08x",
+        GFX_WIIU_LOGF("gfx: combiner_create_begin[%u] cc_id=0x%08x",
                      (unsigned)(color_combiner_pool_size - 1),
                      (unsigned)cc_id);
         sCombinerCreateBeginLogCount++;
@@ -354,7 +374,7 @@ static struct ColorCombiner *gfx_lookup_or_create_color_combiner(uint32_t cc_id)
     gfx_generate_cc(comb, cc_id);
 #ifdef TARGET_WII_U
     if (color_combiner_pool_size <= 8 || (color_combiner_pool_size % 16) == 0) {
-        WHBLogPrintf("gfx: combiner[%u] cc_id=0x%08x shader_id=0x%08x",
+        GFX_WIIU_LOGF("gfx: combiner[%u] cc_id=0x%08x shader_id=0x%08x",
                      (unsigned)(color_combiner_pool_size - 1),
                      (unsigned)comb->cc_id,
                      (unsigned)comb->shader_id);
@@ -604,7 +624,7 @@ static void import_texture(int tile) {
         rdp.loaded_texture[tile].size_bytes == 0) {
 #ifdef TARGET_WII_U
         if (sTextureImportRejectLogCount < 16) {
-            WHBLogPrintf("gfx: reject texture import tile=%d addr=%p size=%u line=%u",
+            GFX_WIIU_LOGF("gfx: reject texture import tile=%d addr=%p size=%u line=%u",
                          tile,
                          (void *)rdp.loaded_texture[tile].addr,
                          (unsigned)rdp.loaded_texture[tile].size_bytes,
@@ -621,7 +641,7 @@ static void import_texture(int tile) {
 
 #ifdef TARGET_WII_U
     if (sTextureImportBeginLogCount < 48) {
-        WHBLogPrintf("gfx: tex_import_begin tile=%d fmt=%u siz=%u line=%u bytes=%u",
+        GFX_WIIU_LOGF("gfx: tex_import_begin tile=%d fmt=%u siz=%u line=%u bytes=%u",
                      tile,
                      (unsigned)fmt,
                      (unsigned)siz,
@@ -675,7 +695,7 @@ static void import_texture(int tile) {
     }
 #ifdef TARGET_WII_U
     if (sTextureImportEndLogCount < 48) {
-        WHBLogPrintf("gfx: tex_import_end tile=%d fmt=%u siz=%u",
+        GFX_WIIU_LOGF("gfx: tex_import_end tile=%d fmt=%u siz=%u",
                      tile,
                      (unsigned)fmt,
                      (unsigned)siz);
@@ -888,10 +908,8 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
 #endif // TARGET_WII_U
 }
 
-static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
-    float matrix[4][4];
+static void gfx_decode_matrix_from_addr(const int32_t *addr, float matrix[4][4]) {
 #ifndef GBI_FLOATS
-    // Original GBI where fixed point matrices are used
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j += 2) {
             int32_t int_part = addr[i * 2 + j / 2];
@@ -901,15 +919,118 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
         }
     }
 #else
-    // For a modified GBI where fixed point values are replaced with floats
     mtxf_copy(matrix, (float(*)[4])addr);
 #endif
+}
+
+static float gfx_vec3_dot(const float a[3], const float b[3]) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static float gfx_vec3_len(const float v[3]) {
+    return sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
+}
+
+static bool gfx_matrix_pair_is_safe(const float prev[4][4], const float cur[4][4]) {
+    // Reject obvious matrix-pair mismatches (e.g. command-stream shifts) to avoid flicker.
+    const float max_translation_delta_sq = 1800.0f * 1800.0f;
+    const float translation_delta_x = cur[3][0] - prev[3][0];
+    const float translation_delta_y = cur[3][1] - prev[3][1];
+    const float translation_delta_z = cur[3][2] - prev[3][2];
+    const float translation_delta_sq =
+        translation_delta_x * translation_delta_x +
+        translation_delta_y * translation_delta_y +
+        translation_delta_z * translation_delta_z;
+    if (translation_delta_sq > max_translation_delta_sq) {
+        return false;
+    }
+
+    // Compare orientation axes after normalization; if they diverge too much, skip interpolation.
+    for (int i = 0; i < 3; i++) {
+        float prev_axis[3] = { prev[i][0], prev[i][1], prev[i][2] };
+        float cur_axis[3] = { cur[i][0], cur[i][1], cur[i][2] };
+        float prev_len = gfx_vec3_len(prev_axis);
+        float cur_len = gfx_vec3_len(cur_axis);
+        if (prev_len < 0.0001f || cur_len < 0.0001f) {
+            return false;
+        }
+        prev_axis[0] /= prev_len;
+        prev_axis[1] /= prev_len;
+        prev_axis[2] /= prev_len;
+        cur_axis[0] /= cur_len;
+        cur_axis[1] /= cur_len;
+        cur_axis[2] /= cur_len;
+        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.55f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool gfx_find_best_prev_matrix(uint32_t index, const float cur[4][4], const float (**out_prev)[4][4]) {
+    if (out_prev == NULL || sInterpPrevMatrixCount == 0) {
+        return false;
+    }
+
+    // Exact-index pairing only. Nearby-index fallback caused one-frame wrong-object matches
+    // when command streams shift (observed as UI/world flicker under camera/menu motion).
+    if (index < sInterpPrevMatrixCount && gfx_matrix_pair_is_safe(sInterpPrevMatrices[index], cur)) {
+        *out_prev = &sInterpPrevMatrices[index];
+        return true;
+    }
+    return false;
+}
+
+static void gfx_interpolate_matrix(float out[4][4], const float prev[4][4], const float cur[4][4], float delta) {
+    if (delta <= 0.0f) {
+        mtxf_copy(out, (float(*)[4])prev);
+        return;
+    }
+    if (delta >= 1.0f) {
+        mtxf_copy(out, (float(*)[4])cur);
+        return;
+    }
+    if (!gfx_matrix_pair_is_safe(prev, cur)) {
+        mtxf_copy(out, (float(*)[4])cur);
+        return;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            out[i][j] = prev[i][j] + (cur[i][j] - prev[i][j]) * delta;
+        }
+    }
+}
+
+static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
+    float matrix[4][4];
+    float matrix_interp[4][4];
+    const float (*matrix_src)[4] = matrix;
+    uint32_t matrix_cmd_index = sInterpMatrixCmdIndex++;
+
+    gfx_decode_matrix_from_addr(addr, matrix);
+
+    if (!gfx_matrix_interpolation_active()) {
+        if (matrix_cmd_index < GFX_INTERP_MAX_MTX_CMDS) {
+            mtxf_copy(sInterpCurrMatrices[matrix_cmd_index], matrix);
+            if (sInterpCurrMatrixCount <= matrix_cmd_index) {
+                sInterpCurrMatrixCount = matrix_cmd_index + 1;
+            }
+        }
+    } else {
+        const float (*prev_matrix)[4][4] = NULL;
+        if (gfx_find_best_prev_matrix(matrix_cmd_index, matrix, &prev_matrix)) {
+            gfx_interpolate_matrix(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+            matrix_src = matrix_interp;
+        }
+    }
 
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
-            mtxf_copy(rsp.P_matrix, matrix);
+            mtxf_copy(rsp.P_matrix, (float(*)[4])matrix_src);
         } else {
-            gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
+            gfx_matrix_mul(rsp.P_matrix, (float(*)[4])matrix_src, rsp.P_matrix);
         }
     } else { // G_MTX_MODELVIEW
         if ((parameters & G_MTX_PUSH) && rsp.modelview_matrix_stack_size < 11) {
@@ -917,9 +1038,9 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
             mtxf_copy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 2]);
         }
         if (parameters & G_MTX_LOAD) {
-            mtxf_copy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix);
+            mtxf_copy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], (float(*)[4])matrix_src);
         } else {
-            gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
+            gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], (float(*)[4])matrix_src, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
         }
         rsp.lights_changed = 1;
     }
@@ -1780,7 +1901,7 @@ static void gfx_run_dl_abort(const char *reason, const Gfx *cmd, uint32_t opcode
     sGfxDlAbortLogCount++;
 
 #ifdef TARGET_WII_U
-    WHBLogPrintf("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u",
+    GFX_WIIU_LOGF("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u",
                  reason != NULL ? reason : "?",
                  (const void *)cmd,
                  (unsigned)opcode,
@@ -1827,7 +1948,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
 #ifdef TARGET_WII_U
         if (sGfxDlProgressLogCount < 96
             && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
-            WHBLogPrintf("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p",
+            GFX_WIIU_LOGF("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p",
                          (unsigned)sGfxDlCommandCount,
                          (unsigned)depth,
                          (unsigned)opcode,
@@ -2110,7 +2231,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
 #ifdef TARGET_WII_U
         if (sGfxDlCommandExitLogCount < 96
             && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
-            WHBLogPrintf("gfx: dl_command_exit count=%u depth=%u opcode=0x%02x cmd=%p",
+            GFX_WIIU_LOGF("gfx: dl_command_exit count=%u depth=%u opcode=0x%02x cmd=%p",
                          (unsigned)sGfxDlCommandCount,
                          (unsigned)depth,
                          (unsigned)opcode,
@@ -2241,6 +2362,10 @@ void gfx_run(Gfx *commands) {
     pc_diag_mark_stage("gfx_run:post_rapi_start_frame");
     sGfxDlAbortFrame = false;
     sGfxDlCommandCount = 0;
+    sInterpMatrixCmdIndex = 0;
+    if (!gfx_matrix_interpolation_active()) {
+        sInterpCurrMatrixCount = 0;
+    }
     gfx_run_dl(commands, 0);
     pc_diag_mark_stage("gfx_run:post_run_dl");
 #ifdef TARGET_WII_U
@@ -2275,6 +2400,17 @@ void gfx_run(Gfx *commands) {
         WHBLogPrint("gfx: frame1 gfx_run post swap_buffers_begin");
     }
 #endif
+
+    if (!gfx_matrix_interpolation_active()) {
+        uint32_t count = sInterpCurrMatrixCount;
+        if (count > GFX_INTERP_MAX_MTX_CMDS) {
+            count = GFX_INTERP_MAX_MTX_CMDS;
+        }
+        if (count > 0) {
+            memcpy(sInterpPrevMatrices, sInterpCurrMatrices, sizeof(float) * 16 * count);
+        }
+        sInterpPrevMatrixCount = count;
+    }
 }
 
 void gfx_end_frame(void) {

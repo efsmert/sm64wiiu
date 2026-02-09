@@ -367,7 +367,8 @@ void djui_donor_render(void) {
     djui_ctx_display_render();
     djui_cursor_update();
     extern u8 gRenderingInterpolated;
-    if (!gRenderingInterpolated) {
+    extern f32 gRenderingDelta;
+    if (!gRenderingInterpolated || gRenderingDelta >= 0.999f) {
         djui_interactable_update();
     }
     djui_gfx_displaylist_end();

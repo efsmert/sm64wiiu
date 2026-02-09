@@ -401,7 +401,9 @@ void display_and_vsync(void) {
         gGoddardVblankCallback();
         gGoddardVblankCallback = NULL;
     }
+#ifdef TARGET_N64
     exec_display_list(&gGfxPool->spTask);
+#endif
     profiler_log_thread5_time(AFTER_DISPLAY_LISTS);
     osRecvMesg(&gGameVblankQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
     osViSwapBuffer((void *) PHYSICAL_TO_VIRTUAL(gPhysicalFrameBuffers[sRenderedFramebuffer]));

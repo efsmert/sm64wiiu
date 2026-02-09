@@ -188,6 +188,10 @@ make -C sm64wiiu wuhb
 - Hardened donor menu-scene stability for non-castle levels by using deferred level transition routing (`gChangeLevelTransition`) for level mismatches, reserving direct `initiate_warp()` only for same-level area switches, and hard-locking Lakitu focus/position/speeds during active menu scenes to avoid startup wobble/respawn loops.
 - Added Wii U renderer safety guards for malformed frame data: clamp zero texture dimensions in `gfx_pc.c` UV normalization and skip GX2 draw submission when transient VBO allocation fails.
 - Hardened GX2 frame-end pacing safety: Wii U now keeps the stable 30Hz swap cadence even when the DJUI `vsync` toggle is disabled (with one-time log warning), and swap-end now always waits for pending flips with bounded retries to avoid unsynced buffer corruption.
+- Added first 60fps interpolation plumbing slice for Wii U pacing: moved non-N64 display-list submission control out of `display_and_vsync()` and into `pc_main` render pacing, added a donor-style multi-present frame loop (currently no-op interpolation data path) that keeps 30Hz simulation while allowing multiple presents per update, and enabled GX2 swap-interval `1` only when interpolation mode is active with 60Hz+ target framerate.
+- Menu interpolation cadence follow-up: restored donor-like interpolation flag cadence in `pc_main` while gating only matrix interpolation in `gfx_pc` during donor main-menu mode, so panel animations can advance on interpolated subframes without reintroducing matrix-pair flicker in menu transitions.
+- Menu interpolation cadence correction: kept `gRenderingInterpolated` enabled across interpolated subframes (donor-style) and switched DJUI interactable-update gating to run on the final subframe (`delta >= 1.0`), while matrix interpolation remains explicitly gated by `delta < 1.0` and non-menu context to preserve menu flicker mitigation.
+- Renderer log-crash mitigation: disabled high-volume formatted renderer diagnostics in Wii U `gfx_pc.c` (`WHBLogPrintf` hot-path traces compile to no-op) after Cemu traces showed intermittent launch crashes in `_svfprintf_r` during startup render logging.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -432,6 +436,22 @@ Notes:
   - files: sm64wiiu/src/pc/djui/djui_panel_host.c, sm64wiiu/src/pc/djui/djui_panel_host_message.c, SUMMARY.md
   - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
   - outcome: build + wuhb succeed; host-mod selections remain persisted for next boot, while runtime activation now occurs on explicit host/apply action instead of requiring restart.
+- Wii U interpolation pacing slice 1: moved non-N64 display-list submission out of `display_and_vsync`, added first donor-style multi-present pacing loop in `pc_main`, and allowed GX2 swap interval `1` only for interpolation-enabled 60Hz+ targets while retaining 30Hz simulation timing.
+  - files: sm64wiiu/src/game/game_init.c, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/pc/gfx/gfx_gx2_window.cpp, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; runtime verification pending Cemu test for launch stability and behavior under interpolation/framerate settings.
+- Menu interpolation flag/matrix decouple slice: removed menu-wide interpolation disable in `pc_main` and switched `gfx_pc` matrix interpolation to a dedicated active check (`gRenderingInterpolated && !gDjuiInMainMenu`), keeping menu matrix flicker mitigation while allowing donor panel transition timing to run on interpolated frames.
+  - files: sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; ready for Cemu retest of menu smoothness (should improve) while preserving the no-flicker menu rendering path.
+- Interpolation flag semantic alignment slice: changed `pc_main` to keep `gRenderingInterpolated` true across all interpolation subframes (matching donor pacing semantics), moved matrix interpolation activation to `gRenderingDelta < 1.0` and non-menu context in `gfx_pc`, and updated donor DJUI input update gating to run on the final subframe to retain stable once-per-tick input handling.
+  - files: sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/djui/djui_donor.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; ready for Cemu retest to verify whether donor menu transitions now subjectively animate at 60fps while keeping previous no-flicker menu behavior.
+- Renderer startup crash guard slice: replaced Wii U `WHBLogPrintf` calls in `gfx_pc.c` hot render/import paths with a compile-time-disabled macro (`GFX_WIIU_VERBOSE_LOGS=0`) to remove `_svfprintf_r` launch-crash risk while preserving render logic.
+  - files: sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; ready for Cemu relaunch retest with renderer trace logging disabled.
 
 ## 10) Required Format For Future Summary Updates
 
