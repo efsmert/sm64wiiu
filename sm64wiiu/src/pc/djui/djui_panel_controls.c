@@ -18,12 +18,12 @@ void djui_panel_controls_analog_stick_options_create(struct DjuiBase* caller) {
     struct DjuiThreePanel* panel = djui_panel_menu_create(DLANG(CONTROLS, CONTROLS), false);
     struct DjuiBase* body = djui_three_panel_get_body(panel);
     {
-        djui_checkbox_create(body, DLANG(CONTROLS, ROTATE_LEFT), &configStick.rotateLeft, NULL);
-        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_LEFT_X), &configStick.invertLeftX, NULL);
-        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_LEFT_Y), &configStick.invertLeftY, NULL);
-        djui_checkbox_create(body, DLANG(CONTROLS, ROTATE_RIGHT), &configStick.rotateRight, NULL);
-        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_RIGHT_X), &configStick.invertRightX, NULL);
-        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_RIGHT_Y), &configStick.invertRightY, NULL);
+        djui_checkbox_create(body, DLANG(CONTROLS, ROTATE_LEFT), &configStick.rotateLeft, djui_panel_controls_value_change);
+        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_LEFT_X), &configStick.invertLeftX, djui_panel_controls_value_change);
+        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_LEFT_Y), &configStick.invertLeftY, djui_panel_controls_value_change);
+        djui_checkbox_create(body, DLANG(CONTROLS, ROTATE_RIGHT), &configStick.rotateRight, djui_panel_controls_value_change);
+        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_RIGHT_X), &configStick.invertRightX, djui_panel_controls_value_change);
+        djui_checkbox_create(body, DLANG(CONTROLS, INVERT_RIGHT_Y), &configStick.invertRightY, djui_panel_controls_value_change);
 
         djui_button_create(body, DLANG(MENU, BACK), DJUI_BUTTON_STYLE_BACK, djui_panel_menu_back);
     }
@@ -38,11 +38,11 @@ void djui_panel_controls_create(struct DjuiBase* caller) {
         djui_button_create(body, DLANG(CONTROLS, N64_BINDS), DJUI_BUTTON_STYLE_NORMAL, djui_panel_controls_n64_create);
         djui_button_create(body, DLANG(CONTROLS, EXTRA_BINDS), DJUI_BUTTON_STYLE_NORMAL, djui_panel_controls_extra_create);
         djui_button_create(body, DLANG(CONTROLS, ANALOG_STICK_OPTIONS), DJUI_BUTTON_STYLE_NORMAL, djui_panel_controls_analog_stick_options_create);
-        djui_checkbox_create(body, DLANG(CONTROLS, BACKGROUND_GAMEPAD), &configBackgroundGamepad, NULL);
+        djui_checkbox_create(body, DLANG(CONTROLS, BACKGROUND_GAMEPAD), &configBackgroundGamepad, djui_panel_controls_value_change);
 #ifndef HANDHELD
-        djui_checkbox_create(body, DLANG(CONTROLS, DISABLE_GAMEPADS), &configDisableGamepads, NULL);
+        djui_checkbox_create(body, DLANG(CONTROLS, DISABLE_GAMEPADS), &configDisableGamepads, djui_panel_controls_value_change);
 #endif
-        djui_checkbox_create(body, DLANG(MISC, USE_STANDARD_KEY_BINDINGS_CHAT), &configUseStandardKeyBindingsChat, NULL);
+        djui_checkbox_create(body, DLANG(MISC, USE_STANDARD_KEY_BINDINGS_CHAT), &configUseStandardKeyBindingsChat, djui_panel_controls_value_change);
 
 #ifdef HAVE_SDL2
         int numJoys = SDL_NumJoysticks();
@@ -85,7 +85,7 @@ void djui_panel_controls_create(struct DjuiBase* caller) {
         }
 
         // Create the button
-        djui_selectionbox_create(body, DLANG(CONTROLS, GAMEPAD), gamepadChoices, numJoys, &configGamepadNumber, NULL);
+        djui_selectionbox_create(body, DLANG(CONTROLS, GAMEPAD), gamepadChoices, numJoys, &configGamepadNumber, djui_panel_controls_value_change);
 
         // Free the memory we don't need anymore
         for (int i = 0; i < numJoys; i++) {

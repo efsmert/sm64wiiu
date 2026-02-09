@@ -58,6 +58,7 @@ char* djui_menu_get_rainbow_string_color(enum DjuiRainbowColor color) {
 }
 
 void djui_panel_menu_back(UNUSED struct DjuiBase* base) {
+    configfile_save();
     djui_panel_back();
 }
 

@@ -44,6 +44,7 @@ void sound_banks_disable(u8 player, u16 bankMask);
 void sound_banks_enable(u8 player, u16 bankMask);
 void set_sound_moving_speed(u8 bank, u8 speed);
 void play_dialog_sound(u8 dialogID);
+void set_sequence_player_volume(s32 player, f32 volume);
 void play_music(u8 player, u16 seqArgs, u16 fadeTimer);
 void stop_background_music(u16 seqId);
 void fadeout_background_music(u16 arg0, u16 fadeOut);

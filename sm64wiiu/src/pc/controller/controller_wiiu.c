@@ -11,6 +11,7 @@
 
 #include "controller_api.h"
 #include "../configfile.h"
+#include "../pc_main.h"
 
 #define VK_BASE_WIIU 0x2000
 
@@ -47,6 +48,48 @@ size_t num_buttons = sizeof(map) / sizeof(map[0]);
 KPADStatus last_kpad = {0};
 int kpad_timeout = 10;
 
+static s8 controller_wiiu_clamp_stick(s16 value) {
+    if (value > 80) { value = 80; }
+    if (value < -80) { value = -80; }
+    return (s8)value;
+}
+
+static void controller_wiiu_apply_stick_config(OSContPad *pad) {
+    s16 x;
+    s16 y;
+    s16 tmp;
+    s32 deadzone;
+
+    if (pad == NULL) {
+        return;
+    }
+
+    x = pad->stick_x;
+    y = pad->stick_y;
+
+    if (configStick.rotateLeft) {
+        tmp = x;
+        x = -y;
+        y = tmp;
+    }
+    if (configStick.rotateRight) {
+        tmp = x;
+        x = y;
+        y = -tmp;
+    }
+    if (configStick.invertLeftX) { x = -x; }
+    if (configStick.invertLeftY) { y = -y; }
+
+    deadzone = (s32)((configStickDeadzone * 80U) / 100U);
+    if ((x * x + y * y) < deadzone * deadzone) {
+        x = 0;
+        y = 0;
+    }
+
+    pad->stick_x = controller_wiiu_clamp_stick(x);
+    pad->stick_y = controller_wiiu_clamp_stick(y);
+}
+
 // Applies runtime button layout changes from config to all Wii U controller types.
 static void controller_wiiu_apply_config(void) {
     map[0] = (struct WiiUKeymap) { B_BUTTON, VB(B) | VB(Y), CB(B) | CB(Y), PB(B) | PB(Y) };
@@ -66,7 +109,7 @@ static void controller_wiiu_init(void) {
     controller_wiiu_apply_config();
 }
 
-static void read_vpad(OSContPad *pad) {
+static bool read_vpad(OSContPad *pad) {
     VPADStatus status;
     VPADReadError err;
     uint32_t v;
@@ -74,7 +117,7 @@ static void read_vpad(OSContPad *pad) {
     VPADRead(VPAD_CHAN_0, &status, 1, &err);
 
     if (err != 0) {
-        return;
+        return false;
     }
 
     v = status.hold;
@@ -96,33 +139,27 @@ static void read_vpad(OSContPad *pad) {
     if (status.leftStick.y != 0) {
         pad->stick_y = (s8) round(status.leftStick.y * 80);
     }
+
+    return true;
 }
 
-static void read_wpad(OSContPad* pad) {
-    // Disconnect any extra controllers
+static bool read_wpad_channel(OSContPad* pad, int channel) {
     WPADExtensionType ext;
-    for (int i = 1; i < 4; i++) {
-        int res = WPADProbe(i, &ext);
-        if (res == 0) {
-            WPADDisconnect(i);
-        }
-    }
-
-    int res = WPADProbe(WPAD_CHAN_0, &ext);
+    int res = WPADProbe(channel, &ext);
     if (res != 0) {
-        return;
+        return false;
     }
 
     KPADStatus status;
     int err;
-    int read = KPADReadEx(WPAD_CHAN_0, &status, 1, &err);
+    int read = KPADReadEx(channel, &status, 1, &err);
     if (read == 0) {
         kpad_timeout--;
 
         if (kpad_timeout == 0) {
-            WPADDisconnect(WPAD_CHAN_0);
+            WPADDisconnect(channel);
             memset(&last_kpad, 0, sizeof(KPADStatus));
-            return;
+            return false;
         }
         status = last_kpad;
     } else {
@@ -183,14 +220,45 @@ static void read_wpad(OSContPad* pad) {
             pad->stick_y = (s8) round(stick.y * 80);
         }
     }
+
+    return true;
 }
 
 static void controller_wiiu_read(OSContPad* pad) {
+    bool hasInput = false;
+    unsigned int selectedGamepad = 0;
+
     pad->stick_x = 0;
     pad->stick_y = 0;
+    pad->button = 0;
 
-    read_vpad(pad);
-    read_wpad(pad);
+    if (configDisableGamepads) {
+        return;
+    }
+
+    if (!configBackgroundGamepad && wm_api != NULL && wm_api->has_focus != NULL && !wm_api->has_focus()) {
+        return;
+    }
+
+    selectedGamepad = configGamepadNumber;
+
+    // Wii U mapping: 0 = GamePad (VPAD), 1..4 = WPAD channels 0..3.
+    if (selectedGamepad == 0) {
+        hasInput = read_vpad(pad);
+        if (!hasInput) {
+            hasInput = read_wpad_channel(pad, 0);
+        }
+    } else {
+        int wpadChannel = (int)(selectedGamepad - 1U);
+        if (wpadChannel > 3) {
+            wpadChannel = 0;
+        }
+        hasInput = read_wpad_channel(pad, wpadChannel);
+    }
+
+    if (hasInput) {
+        controller_wiiu_apply_stick_config(pad);
+    }
 }
 
 static u32 controller_wiiu_rawkey(void) {

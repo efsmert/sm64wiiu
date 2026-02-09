@@ -180,6 +180,10 @@ make -C sm64wiiu wuhb
 - Re-aligned donor main-panel quit label to `MAIN.QUIT` (donor key) after renderer glyph clipping/override fixes removed the malformed lower-case glyph path on Wii U.
 - Aligned Wii U DJUI compatibility defaults with donor visuals by setting default DJUI theme to dark (`configDjuiTheme = 1`), so first-boot panel styling matches Co-op DX.
 - Hardened donor DJUI glyph stability on Wii U by clamping/rounding per-char texture clip percentages and adding a small glyph clip margin, plus syncing override texture metadata (`fmt/siz/line_size_bytes`) after DJUI override uploads so text-at-edge rows (`BACK`/`QUIT` and selectionbox values) avoid clip artifacts and stale tile state.
+- Wired donor DJUI option/mod controls to persistent runtime state: expanded Wii U config option serialization for donor panel keys, added `enable-mod:` queue read/write + post-`mods_init()` apply, synced host-mod checkbox state back into canonical `available_script_enabled`, and connected display runtime toggles for texture filtering, force-4:3 viewport/scissor behavior, and draw-distance scaling.
+- Wired donor menu-options runtime behavior into the active donor backend: menu-level selection/randomization/staff-roll/music selectors now drive `djui_donor_update_menu_level()` with donor-scene presets (warp target + camera/mario pose), so option changes are reflected while the donor main menu is live instead of staying hardcoded to castle grounds.
+- Restored donor runtime overlays in the donor path (`djui_fps_display`, `djui_ctx_display`, `djui_lua_profiler`) and added FPS update plumbing in `pc_main`, so related display/profiler options are no longer inert in Wii U donor mode.
+- Hardened host-mod selector parity by routing checkbox toggles through `mods_set_available_script_enabled()` before selectable recompute/save, ensuring donor host-mod panel toggles mutate canonical runtime script-enable state directly.
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
@@ -187,6 +191,7 @@ make -C sm64wiiu wuhb
 - Companion loading prioritizes deterministic fallback lists for known built-ins when applicable.
 - Donor DJUI now depends on donor GBI-extension opcode handling in the renderer; fallback `gDPLoadTextureBlock` emulation for texture override is considered unstable for Wii U donor atlases.
 - Wii U network stubs intentionally reject `NT_CLIENT`; donor join flows must gate on `network_client_available()` and provide immediate UI error feedback to avoid indefinite “joining” waits.
+- Donor DJUI settings now persist through `sm64config.txt` (including enabled host mods via `enable-mod:` entries) and queued mod enables are applied immediately after `mods_init()` during startup.
 
 ## 7) Known Gotchas
 - Wii U is big-endian; apply byte swaps where required.
@@ -204,7 +209,7 @@ make -C sm64wiiu wuhb
 - Expand missing Lua API/cobject coverage when runtime behavior proves necessity.
 - Continue Phase 1 against generated parity queue (`parity/phase1_lua_port_queue.md`), prioritizing donor autogen Lua coverage and hook callsite parity.
 - Validate donor-default DJUI runtime in Cemu/hardware across all major panels/widgets (including host/join stub flows) and collect crash/log findings before removing remaining legacy assumptions.
-- Continue donor backend parity hardening for panel behavior and settings persistence while keeping legacy runtime toggle as safety fallback until donor stack is proven stable on Wii U.
+- Continue donor backend parity hardening for panel behavior and remaining runtime-only options (notably interpolation/audio/camera backend parity) while keeping legacy runtime toggle as safety fallback until donor stack is proven stable on Wii U.
 - Validate parity-focused changes on Wii U runtime behavior.
 - Networking phase remains deferred until runtime parity is stable.
 
@@ -399,6 +404,15 @@ Notes:
   - files: sm64wiiu/src/pc/djui/djui_panel_main.c, sm64wiiu/src/pc/configfile_djui_compat.c, SUMMARY.md
   - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
   - outcome: build + wuhb succeed; main menu now uses donor-case quit text (`Quit`) and donor-default dark panel theme on Wii U.
+- DJUI option/backend wiring slice: expanded Wii U config persistence to donor option keys, added `enable-mod:` queued apply at startup, synchronized host-mod checkbox state to canonical mod-enable arrays, and wired display controls (`force_4by3`, `texture_filtering`, `draw_distance`) into active runtime paths.
+  - files: sm64wiiu/src/pc/configfile.c, sm64wiiu/src/pc/configfile_djui_compat.c, sm64wiiu/src/pc/pc_main.c, sm64wiiu/src/pc/mods/mods_utils.c, sm64wiiu/src/pc/djui/djui_panel_host_mods.c, sm64wiiu/src/pc/djui/djui_panel_menu.c, sm64wiiu/src/pc/gfx/gfx_pc.c, sm64wiiu/src/pc/gfx/gfx_pc.h, sm64wiiu/src/engine/behavior_script.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; options/host-mod toggles now persist and affect runtime state in Wii U donor DJUI flow.
+- DJUI donor menu-option + host-mod runtime wiring follow-up: moved donor menu scene/music/random/staff-roll handling into `djui_donor_update_menu_level` with donor presets, re-enabled donor fps/ctx/lua overlay runtime updates in donor mode, and routed host-mod checkbox toggles through canonical `mods_set_available_script_enabled`.
+  - files: sm64wiiu/src/pc/djui/djui_donor.c, sm64wiiu/src/pc/djui/djui_panel_host_mods.c, sm64wiiu/src/pc/djui/djui_panel_menu_options.h, sm64wiiu/src/pc/pc_main.c, SUMMARY.md
+  - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
+  - outcome: build + wuhb succeed; donor menu options now drive active menu-level runtime state (instead of fixed castle-only behavior) and host-mod toggles now update canonical script-enable flags directly.
+  - gotcha: running `make` and `make wuhb` in parallel can race RPX strip/pack (`powerpc-eabi-strip ... invalid operation`); run them sequentially.
 
 ## 10) Required Format For Future Summary Updates
 

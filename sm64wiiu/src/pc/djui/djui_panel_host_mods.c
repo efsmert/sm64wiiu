@@ -93,7 +93,13 @@ static void djui_mod_checkbox_on_hover_end(UNUSED struct DjuiBase* base) {
 }
 
 static void djui_mod_checkbox_on_value_change(UNUSED struct DjuiBase* base) {
+    struct DjuiCheckbox* checkbox = (struct DjuiCheckbox*)base;
+    if (base->tag >= 0 && base->tag < gLocalMods.entryCount && checkbox != NULL && checkbox->value != NULL) {
+        mods_set_available_script_enabled((size_t)base->tag, *checkbox->value);
+    }
+
     mods_update_selectable();
+    configfile_save();
 
     if (mods_get_enabled_count() - mods_get_character_select_count() >= 10) {
         if (!sWarned) {

@@ -2,6 +2,7 @@
 #include "djui.h"
 
 #define STAGE_MUSIC 0
+#define MAIN_MENU_SOUND_COUNT 14
 
 struct MainMenuSounds {
     char* name;

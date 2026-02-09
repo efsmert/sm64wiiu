@@ -4,6 +4,7 @@
 #include "macros.h"
 #include "fs/fs.h"
 #include "controller/controller_api.h"
+#include "configfile.h"
 
 #ifdef TARGET_WEB
 #include <emscripten.h>
@@ -207,7 +208,9 @@ s32 osMotorInit(UNUSED OSMesgQueue *mq, UNUSED void *pfs, UNUSED int channel) {
 }
 
 s32 osMotorStart(UNUSED void *pfs) {
-    controller_rumble_play(1.0f, 5.0f);
+    if (configRumbleStrength > 0) {
+        controller_rumble_play((float)configRumbleStrength / 100.0f, 5.0f);
+    }
     return 0;
 }
 

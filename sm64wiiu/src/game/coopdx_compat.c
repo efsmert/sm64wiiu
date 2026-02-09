@@ -6,6 +6,7 @@
 #include "hardcoded.h"
 #include "level_info.h"
 #include "level_update.h"
+#include "pc/configfile.h"
 
 NewCamera gNewCamera = { 0 };
 struct FirstPersonCamera gFirstPersonCamera = { .enabled = false, .fov = FIRST_PERSON_DEFAULT_FOV };
@@ -13,9 +14,15 @@ struct LevelValues gLevelValues = { .fixCollisionBugs = 0, .entryLevel = LEVEL_C
 s16 gDelayedInitSound = -1;
 
 void newcam_init_settings(void) {
+    gNewCamera.isActive = configEnableFreeCamera;
+    gNewCamera.LCentering = configFreeCameraLCentering;
 }
 
 void romhack_camera_init_settings(void) {
+    // Keep deterministic state with current compatibility camera implementation.
+    if (configEnableRomhackCamera != 0) {
+        gNewCamera.isActive = false;
+    }
 }
 
 bool first_person_check_cancels(struct MarioState *m) {

@@ -29,6 +29,9 @@
 
 #include "controller/controller_keyboard.h"
 #include "djui/djui.h"
+#include "djui/djui_ctx_display.h"
+#include "djui/djui_fps_display.h"
+#include "djui/djui_lua_profiler.h"
 #include "lua/smlua.h"
 #include "mods/mods.h"
 
@@ -53,11 +56,18 @@ s8 gDebugLevelSelect;
 s8 gShowProfiler;
 s8 gShowDebugText;
 u8 gRenderingInterpolated = 0;
+f32 gMasterVolume = 1.0f;
+u8 gLuaVolumeMaster = 127;
+u8 gLuaVolumeLevel = 127;
+u8 gLuaVolumeSfx = 127;
+u8 gLuaVolumeEnv = 127;
 
 static struct AudioAPI *audio_api;
 struct GfxWindowManagerAPI *wm_api;
 static struct GfxRenderingAPI *rendering_api;
 static uint32_t sFrameMarkerCount = 0;
+static double sFpsWindowStart = 0.0;
+static u32 sFpsFrameCount = 0;
 
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
@@ -93,6 +103,13 @@ void exec_display_list(struct SPTask *spTask) {
 void produce_one_frame(void) {
     pc_diag_mark_stage("produce_one_frame:begin");
     gfx_start_frame();
+    if (configWindow.settings_changed) {
+        configWindow.settings_changed = false;
+        if (wm_api != NULL && wm_api->set_fullscreen != NULL) {
+            wm_api->set_fullscreen(configWindow.fullscreen);
+        }
+        configfile_save();
+    }
 #ifdef TARGET_WII_U
     if (sFrameMarkerCount == 0) {
         WHBLogPrint("pc: first frame");
@@ -121,6 +138,8 @@ void produce_one_frame(void) {
     }
 #endif
 
+    bool has_focus = true;
+    bool should_mute = false;
     int samples_left = audio_api->buffered();
     u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
     //printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
@@ -132,8 +151,26 @@ void produce_one_frame(void) {
         u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
         create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
     }
-    //printf("Audio samples before submitting: %d\n", audio_api->buffered());
-    audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
+    if (wm_api != NULL && wm_api->has_focus != NULL) {
+        has_focus = wm_api->has_focus();
+    }
+
+    gMasterVolume = ((f32)configMasterVolume / 127.0f) * ((f32)gLuaVolumeMaster / 127.0f);
+    should_mute = (configMuteFocusLoss && !has_focus) || (gMasterVolume <= 0.0f);
+
+    if (!should_mute) {
+        set_sequence_player_volume(SEQ_PLAYER_LEVEL, ((f32)configMusicVolume / 127.0f) * ((f32)gLuaVolumeLevel / 127.0f));
+        set_sequence_player_volume(SEQ_PLAYER_SFX,   ((f32)configSfxVolume   / 127.0f) * ((f32)gLuaVolumeSfx   / 127.0f));
+        set_sequence_player_volume(SEQ_PLAYER_ENV,   ((f32)configEnvVolume   / 127.0f) * ((f32)gLuaVolumeEnv   / 127.0f));
+
+        // Apply master gain at the final mixed buffer stage.
+        for (u32 i = 0; i < (4 * num_audio_samples); i++) {
+            audio_buffer[i] = (s16)((f32)audio_buffer[i] * gMasterVolume);
+        }
+
+        //printf("Audio samples before submitting: %d\n", audio_api->buffered());
+        audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
+    }
     pc_diag_mark_stage("produce_one_frame:after_audio_play");
 #ifdef TARGET_WII_U
     if (sFrameMarkerCount == 1) {
@@ -148,6 +185,24 @@ void produce_one_frame(void) {
         WHBLogPrint("pc: frame1 post gfx_end_frame");
     }
 #endif
+
+    if (wm_api != NULL && wm_api->get_time != NULL) {
+        double now = wm_api->get_time();
+        if (sFpsWindowStart <= 0.0) {
+            sFpsWindowStart = now;
+            sFpsFrameCount = 0;
+        }
+        sFpsFrameCount++;
+        if (now >= sFpsWindowStart + 1.0) {
+            double elapsed = now - sFpsWindowStart;
+            if (elapsed > 0.0) {
+                u32 fps = (u32)(((double)sFpsFrameCount / elapsed) + 0.5);
+                djui_fps_display_update(fps);
+            }
+            sFpsWindowStart = now;
+            sFpsFrameCount = 0;
+        }
+    }
 }
 
 #ifdef TARGET_WEB
@@ -211,6 +266,7 @@ void main_func(void) {
     // Initialize write path before config/save I/O so Wii U writes stay on SD.
     fs_init(sys_user_path());
     configfile_load();
+    gMasterVolume = (f32)configMasterVolume / 127.0f;
     atexit(save_config);
     atexit(shutdown_mod_runtime);
 
@@ -285,6 +341,7 @@ void main_func(void) {
     WHBLogPrint("pc: mods init begin");
 #endif
     mods_init();
+    enable_queued_mods();
 #ifdef TARGET_WII_U
     WHBLogPrint("pc: lua init begin");
 #endif
@@ -306,6 +363,10 @@ void main_func(void) {
     inited = 1;
     while (1) {
         wm_api->main_loop(produce_one_frame);
+#ifdef DEVELOPMENT
+        djui_ctx_display_update();
+#endif
+        djui_lua_profiler_update();
     }
 #endif
 }

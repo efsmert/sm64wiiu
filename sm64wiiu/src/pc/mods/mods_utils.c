@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mods_utils.h"
@@ -7,11 +8,95 @@ void mods_size_enforce(struct Mods* mods) {
     (void)mods;
 }
 
-void mods_update_selectable(void) {
-    for (size_t i = 0; i < gLocalMods.entryCount; i++) {
-        if (gLocalMods.entries != NULL && gLocalMods.entries[i] != NULL) {
-            gLocalMods.entries[i]->selectable = true;
+static bool mods_incompatible_match(const struct Mod *a, const struct Mod *b) {
+    char *ai;
+    char *bi;
+    char *atoken;
+    char *btoken;
+    char *arest = NULL;
+    bool matched = false;
+
+    if (a == NULL || b == NULL || a->incompatible == NULL || b->incompatible == NULL) {
+        return false;
+    }
+    if (a->incompatible[0] == '\0' || b->incompatible[0] == '\0') {
+        return false;
+    }
+
+    ai = malloc(strlen(a->incompatible) + 1);
+    bi = malloc(strlen(b->incompatible) + 1);
+    if (ai == NULL || bi == NULL) {
+        free(ai);
+        free(bi);
+        return false;
+    }
+    snprintf(ai, strlen(a->incompatible) + 1, "%s", a->incompatible);
+    snprintf(bi, strlen(b->incompatible) + 1, "%s", b->incompatible);
+
+    for (atoken = strtok_r(ai, " ", &arest); atoken != NULL && !matched; atoken = strtok_r(NULL, " ", &arest)) {
+        char *brest = NULL;
+        for (btoken = strtok_r(bi, " ", &brest); btoken != NULL; btoken = strtok_r(NULL, " ", &brest)) {
+            if (strcmp(atoken, btoken) == 0) {
+                matched = true;
+                break;
+            }
         }
+        // Reset b-tokenization for the next A token.
+        snprintf(bi, strlen(b->incompatible) + 1, "%s", b->incompatible);
+    }
+
+    free(ai);
+    free(bi);
+    return matched;
+}
+
+void mods_update_selectable(void) {
+    bool changed = false;
+    size_t count = gLocalMods.entryCount;
+
+    if (gLocalMods.entries == NULL) {
+        return;
+    }
+    if (count > gLocalMods.available_script_count) {
+        count = gLocalMods.available_script_count;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        struct Mod *mod = gLocalMods.entries[i];
+        if (mod == NULL) {
+            continue;
+        }
+
+        // Host-mod checkboxes bind to mod->enabled; local runtime binds to available_script_enabled.
+        if (gLocalMods.available_script_enabled[i] != mod->enabled) {
+            gLocalMods.available_script_enabled[i] = mod->enabled;
+            changed = true;
+        }
+        mod->selectable = true;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        struct Mod *mod = gLocalMods.entries[i];
+        if (mod == NULL || mod->enabled) {
+            continue;
+        }
+
+        for (size_t j = 0; j < count; j++) {
+            struct Mod *mod2 = gLocalMods.entries[j];
+            if (j == i || mod2 == NULL || !mod2->enabled) {
+                continue;
+            }
+            if (mods_incompatible_match(mod, mod2)) {
+                mod->selectable = false;
+                break;
+            }
+        }
+    }
+
+    mods_size_enforce(&gLocalMods);
+
+    if (changed) {
+        mods_refresh_local();
     }
 }
 

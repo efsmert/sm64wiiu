@@ -10,6 +10,7 @@
 #include "game/level_update.h"
 #include "game/object_list_processor.h"
 #include "game/camera.h"
+#include "pc/configfile.h"
 #include "seq_ids.h"
 #include "dialog_ids.h"
 
@@ -1224,6 +1225,10 @@ static f32 get_sound_pan(f32 x, f32 z) {
  * Called from threads: thread4_sound, thread5_game_loop (EU only)
  */
 static f32 get_sound_volume(u8 bank, u8 soundIndex, f32 volumeRange) {
+    if (configFadeoutDistantSounds) {
+        volumeRange = 1;
+    }
+
     f32 maxSoundDistance;
     f32 intensity;
 #ifndef VERSION_JP
@@ -2375,6 +2380,43 @@ void play_dialog_sound(u8 dialogID) {
         play_puzzle_jingle();
     }
 #endif
+}
+
+void set_sequence_player_volume(s32 player, f32 volume) {
+    u8 i;
+
+    if (player < SEQ_PLAYER_LEVEL || player > SEQ_PLAYER_SFX) {
+        return;
+    }
+
+    if (volume < 0.0f) {
+        volume = 0.0f;
+    }
+    if (volume > 1.0f) {
+        volume = 1.0f;
+    }
+
+    for (i = 0; i < CHANNELS_MAX; i++) {
+        if (gSequencePlayers[player].channels[i] != &gSequenceChannelNone) {
+            gSequencePlayers[player].channels[i]->volumeScale = volume;
+        }
+    }
+
+    // Keep vanilla/romhack BGM behavior consistent when custom scaling is applied.
+    if (player == SEQ_PLAYER_LEVEL && sCurrentBackgroundMusicSeqId != SEQUENCE_NONE) {
+        struct SequencePlayer *seqPlayer = &gSequencePlayers[player];
+        f32 maxVolume = sBackgroundMusicDefaultVolume[sCurrentBackgroundMusicSeqId] / 127.0f;
+        if (seqPlayer->volume > maxVolume) {
+            seqPlayer->volume = maxVolume;
+        }
+        if (seqPlayer->fadeVolume > maxVolume) {
+            seqPlayer->fadeVolume = maxVolume;
+        }
+        seqPlayer->muteVolumeScale = 0.31f;
+        seqPlayer->muteBehavior = MUTE_BEHAVIOR_SOFTEN
+                                | ((gCurrCourseNum != 0)
+                                * (MUTE_BEHAVIOR_STOP_SCRIPT | MUTE_BEHAVIOR_STOP_NOTES));
+    }
 }
 
 /**

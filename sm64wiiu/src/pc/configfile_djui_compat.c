@@ -107,9 +107,3 @@ bool configDjuiThemeGradients = true;
 unsigned int configDjuiThemeFont = 0;
 unsigned int configDjuiScale = 0;
 bool configExCoopTheme = false;
-
-void enable_queued_mods(void) {
-}
-
-void enable_queued_dynos_packs(void) {
-}

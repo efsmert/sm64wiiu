@@ -18,6 +18,7 @@
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 #include "../pc_diag.h"
+#include "../configfile.h"
 #include "../lua/smlua.h"
 #ifdef TARGET_WII_U
 #include <whb/log.h>
@@ -903,7 +904,7 @@ static void gfx_sp_pop_matrix(uint32_t count) {
 }
 
 static float gfx_adjust_x_for_aspect_ratio(float x) {
-    return x * (4.0f / 3.0f) / ((float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height);
+    return x * gfx_current_dimensions.x_adjust_ratio;
 }
 
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *vertices) {
@@ -1105,17 +1106,21 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
     }
 
     if (rdp.viewport_or_scissor_changed) {
-        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
+        static uint32_t x_adjust_4by3_prev = 0;
+        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0
+            || x_adjust_4by3_prev != gfx_current_dimensions.x_adjust_4by3) {
             gfx_flush();
-            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
+            gfx_rapi->set_viewport(rdp.viewport.x + gfx_current_dimensions.x_adjust_4by3, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
             rendering_state.viewport = rdp.viewport;
         }
-        if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
+        if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0
+            || x_adjust_4by3_prev != gfx_current_dimensions.x_adjust_4by3) {
             gfx_flush();
-            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+            gfx_rapi->set_scissor(rdp.scissor.x + gfx_current_dimensions.x_adjust_4by3, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
             rendering_state.scissor = rdp.scissor;
         }
         rdp.viewport_or_scissor_changed = false;
+        x_adjust_4by3_prev = gfx_current_dimensions.x_adjust_4by3;
     }
 
     uint32_t cc_id = rdp.combine_mode;
@@ -1165,7 +1170,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
             if (rendering_state.textures[i] == NULL) {
                 return;
             }
-            bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+            bool linear_filter = configFiltering && ((rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT);
             if (linear_filter != rendering_state.textures[i]->linear_filter || rdp.texture_tile.cms != rendering_state.textures[i]->cms || rdp.texture_tile.cmt != rendering_state.textures[i]->cmt) {
                 gfx_flush();
                 gfx_rapi->set_sampler_parameters(i, linear_filter, rdp.texture_tile.cms, rdp.texture_tile.cmt);
@@ -2070,6 +2075,13 @@ static void gfx_sp_reset() {
 
 void gfx_get_dimensions(uint32_t *width, uint32_t *height) {
     gfx_wapi->get_dimensions(width, height);
+    if (configForce4By3) {
+        float ratio = gfx_current_dimensions.aspect_ratio;
+        if (ratio <= 0.0f) {
+            ratio = (float)(*width) / (float)((*height) == 0 ? 1 : (*height));
+        }
+        *width = (uint32_t)(ratio * (float)(*height));
+    }
 }
 
 void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, const char *game_name, bool start_in_fullscreen) {
@@ -2127,7 +2139,16 @@ void gfx_start_frame(void) {
         // Avoid division by zero
         gfx_current_dimensions.height = 1;
     }
+    if (configForce4By3
+        && ((4.0f / 3.0f) * gfx_current_dimensions.height) < gfx_current_dimensions.width) {
+        gfx_current_dimensions.x_adjust_4by3 =
+            (uint32_t)((gfx_current_dimensions.width - ((4.0f / 3.0f) * gfx_current_dimensions.height)) / 2.0f);
+        gfx_current_dimensions.width = (uint32_t)((4.0f / 3.0f) * gfx_current_dimensions.height);
+    } else {
+        gfx_current_dimensions.x_adjust_4by3 = 0;
+    }
     gfx_current_dimensions.aspect_ratio = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
+    gfx_current_dimensions.x_adjust_ratio = (4.0f / 3.0f) / gfx_current_dimensions.aspect_ratio;
 }
 
 void gfx_run(Gfx *commands) {
