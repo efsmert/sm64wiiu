@@ -1,3 +1,5 @@
 sm64coopdx/
 .git.old_*/
 sm64wiiu/.git.old_*/
+.DS_Store
+sm64wiiu/.DS_Store
