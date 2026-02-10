@@ -14,20 +14,19 @@ This file is project-specific guidance for agents working in `/Users/samiareski/
 ## 2) First steps every session
 1. Read `SUMMARY.md` — but read smart, not linearly. See section 7 below for how.
 2. Check repo state (`git status`) and preserve in-flight work.
-3. Build before and after major edits.
+3. Build before and after major edits using the project build script.
 
 ## 3) Build and artifact workflow
 
-Run sequentially:
+From repo root, run:
 
 ```bash
-export DEVKITPRO=/opt/devkitpro
-export DEVKITPPC=/opt/devkitpro/devkitPPC
-export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"
-
-make -C sm64wiiu -j4
-make -C sm64wiiu wuhb
+./build_wiiu_then_wuhb.sh
 ```
+
+This script runs `make -C sm64wiiu -j4` first and runs `make -C sm64wiiu wuhb` only if the first command succeeds.
+
+If the build fails, do not hide output. Show the terminal error output in full (or enough contiguous lines around the first error) so debugging can continue from the real root cause.
 
 Expected outputs:
 - `sm64wiiu/build/us_wiiu/sm64.us.rpx`

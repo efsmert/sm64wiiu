@@ -250,6 +250,16 @@ static inline bool gfx_matrix_interpolation_active(void) {
     return !gDjuiInMainMenu && (gRenderingDelta < 0.999f);
 }
 
+// Transparent/alpha-tested layers are more likely to reorder matrix streams frame-to-frame.
+// Interpolating those modelview matrices can produce one-frame pops on billboards/shadows.
+static inline bool gfx_matrix_interpolation_layer_safe(void) {
+    bool use_alpha = (rdp.other_mode_l & (G_BL_A_MEM << 18)) == 0;
+    bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+    bool z_upd = (rdp.other_mode_l & Z_UPD) == Z_UPD;
+    bool alpha_compare = (rdp.other_mode_l & G_AC_THRESHOLD) == G_AC_THRESHOLD;
+    return !(use_alpha || texture_edge || !z_upd || alpha_compare);
+}
+
 static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, const void* addr);
 static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette, uint32_t cmt, uint32_t maskt, uint32_t shiftt, uint32_t cms, uint32_t masks, uint32_t shifts);
 static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt);
@@ -931,6 +941,23 @@ static float gfx_vec3_len(const float v[3]) {
     return sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
 }
 
+static void gfx_vec3_cross(float out[3], const float a[3], const float b[3]) {
+    out[0] = (a[1] * b[2]) - (a[2] * b[1]);
+    out[1] = (a[2] * b[0]) - (a[0] * b[2]);
+    out[2] = (a[0] * b[1]) - (a[1] * b[0]);
+}
+
+static bool gfx_vec3_normalize_safe(float v[3]) {
+    float len = gfx_vec3_len(v);
+    if (len < 0.0001f) {
+        return false;
+    }
+    v[0] /= len;
+    v[1] /= len;
+    v[2] /= len;
+    return true;
+}
+
 static bool gfx_matrix_pair_is_safe(const float prev[4][4], const float cur[4][4]) {
     // Reject obvious matrix-pair mismatches (e.g. command-stream shifts) to avoid flicker.
     const float max_translation_delta_sq = 1800.0f * 1800.0f;
@@ -968,6 +995,44 @@ static bool gfx_matrix_pair_is_safe(const float prev[4][4], const float cur[4][4
     return true;
 }
 
+// Alpha-tested/blended paths are more sensitive to wrong matrix pairing.
+// Use stricter acceptance on the exact-index path to reduce intermittent one-frame warps.
+static bool gfx_matrix_pair_is_safe_alpha_exact(const float prev[4][4], const float cur[4][4]) {
+    if (!gfx_matrix_pair_is_safe(prev, cur)) {
+        return false;
+    }
+
+    const float max_translation_delta_sq = 900.0f * 900.0f;
+    const float dx = cur[3][0] - prev[3][0];
+    const float dy = cur[3][1] - prev[3][1];
+    const float dz = cur[3][2] - prev[3][2];
+    const float translation_delta_sq = (dx * dx) + (dy * dy) + (dz * dz);
+    if (translation_delta_sq > max_translation_delta_sq) {
+        return false;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        float prev_axis[3] = { prev[i][0], prev[i][1], prev[i][2] };
+        float cur_axis[3] = { cur[i][0], cur[i][1], cur[i][2] };
+        float prev_len = gfx_vec3_len(prev_axis);
+        float cur_len = gfx_vec3_len(cur_axis);
+        if (prev_len < 0.0001f || cur_len < 0.0001f) {
+            return false;
+        }
+        prev_axis[0] /= prev_len;
+        prev_axis[1] /= prev_len;
+        prev_axis[2] /= prev_len;
+        cur_axis[0] /= cur_len;
+        cur_axis[1] /= cur_len;
+        cur_axis[2] /= cur_len;
+        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.90f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool gfx_find_best_prev_matrix(uint32_t index, const float cur[4][4], const float (**out_prev)[4][4]) {
     if (out_prev == NULL || sInterpPrevMatrixCount == 0) {
         return false;
@@ -980,6 +1045,84 @@ static bool gfx_find_best_prev_matrix(uint32_t index, const float cur[4][4], con
         return true;
     }
     return false;
+}
+
+// Alpha layers (billboards/shadows/water edges) can reorder matrix commands frame-to-frame.
+// Use a strict local search fallback when exact index pairing fails.
+static bool gfx_find_best_prev_matrix_alpha(uint32_t index, const float cur[4][4], const float (**out_prev)[4][4], uint32_t *out_index) {
+    if (out_prev == NULL || sInterpPrevMatrixCount == 0) {
+        return false;
+    }
+
+    const int kWindow = 4;
+    const float kMaxTranslationDeltaSq = 600.0f * 600.0f;
+    const float kMinAxisDot = 0.95f;
+    bool found = false;
+    float bestScore = 0.0f;
+    uint32_t bestIndex = 0;
+
+    int start = (int)index - kWindow;
+    int end = (int)index + kWindow;
+    if (start < 0) {
+        start = 0;
+    }
+    if (end >= (int)sInterpPrevMatrixCount) {
+        end = (int)sInterpPrevMatrixCount - 1;
+    }
+
+    for (int i = start; i <= end; i++) {
+        const float (*prev)[4] = sInterpPrevMatrices[i];
+        const float dx = cur[3][0] - prev[3][0];
+        const float dy = cur[3][1] - prev[3][1];
+        const float dz = cur[3][2] - prev[3][2];
+        const float translationDeltaSq = (dx * dx) + (dy * dy) + (dz * dz);
+        if (translationDeltaSq > kMaxTranslationDeltaSq) {
+            continue;
+        }
+
+        bool axesOk = true;
+        for (int a = 0; a < 3; a++) {
+            float prevAxis[3] = { prev[a][0], prev[a][1], prev[a][2] };
+            float curAxis[3] = { cur[a][0], cur[a][1], cur[a][2] };
+            float prevLen = gfx_vec3_len(prevAxis);
+            float curLen = gfx_vec3_len(curAxis);
+            if (prevLen < 0.0001f || curLen < 0.0001f) {
+                axesOk = false;
+                break;
+            }
+            prevAxis[0] /= prevLen;
+            prevAxis[1] /= prevLen;
+            prevAxis[2] /= prevLen;
+            curAxis[0] /= curLen;
+            curAxis[1] /= curLen;
+            curAxis[2] /= curLen;
+            if (gfx_vec3_dot(prevAxis, curAxis) < kMinAxisDot) {
+                axesOk = false;
+                break;
+            }
+        }
+        if (!axesOk) {
+            continue;
+        }
+
+        float indexDelta = fabsf((float)i - (float)index);
+        float score = translationDeltaSq + (indexDelta * indexDelta * 1024.0f);
+        if (!found || score < bestScore) {
+            found = true;
+            bestScore = score;
+            bestIndex = (uint32_t)i;
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    *out_prev = &sInterpPrevMatrices[bestIndex];
+    if (out_index != NULL) {
+        *out_index = bestIndex;
+    }
+    return true;
 }
 
 static void gfx_interpolate_matrix(float out[4][4], const float prev[4][4], const float cur[4][4], float delta) {
@@ -1003,6 +1146,104 @@ static void gfx_interpolate_matrix(float out[4][4], const float prev[4][4], cons
     }
 }
 
+static void gfx_interpolate_matrix_translation_only(float out[4][4], const float prev[4][4], const float cur[4][4], float delta) {
+    mtxf_copy(out, (float(*)[4])cur);
+    out[3][0] = prev[3][0] + (cur[3][0] - prev[3][0]) * delta;
+    out[3][1] = prev[3][1] + (cur[3][1] - prev[3][1]) * delta;
+    out[3][2] = prev[3][2] + (cur[3][2] - prev[3][2]) * delta;
+}
+
+// Preserve orthogonal axes while interpolating to avoid billboard/shear warping during camera yaw.
+static void gfx_interpolate_matrix_rigid(float out[4][4], const float prev[4][4], const float cur[4][4], float delta) {
+    if (delta <= 0.0f) {
+        mtxf_copy(out, (float(*)[4])prev);
+        return;
+    }
+    if (delta >= 1.0f) {
+        mtxf_copy(out, (float(*)[4])cur);
+        return;
+    }
+    if (!gfx_matrix_pair_is_safe(prev, cur)) {
+        mtxf_copy(out, (float(*)[4])cur);
+        return;
+    }
+
+    mtxf_copy(out, (float(*)[4])cur);
+
+    float dirs[3][3] = { { 0 } };
+    float scales[3] = { 1.0f, 1.0f, 1.0f };
+
+    for (int i = 0; i < 3; i++) {
+        float prev_axis[3] = { prev[i][0], prev[i][1], prev[i][2] };
+        float cur_axis[3]  = { cur[i][0],  cur[i][1],  cur[i][2] };
+        float prev_len = gfx_vec3_len(prev_axis);
+        float cur_len = gfx_vec3_len(cur_axis);
+
+        scales[i] = prev_len + (cur_len - prev_len) * delta;
+
+        if (prev_len < 0.0001f || cur_len < 0.0001f) {
+            dirs[i][0] = cur_axis[0];
+            dirs[i][1] = cur_axis[1];
+            dirs[i][2] = cur_axis[2];
+            if (!gfx_vec3_normalize_safe(dirs[i])) {
+                dirs[i][0] = (i == 0) ? 1.0f : 0.0f;
+                dirs[i][1] = (i == 1) ? 1.0f : 0.0f;
+                dirs[i][2] = (i == 2) ? 1.0f : 0.0f;
+            }
+            continue;
+        }
+
+        prev_axis[0] /= prev_len;
+        prev_axis[1] /= prev_len;
+        prev_axis[2] /= prev_len;
+        cur_axis[0] /= cur_len;
+        cur_axis[1] /= cur_len;
+        cur_axis[2] /= cur_len;
+
+        dirs[i][0] = prev_axis[0] + (cur_axis[0] - prev_axis[0]) * delta;
+        dirs[i][1] = prev_axis[1] + (cur_axis[1] - prev_axis[1]) * delta;
+        dirs[i][2] = prev_axis[2] + (cur_axis[2] - prev_axis[2]) * delta;
+        if (!gfx_vec3_normalize_safe(dirs[i])) {
+            dirs[i][0] = cur_axis[0];
+            dirs[i][1] = cur_axis[1];
+            dirs[i][2] = cur_axis[2];
+        }
+    }
+
+    float x[3] = { dirs[0][0], dirs[0][1], dirs[0][2] };
+    if (!gfx_vec3_normalize_safe(x)) {
+        x[0] = 1.0f; x[1] = 0.0f; x[2] = 0.0f;
+    }
+
+    float y[3] = { dirs[1][0], dirs[1][1], dirs[1][2] };
+    float y_proj = gfx_vec3_dot(y, x);
+    y[0] -= x[0] * y_proj;
+    y[1] -= x[1] * y_proj;
+    y[2] -= x[2] * y_proj;
+    if (!gfx_vec3_normalize_safe(y)) {
+        y[0] = 0.0f; y[1] = 1.0f; y[2] = 0.0f;
+    }
+
+    float z[3];
+    gfx_vec3_cross(z, x, y);
+    if (!gfx_vec3_normalize_safe(z)) {
+        z[0] = 0.0f; z[1] = 0.0f; z[2] = 1.0f;
+    }
+    if (gfx_vec3_dot(z, dirs[2]) < 0.0f) {
+        z[0] = -z[0];
+        z[1] = -z[1];
+        z[2] = -z[2];
+    }
+
+    out[0][0] = x[0] * scales[0]; out[0][1] = x[1] * scales[0]; out[0][2] = x[2] * scales[0];
+    out[1][0] = y[0] * scales[1]; out[1][1] = y[1] * scales[1]; out[1][2] = y[2] * scales[1];
+    out[2][0] = z[0] * scales[2]; out[2][1] = z[1] * scales[2]; out[2][2] = z[2] * scales[2];
+
+    out[3][0] = prev[3][0] + (cur[3][0] - prev[3][0]) * delta;
+    out[3][1] = prev[3][1] + (cur[3][1] - prev[3][1]) * delta;
+    out[3][2] = prev[3][2] + (cur[3][2] - prev[3][2]) * delta;
+}
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     float matrix[4][4];
     float matrix_interp[4][4];
@@ -1019,9 +1260,34 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
             }
         }
     } else {
+        bool modelview = ((parameters & G_MTX_PROJECTION) == 0);
+        bool alpha_sensitive_layer = modelview && !gfx_matrix_interpolation_layer_safe();
         const float (*prev_matrix)[4][4] = NULL;
-        if (gfx_find_best_prev_matrix(matrix_cmd_index, matrix, &prev_matrix)) {
-            gfx_interpolate_matrix(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+        bool alpha_fallback_match = false;
+        bool have_prev = false;
+        uint32_t alpha_match_index = matrix_cmd_index;
+
+        if (alpha_sensitive_layer) {
+            have_prev = gfx_find_best_prev_matrix_alpha(matrix_cmd_index, matrix, &prev_matrix, &alpha_match_index);
+            if (have_prev) {
+                if (!gfx_matrix_pair_is_safe_alpha_exact(*prev_matrix, matrix)) {
+                    have_prev = false;
+                } else {
+                    alpha_fallback_match = (alpha_match_index != matrix_cmd_index);
+                }
+            }
+        } else {
+            have_prev = gfx_find_best_prev_matrix(matrix_cmd_index, matrix, &prev_matrix);
+        }
+
+        if (have_prev) {
+            if (alpha_sensitive_layer && alpha_fallback_match) {
+                gfx_interpolate_matrix_translation_only(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+            } else if (alpha_sensitive_layer) {
+                gfx_interpolate_matrix_rigid(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+            } else {
+                gfx_interpolate_matrix(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+            }
             matrix_src = matrix_interp;
         }
     }
