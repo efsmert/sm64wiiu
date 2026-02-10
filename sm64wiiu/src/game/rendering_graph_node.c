@@ -58,6 +58,17 @@ struct MtxInterp {
 };
 
 static struct MtxInterp *sMtxInterpHead = NULL;
+static struct DisplayListNode *sGeoLastAppendedDisplayListNode = NULL;
+
+static struct GraphNodeBackground *sBackgroundNode = NULL;
+static struct DisplayListNode *sBackgroundListNode = NULL;
+static Gfx *sBackgroundDLPatchPos = NULL;
+static void *sBackgroundContext = NULL;
+static void *sBackgroundOriginalDisplayList = NULL;
+static Vec3f sBackgroundPrevLakituPos;
+static Vec3f sBackgroundPrevLakituFocus;
+static u32 sBackgroundPrevTimestamp = 0;
+static struct GraphNodeRoot *sBackgroundRootNode = NULL;
 
 /**
  * Animation nodes have state in global variables, so this struct captures
@@ -250,6 +261,10 @@ static void geo_process_master_list_sub(struct GraphNodeMasterList *node) {
                 }
                 gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(currList->transform),
                           G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+                if (currList == sBackgroundListNode) {
+                    sBackgroundDLPatchPos = gDisplayListHead;
+                    sBackgroundOriginalDisplayList = currList->displayList;
+                }
                 gSPDisplayList(gDisplayListHead++, currList->displayList);
                 currList = currList->next;
             }
@@ -280,12 +295,15 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         listNode->displayList = displayList;
         listNode->next = 0;
         listNode->usingCamSpace = 0;
+        sGeoLastAppendedDisplayListNode = listNode;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
             gCurGraphNodeMasterList->listHeads[layer] = listNode;
         } else {
             gCurGraphNodeMasterList->listTails[layer]->next = listNode;
         }
         gCurGraphNodeMasterList->listTails[layer] = listNode;
+    } else {
+        sGeoLastAppendedDisplayListNode = NULL;
     }
 }
 
@@ -309,6 +327,17 @@ static void geo_process_master_list(struct GraphNodeMasterList *node) {
 
 void patch_mtx_before(void) {
     sMtxInterpHead = NULL;
+    sGeoLastAppendedDisplayListNode = NULL;
+
+    sBackgroundNode = NULL;
+    sBackgroundListNode = NULL;
+    sBackgroundDLPatchPos = NULL;
+    sBackgroundContext = NULL;
+    sBackgroundOriginalDisplayList = NULL;
+
+    vec3f_copy(sBackgroundPrevLakituPos, gLakituState.pos);
+    vec3f_copy(sBackgroundPrevLakituFocus, gLakituState.focus);
+    sBackgroundPrevTimestamp = gGlobalTimer;
 }
 
 void patch_mtx_interpolated(f32 delta) {
@@ -317,6 +346,42 @@ void patch_mtx_interpolated(f32 delta) {
         Gfx *pos = interp->pos;
         gSPMatrix(pos++, VIRTUAL_TO_PHYSICAL(&interp->interp),
                   G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    }
+
+    if (sBackgroundNode != NULL && sBackgroundNode->fnNode.func != NULL && sBackgroundDLPatchPos != NULL) {
+        Vec3f savedPos;
+        Vec3f savedFocus;
+        s32 i;
+        struct GraphNodeRoot *savedRootNode = gCurGraphNodeRoot;
+        vec3f_copy(savedPos, gLakituState.pos);
+        vec3f_copy(savedFocus, gLakituState.focus);
+
+        if (sBackgroundRootNode != NULL) {
+            gCurGraphNodeRoot = sBackgroundRootNode;
+        }
+
+        if (gGlobalTimer == sBackgroundPrevTimestamp + 1 &&
+            gGlobalTimer != gLakituState.skipCameraInterpolationTimestamp) {
+            for (i = 0; i < 3; i++) {
+                gLakituState.pos[i] =
+                    sBackgroundPrevLakituPos[i] + ((savedPos[i] - sBackgroundPrevLakituPos[i]) * delta);
+                gLakituState.focus[i] =
+                    sBackgroundPrevLakituFocus[i] + ((savedFocus[i] - sBackgroundPrevLakituFocus[i]) * delta);
+            }
+        }
+
+        Gfx *list = sBackgroundNode->fnNode.func(GEO_CONTEXT_RENDER, &sBackgroundNode->fnNode.node, sBackgroundContext);
+        void *physList = sBackgroundOriginalDisplayList;
+        if (list != NULL) {
+            physList = (void *) VIRTUAL_TO_PHYSICAL(list);
+        }
+        if (physList != NULL) {
+            gSPDisplayList(sBackgroundDLPatchPos, physList);
+        }
+
+        vec3f_copy(gLakituState.pos, savedPos);
+        vec3f_copy(gLakituState.focus, savedFocus);
+        gCurGraphNodeRoot = savedRootNode;
     }
 }
 
@@ -675,12 +740,16 @@ static void geo_process_generated_list(struct GraphNodeGenerated *node) {
 static void geo_process_background(struct GraphNodeBackground *node) {
     Gfx *list = NULL;
 
+    sBackgroundNode = node;
+    sBackgroundContext = (struct AllocOnlyPool *) gMatStack[gMatStackIndex];
+
     if (node->fnNode.func != NULL) {
         list = node->fnNode.func(GEO_CONTEXT_RENDER, &node->fnNode.node,
                                  (struct AllocOnlyPool *) gMatStack[gMatStackIndex]);
     }
     if (list != NULL) {
         geo_append_display_list((void *) VIRTUAL_TO_PHYSICAL(list), node->fnNode.node.flags >> 8);
+        sBackgroundListNode = sGeoLastAppendedDisplayListNode;
     } else if (gCurGraphNodeMasterList != NULL) {
 #ifndef F3DEX_GBI_2E
         Gfx *gfxStart = alloc_display_list(sizeof(Gfx) * 7);
@@ -699,6 +768,7 @@ static void geo_process_background(struct GraphNodeBackground *node) {
         gSPEndDisplayList(gfx++);
 
         geo_append_display_list((void *) VIRTUAL_TO_PHYSICAL(gfxStart), 0);
+        sBackgroundListNode = sGeoLastAppendedDisplayListNode;
     }
     if (node->fnNode.node.children != NULL) {
         geo_process_node_and_siblings(node->fnNode.node.children);
@@ -1313,6 +1383,7 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
     UNUSED s32 unused;
 
     if (node->node.flags & GRAPH_RENDER_ACTIVE) {
+        sBackgroundRootNode = node;
         Mtx *initialMatrix;
         Mtx *initialMatrixPrev;
         Vp *viewport = alloc_display_list(sizeof(*viewport));
