@@ -235,6 +235,7 @@ void unload_object(struct Object *obj) {
 #endif
 
     obj->header.gfx.node.flags &= ~GRAPH_RENDER_BILLBOARD;
+    obj->header.gfx.node.flags &= ~GRAPH_RENDER_CYLBOARD;
     obj->header.gfx.node.flags &= ~GRAPH_RENDER_ACTIVE;
 
     deallocate_object(&gFreeObjectList, &obj->header);

@@ -4,6 +4,7 @@
 // This file contains various data types used in Super Mario 64 that don't yet
 // have an appropriate header.
 
+#include <stdbool.h>
 #include <ultra64.h>
 #include "macros.h"
 #include "config.h"
@@ -108,32 +109,71 @@ struct GraphNode
     /*0x08*/ struct GraphNode *next;
     /*0x0C*/ struct GraphNode *parent;
     /*0x10*/ struct GraphNode *children;
+
+    // Co-op DX parity: extra flags and hook process state (kept separate from node.flags).
+    /*0x14*/ u8 extraFlags;
+    /*0x15*/ u8 hookProcess;
+    /*0x16*/ s16 padding;
 };
 
 struct AnimInfo
 {
-    /*0x00 0x38*/ s16 animID;
-    /*0x02 0x3A*/ s16 animYTrans;
-    /*0x04 0x3C*/ struct Animation *curAnim;
-    /*0x08 0x40*/ s16 animFrame;
-    /*0x0A 0x42*/ u16 animTimer;
-    /*0x0C 0x44*/ s32 animFrameAccelAssist;
-    /*0x10 0x48*/ s32 animAccel;
+    /*0x00*/ struct Animation *curAnim;
+    /*0x04*/ struct Animation *prevAnimPtr;
+
+    /*0x08*/ s16 animID;
+    /*0x0A*/ s16 prevAnimID;
+
+    /*0x0C*/ s16 animFrame;
+    /*0x0E*/ s16 prevAnimFrame;
+
+    /*0x10*/ u32 prevAnimFrameTimestamp;
+    /*0x14*/ s32 animFrameAccelAssist;
+
+    /*0x18*/ s32 animAccel;
+    /*0x1C*/ u16 animTimer;
+    /*0x1E*/ s16 animYTrans;
 };
 
 struct GraphNodeObject
 {
     /*0x00*/ struct GraphNode node;
-    /*0x14*/ struct GraphNode *sharedChild;
-    /*0x18*/ s8 areaIndex;
-    /*0x19*/ s8 activeAreaIndex;
-    /*0x1A*/ Vec3s angle;
-    /*0x20*/ Vec3f pos;
-    /*0x2C*/ Vec3f scale;
-    /*0x38*/ struct AnimInfo animInfo;
-    /*0x4C*/ struct SpawnInfo *unk4C;
-    /*0x50*/ Mat4 *throwMatrix; // matrix ptr
-    /*0x54*/ Vec3f cameraToObject;
+    /*0x18*/ struct GraphNode *sharedChild;
+    /*0x1C*/ struct SpawnInfo *unk4C;
+
+    /*0x20*/ Mat4 *throwMatrix; // matrix ptr
+    /*0x24*/ Mat4 *throwMatrixPrev;
+    /*0x28*/ Mat4 prevThrowMatrix;
+
+    /*0x68*/ Vec3s angle;
+    /*0x6E*/ Vec3s prevAngle;
+
+    /*0x74*/ Vec3f pos;
+    /*0x80*/ Vec3f prevPos;
+
+    /*0x8C*/ Vec3f shadowPos;
+    /*0x98*/ Vec3f prevShadowPos;
+
+    /*0xA4*/ Vec3f scale;
+    /*0xB0*/ Vec3f prevScale;
+
+    /*0xBC*/ Vec3f cameraToObject;
+
+    /*0xC8*/ u32 prevTimestamp;
+    /*0xCC*/ u32 prevShadowPosTimestamp;
+    /*0xD0*/ u32 prevScaleTimestamp;
+    /*0xD4*/ u32 prevThrowMatrixTimestamp;
+    /*0xD8*/ u32 skipInterpolationTimestamp;
+
+    /*0xDC*/ struct AnimInfo animInfo;
+
+    /*0xFC*/ s8 areaIndex;
+    /*0xFD*/ s8 activeAreaIndex;
+
+    /*0xFE*/ bool shadowInvisible;
+    /*0xFF*/ bool disableAutomaticShadowPos;
+    /*0x100*/ bool skipInViewCheck;
+    /*0x101*/ bool inited;
 };
 
 struct ObjectNode

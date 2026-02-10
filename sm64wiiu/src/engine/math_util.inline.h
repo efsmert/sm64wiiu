@@ -27,6 +27,7 @@ MATH_DO_INLINE void mtxf_lookat(Mat4 mtx, Vec3f from, Vec3f to, s16 roll);
 MATH_DO_INLINE void mtxf_rotate_zxy_and_translate(Mat4 dest, Vec3f translate, Vec3s rotate);
 MATH_DO_INLINE void mtxf_rotate_xyz_and_translate(Mat4 dest, Vec3f b, Vec3s c);
 MATH_DO_INLINE void mtxf_billboard(Mat4 dest, Mat4 mtx, Vec3f position, s16 angle);
+MATH_DO_INLINE void mtxf_cylboard(Mat4 dest, Mat4 mtx, Vec3f position, s16 angle);
 MATH_DO_INLINE void mtxf_align_terrain_normal(Mat4 dest, Vec3f upDir, Vec3f pos, s16 yaw);
 MATH_DO_INLINE void mtxf_align_terrain_triangle(Mat4 mtx, Vec3f pos, s16 yaw, f32 radius);
 MATH_DO_INLINE void mtxf_mul(Mat4 dest, Mat4 a, Mat4 b);
@@ -522,6 +523,29 @@ MATH_DO_INLINE void mtxf_billboard(Mat4 dest, Mat4 mtx, Vec3f position, s16 angl
         mtx[0][1] * position[0] + mtx[1][1] * position[1] + mtx[2][1] * position[2] + mtx[3][1];
     dest[3][2] =
         mtx[0][2] * position[0] + mtx[1][2] * position[1] + mtx[2][2] * position[2] + mtx[3][2];
+    dest[3][3] = 1;
+}
+
+// Billboard transform constrained to cylindrical behavior (preserve camera up axis).
+MATH_DO_INLINE void mtxf_cylboard(Mat4 dest, Mat4 mtx, Vec3f position, s16 angle) {
+    dest[0][0] = coss(angle);
+    dest[0][1] = sins(angle);
+    dest[0][2] = 0;
+    dest[0][3] = 0;
+
+    dest[1][0] = mtx[1][0];
+    dest[1][1] = mtx[1][1];
+    dest[1][2] = mtx[1][2];
+    dest[1][3] = 0;
+
+    dest[2][0] = 0;
+    dest[2][1] = 0;
+    dest[2][2] = 1;
+    dest[2][3] = 0;
+
+    dest[3][0] = mtx[0][0] * position[0] + mtx[1][0] * position[1] + mtx[2][0] * position[2] + mtx[3][0];
+    dest[3][1] = mtx[0][1] * position[0] + mtx[1][1] * position[1] + mtx[2][1] * position[2] + mtx[3][1];
+    dest[3][2] = mtx[0][2] * position[0] + mtx[1][2] * position[1] + mtx[2][2] * position[2] + mtx[3][2];
     dest[3][3] = 1;
 }
 

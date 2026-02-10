@@ -13,6 +13,12 @@
 #define GRAPH_RENDER_Z_BUFFER       (1 << 3)
 #define GRAPH_RENDER_INVISIBLE      (1 << 4)
 #define GRAPH_RENDER_HAS_ANIMATION  (1 << 5)
+#define GRAPH_RENDER_CYLBOARD       (1 << 6)
+#define GRAPH_RENDER_PLAYER         (1 << 7)
+
+// Extra, custom, flags
+#define GRAPH_EXTRA_FORCE_3D        (1 << 0)
+#define GRAPH_EXTRA_ROTATE_HELD     (1 << 1)
 
 // Whether the node type has a function pointer of type GraphNodeFunc
 #define GRAPH_NODE_TYPE_FUNCTIONAL            0x100
@@ -37,12 +43,14 @@
 #define GRAPH_NODE_TYPE_BILLBOARD             0x01A
 #define GRAPH_NODE_TYPE_DISPLAY_LIST          0x01B
 #define GRAPH_NODE_TYPE_SCALE                 0x01C
+#define GRAPH_NODE_TYPE_SCALE_XYZ             0x01D
 #define GRAPH_NODE_TYPE_SHADOW                0x028
 #define GRAPH_NODE_TYPE_OBJECT_PARENT         0x029
 #define GRAPH_NODE_TYPE_GENERATED_LIST       (0x02A | GRAPH_NODE_TYPE_FUNCTIONAL)
 #define GRAPH_NODE_TYPE_BACKGROUND           (0x02C | GRAPH_NODE_TYPE_FUNCTIONAL)
 #define GRAPH_NODE_TYPE_HELD_OBJ             (0x02E | GRAPH_NODE_TYPE_FUNCTIONAL)
 #define GRAPH_NODE_TYPE_CULLING_RADIUS        0x02F
+#define GRAPH_NODE_TYPE_BONE                  0x030
 
 // The number of master lists. A master list determines the order and render
 // mode with which display lists are drawn.
@@ -109,6 +117,8 @@ struct GraphNodePerspective
     /*0x1C*/ f32 fov;   // horizontal field of view in degrees
     /*0x20*/ s16 near;  // near clipping plane
     /*0x22*/ s16 far;   // far clipping plane
+    f32 prevFov;
+    f32 prevTimestamp;
 };
 
 /** An entry in the master list. It is a linked list of display lists
@@ -117,8 +127,10 @@ struct GraphNodePerspective
 struct DisplayListNode
 {
     Mtx *transform;
+    Mtx *transformPrev;
     void *displayList;
     struct DisplayListNode *next;
+    u8 usingCamSpace;
 };
 
 /** GraphNode that manages the 8 top-level display lists that will be drawn
@@ -184,7 +196,11 @@ struct GraphNodeCamera
     } config;
     /*0x1C*/ Vec3f pos;
     /*0x28*/ Vec3f focus;
+    Vec3f prevPos;
+    Vec3f prevFocus;
+    u32 prevTimestamp;
     /*0x34*/ Mat4 *matrixPtr; // pointer to look-at matrix of this camera as a Mat4
+    Mat4 *matrixPtrPrev;
     /*0x38*/ s16 roll; // roll in look at matrix. Doesn't account for light direction unlike rollScreen.
     /*0x3A*/ s16 rollScreen; // rolls screen while keeping the light direction consistent
 };
@@ -278,6 +294,16 @@ struct GraphNodeScale
     /*0x18*/ f32 scale;
 };
 
+/** GraphNodeScale but on X, Y and Z independently.
+ *  Must be another graph node type for retro-compatibility.
+ */
+struct GraphNodeScaleXYZ
+{
+    /*0x00*/ struct GraphNode node;
+    /*0x14*/ void *displayList;
+    /*0x18*/ Vec3f scale;
+};
+
 /** GraphNode that draws a shadow under an object.
  *  Every object starts with a shadow node.
  *  The shadow type determines the shape (round or rectangular), vertices (4 or 9)
@@ -322,6 +348,9 @@ struct GraphNodeBackground
     /*0x00*/ struct FnGraphNode fnNode;
     /*0x18*/ s32 unused;
     /*0x1C*/ s32 background; // background ID, or rgba5551 color if fnNode.func is null
+    Vec3f prevCameraPos;
+    Vec3f prevCameraFocus;
+    u32 prevCameraTimestamp;
 };
 
 /** Renders the object that Mario is holding.
@@ -332,6 +361,8 @@ struct GraphNodeHeldObject
     /*0x18*/ s32 playerIndex;
     /*0x1C*/ struct Object *objNode;
     /*0x20*/ Vec3s translation;
+    Vec3f prevShadowPos;
+    u32 prevShadowPosTimestamp;
 };
 
 /** A node that allows an object to specify a different culling radius than the
@@ -344,6 +375,18 @@ struct GraphNodeCullingRadius
     /*0x00*/ struct GraphNode node;
     /*0x14*/ s16 cullingRadius; // specifies the 'sphere radius' for purposes of frustum culling
     u8 pad1E[2];
+};
+
+/**
+ * GraphNodeAnimatedPart with initial rotation and scale values.
+ */
+struct GraphNodeBone
+{
+    struct GraphNode node;
+    void *displayList;
+    Vec3s translation;
+    Vec3s rotation;
+    Vec3f scale;
 };
 
 extern struct GraphNodeMasterList *gCurGraphNodeMasterList;
@@ -385,6 +428,8 @@ struct GraphNodeRotation *init_graph_node_rotation(struct AllocOnlyPool *pool, s
                                                    s32 drawingLayer, void *displayList, Vec3s rotation);
 struct GraphNodeScale *init_graph_node_scale(struct AllocOnlyPool *pool, struct GraphNodeScale *graphNode,
                                              s32 drawingLayer, void *displayList, f32 scale);
+struct GraphNodeScaleXYZ *init_graph_node_scale_xyz(struct AllocOnlyPool *pool, struct GraphNodeScaleXYZ *graphNode,
+                                                    s32 drawingLayer, void *displayList, Vec3f scale);
 struct GraphNodeObject *init_graph_node_object(struct AllocOnlyPool *pool, struct GraphNodeObject *graphNode,
                                                struct GraphNode *sharedChild, Vec3f pos, Vec3s angle, Vec3f scale);
 struct GraphNodeCullingRadius *init_graph_node_culling_radius(struct AllocOnlyPool *pool, struct GraphNodeCullingRadius *graphNode, s16 radius);
@@ -405,6 +450,11 @@ struct GraphNodeBackground *init_graph_node_background(struct AllocOnlyPool *poo
 struct GraphNodeHeldObject *init_graph_node_held_object(struct AllocOnlyPool *pool, struct GraphNodeHeldObject *sp1c,
                                                         struct Object *objNode, Vec3s translation,
                                                         GraphNodeFunc nodeFunc, s32 playerIndex);
+struct GraphNodeBone *init_graph_node_bone(struct AllocOnlyPool *pool,
+                                           struct GraphNodeBone *graphNode,
+                                           s32 drawingLayer, void *displayList,
+                                           Vec3s translation, Vec3s rotation,
+                                           Vec3f scale);
 struct GraphNode *geo_add_child(struct GraphNode *parent, struct GraphNode *childNode);
 struct GraphNode *geo_remove_child(struct GraphNode *graphNode);
 struct GraphNode *geo_make_first_child(struct GraphNode *newFirstChild);

@@ -655,6 +655,8 @@ struct LakituState
     /// Mario's action from the previous frame. Only used to determine if Mario just finished a dive.
     /*0xB8*/ u32 lastFrameAction;
     /*0xBC*/ s16 unused;
+
+    u32 skipCameraInterpolationTimestamp;
 };
 
 // bss order hack to not affect BSS order. if possible, remove me, but it will be hard to match otherwise
@@ -676,6 +678,7 @@ extern u8 gRecentCutscene;
 
 // TODO: sort all of this extremely messy shit out after the split
 
+void skip_camera_interpolation(void);
 void set_camera_shake_from_hit(s16 shake);
 void set_environmental_camera_shake(s16 shake);
 void set_camera_shake_from_point(s16 shake, f32 posX, f32 posY, f32 posZ);

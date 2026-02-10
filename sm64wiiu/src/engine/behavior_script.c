@@ -152,6 +152,15 @@ static s32 bhv_cmd_billboard(void) {
     return BHV_PROC_CONTINUE;
 }
 
+// Command 0x38: Cylboards the current object, making it face the camera around one axis.
+// Usage: CYLBOARD()
+static s32 bhv_cmd_cylboard(void) {
+    gCurrentObject->header.gfx.node.flags |= GRAPH_RENDER_CYLBOARD;
+
+    gCurBhvCommand++;
+    return BHV_PROC_CONTINUE;
+}
+
 // Command 0x1B: Sets the current model ID of the object.
 // Usage: SET_MODEL(modelID)
 static s32 bhv_cmd_set_model(void) {
@@ -912,6 +921,7 @@ static BhvCommandProc BehaviorCmdTable[] = {
     bhv_cmd_disable_rendering,
     bhv_cmd_set_int_unused,
     bhv_cmd_spawn_water_droplet,
+    bhv_cmd_cylboard,
 };
 
 // Execute the behavior script of the current object, process the object flags, and other miscellaneous code for updating objects.

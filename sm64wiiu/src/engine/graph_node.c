@@ -29,6 +29,9 @@ void init_scene_graph_node_links(struct GraphNode *graphNode, s32 type) {
     graphNode->next = graphNode;
     graphNode->parent = NULL;
     graphNode->children = NULL;
+    graphNode->extraFlags = 0;
+    graphNode->hookProcess = 0;
+    graphNode->padding = 0;
 }
 
 /**
@@ -89,6 +92,8 @@ struct GraphNodePerspective *init_graph_node_perspective(struct AllocOnlyPool *p
         init_scene_graph_node_links(&graphNode->fnNode.node, GRAPH_NODE_TYPE_PERSPECTIVE);
 
         graphNode->fov = fov;
+        graphNode->prevFov = fov;
+        graphNode->prevTimestamp = 0.0f;
         graphNode->near = near;
         graphNode->far = far;
         graphNode->fnNode.func = nodeFunc;
@@ -197,8 +202,12 @@ struct GraphNodeCamera *init_graph_node_camera(struct AllocOnlyPool *pool,
         init_scene_graph_node_links(&graphNode->fnNode.node, GRAPH_NODE_TYPE_CAMERA);
         vec3f_copy(graphNode->pos, pos);
         vec3f_copy(graphNode->focus, focus);
+        vec3f_copy(graphNode->prevPos, pos);
+        vec3f_copy(graphNode->prevFocus, focus);
+        graphNode->prevTimestamp = 0;
         graphNode->fnNode.func = func;
         graphNode->config.mode = mode;
+        graphNode->matrixPtrPrev = NULL;
         graphNode->roll = 0;
         graphNode->rollScreen = 0;
 
@@ -297,6 +306,27 @@ struct GraphNodeScale *init_graph_node_scale(struct AllocOnlyPool *pool,
 }
 
 /**
+ * Allocates and returns a newly created XYZ scaling node
+ */
+struct GraphNodeScaleXYZ *init_graph_node_scale_xyz(struct AllocOnlyPool *pool,
+                                                    struct GraphNodeScaleXYZ *graphNode,
+                                                    s32 drawingLayer, void *displayList,
+                                                    Vec3f scale) {
+    if (pool != NULL) {
+        graphNode = alloc_only_pool_alloc(pool, sizeof(struct GraphNodeScaleXYZ));
+    }
+
+    if (graphNode != NULL) {
+        init_scene_graph_node_links(&graphNode->node, GRAPH_NODE_TYPE_SCALE_XYZ);
+        graphNode->node.flags = (drawingLayer << 8) | (graphNode->node.flags & 0xFF);
+        vec3f_copy(graphNode->scale, scale);
+        graphNode->displayList = displayList;
+    }
+
+    return graphNode;
+}
+
+/**
  * Allocates and returns a newly created object node
  */
 struct GraphNodeObject *init_graph_node_object(struct AllocOnlyPool *pool,
@@ -310,20 +340,47 @@ struct GraphNodeObject *init_graph_node_object(struct AllocOnlyPool *pool,
     if (graphNode != NULL) {
         init_scene_graph_node_links(&graphNode->node, GRAPH_NODE_TYPE_OBJECT);
         vec3f_copy(graphNode->pos, pos);
+        vec3f_copy(graphNode->prevPos, pos);
         vec3f_copy(graphNode->scale, scale);
+        vec3f_copy(graphNode->prevScale, scale);
         vec3s_copy(graphNode->angle, angle);
+        vec3s_copy(graphNode->prevAngle, angle);
 #ifdef USE_SYSTEM_MALLOC
         // To avoid uninitialised memory usage in audio code
         vec3f_copy(graphNode->cameraToObject, gVec3fZero);
 #endif
+        vec3f_copy(graphNode->shadowPos, gVec3fZero);
+        vec3f_copy(graphNode->prevShadowPos, gVec3fZero);
         graphNode->sharedChild = sharedChild;
+        graphNode->unk4C = NULL;
         graphNode->throwMatrix = NULL;
+        graphNode->throwMatrixPrev = NULL;
+        mtxf_identity(graphNode->prevThrowMatrix);
+
+        graphNode->prevTimestamp = 0;
+        graphNode->prevShadowPosTimestamp = 0;
+        graphNode->prevScaleTimestamp = 0;
+        graphNode->prevThrowMatrixTimestamp = 0;
+        graphNode->skipInterpolationTimestamp = 0;
+
         graphNode->animInfo.animID = 0;
+        graphNode->animInfo.prevAnimID = 0;
         graphNode->animInfo.curAnim = NULL;
+        graphNode->animInfo.prevAnimPtr = NULL;
         graphNode->animInfo.animFrame = 0;
+        graphNode->animInfo.prevAnimFrame = 0;
+        graphNode->animInfo.prevAnimFrameTimestamp = 0;
         graphNode->animInfo.animFrameAccelAssist = 0;
         graphNode->animInfo.animAccel = 0x10000;
         graphNode->animInfo.animTimer = 0;
+        graphNode->animInfo.animYTrans = 0;
+
+        graphNode->areaIndex = 0;
+        graphNode->activeAreaIndex = 0;
+        graphNode->shadowInvisible = false;
+        graphNode->disableAutomaticShadowPos = false;
+        graphNode->skipInViewCheck = false;
+        graphNode->inited = false;
         graphNode->node.flags |= GRAPH_RENDER_HAS_ANIMATION;
     }
 
@@ -343,6 +400,30 @@ struct GraphNodeCullingRadius *init_graph_node_culling_radius(struct AllocOnlyPo
     if (graphNode != NULL) {
         init_scene_graph_node_links(&graphNode->node, GRAPH_NODE_TYPE_CULLING_RADIUS);
         graphNode->cullingRadius = radius;
+    }
+
+    return graphNode;
+}
+
+/**
+ * Allocates and returns a newly created bone node
+ */
+struct GraphNodeBone *init_graph_node_bone(struct AllocOnlyPool *pool,
+                                           struct GraphNodeBone *graphNode,
+                                           s32 drawingLayer, void *displayList,
+                                           Vec3s translation, Vec3s rotation,
+                                           Vec3f scale) {
+    if (pool != NULL) {
+        graphNode = alloc_only_pool_alloc(pool, sizeof(struct GraphNodeBone));
+    }
+
+    if (graphNode != NULL) {
+        init_scene_graph_node_links(&graphNode->node, GRAPH_NODE_TYPE_BONE);
+        graphNode->node.flags = (drawingLayer << 8) | (graphNode->node.flags & 0xFF);
+        vec3s_copy(graphNode->translation, translation);
+        vec3s_copy(graphNode->rotation, rotation);
+        vec3f_copy(graphNode->scale, scale);
+        graphNode->displayList = displayList;
     }
 
     return graphNode;
@@ -487,6 +568,9 @@ struct GraphNodeBackground *init_graph_node_background(struct AllocOnlyPool *poo
         graphNode->background = (background << 16) | background;
         graphNode->fnNode.func = backgroundFunc;
         graphNode->unused = zero; // always 0, unused
+        vec3f_copy(graphNode->prevCameraPos, gVec3fZero);
+        vec3f_copy(graphNode->prevCameraFocus, gVec3fZero);
+        graphNode->prevCameraTimestamp = 0;
 
         if (backgroundFunc != NULL) {
             backgroundFunc(GEO_CONTEXT_CREATE, &graphNode->fnNode.node, pool);
@@ -511,6 +595,8 @@ struct GraphNodeHeldObject *init_graph_node_held_object(struct AllocOnlyPool *po
     if (graphNode != NULL) {
         init_scene_graph_node_links(&graphNode->fnNode.node, GRAPH_NODE_TYPE_HELD_OBJ);
         vec3s_copy(graphNode->translation, translation);
+        vec3f_copy(graphNode->prevShadowPos, gVec3fZero);
+        graphNode->prevShadowPosTimestamp = 0;
         graphNode->objNode = objNode;
         graphNode->fnNode.func = nodeFunc;
         graphNode->playerIndex = playerIndex;
@@ -702,12 +788,33 @@ void geo_obj_init(struct GraphNodeObject *graphNode, void *sharedChild, Vec3f po
     graphNode->sharedChild = sharedChild;
     graphNode->unk4C = 0;
     graphNode->throwMatrix = NULL;
+    graphNode->throwMatrixPrev = NULL;
+    mtxf_identity(graphNode->prevThrowMatrix);
     graphNode->animInfo.curAnim = NULL;
+    graphNode->animInfo.prevAnimPtr = NULL;
+    graphNode->animInfo.prevAnimFrameTimestamp = 0;
+    graphNode->animInfo.prevAnimID = 0;
+    graphNode->animInfo.prevAnimFrame = 0;
+    vec3s_copy(graphNode->prevAngle, graphNode->angle);
+    vec3f_copy(graphNode->prevPos, graphNode->pos);
+    vec3f_copy(graphNode->prevScale, graphNode->scale);
+    vec3f_copy(graphNode->shadowPos, gVec3fZero);
+    vec3f_copy(graphNode->prevShadowPos, gVec3fZero);
+    graphNode->prevTimestamp = 0;
+    graphNode->prevShadowPosTimestamp = 0;
+    graphNode->prevScaleTimestamp = 0;
+    graphNode->prevThrowMatrixTimestamp = 0;
+    graphNode->skipInterpolationTimestamp = 0;
+    graphNode->shadowInvisible = false;
+    graphNode->disableAutomaticShadowPos = false;
+    graphNode->skipInViewCheck = false;
+    graphNode->inited = false;
 
     graphNode->node.flags |= GRAPH_RENDER_ACTIVE;
     graphNode->node.flags &= ~GRAPH_RENDER_INVISIBLE;
     graphNode->node.flags |= GRAPH_RENDER_HAS_ANIMATION;
     graphNode->node.flags &= ~GRAPH_RENDER_BILLBOARD;
+    graphNode->node.flags &= ~GRAPH_RENDER_CYLBOARD;
 }
 
 /**
@@ -726,12 +833,33 @@ void geo_obj_init_spawninfo(struct GraphNodeObject *graphNode, struct SpawnInfo 
     graphNode->sharedChild = spawn->unk18;
     graphNode->unk4C = spawn;
     graphNode->throwMatrix = NULL;
+    graphNode->throwMatrixPrev = NULL;
+    mtxf_identity(graphNode->prevThrowMatrix);
     graphNode->animInfo.curAnim = 0;
+    graphNode->animInfo.prevAnimPtr = NULL;
+    graphNode->animInfo.prevAnimFrameTimestamp = 0;
+    graphNode->animInfo.prevAnimID = 0;
+    graphNode->animInfo.prevAnimFrame = 0;
+    vec3s_copy(graphNode->prevAngle, graphNode->angle);
+    vec3f_copy(graphNode->prevPos, graphNode->pos);
+    vec3f_copy(graphNode->prevScale, graphNode->scale);
+    vec3f_copy(graphNode->shadowPos, gVec3fZero);
+    vec3f_copy(graphNode->prevShadowPos, gVec3fZero);
+    graphNode->prevTimestamp = 0;
+    graphNode->prevShadowPosTimestamp = 0;
+    graphNode->prevScaleTimestamp = 0;
+    graphNode->prevThrowMatrixTimestamp = 0;
+    graphNode->skipInterpolationTimestamp = 0;
+    graphNode->shadowInvisible = false;
+    graphNode->disableAutomaticShadowPos = false;
+    graphNode->skipInViewCheck = false;
+    graphNode->inited = false;
 
     graphNode->node.flags |= GRAPH_RENDER_ACTIVE;
     graphNode->node.flags &= ~GRAPH_RENDER_INVISIBLE;
     graphNode->node.flags |= GRAPH_RENDER_HAS_ANIMATION;
     graphNode->node.flags &= ~GRAPH_RENDER_BILLBOARD;
+    graphNode->node.flags &= ~GRAPH_RENDER_CYLBOARD;
 }
 
 /**

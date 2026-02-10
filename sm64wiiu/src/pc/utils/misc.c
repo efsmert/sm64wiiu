@@ -1,7 +1,9 @@
 #include <ctype.h>
+#include <math.h>
 #include <string.h>
 #include <time.h>
 
+#include "engine/math_util.h"
 #include "misc.h"
 
 float smooth_step(float edge0, float edge1, float x) {
@@ -96,16 +98,49 @@ void delta_interpolate_rgba(u8 *res, u8 *a, u8 *b, f32 delta) {
 
 void delta_interpolate_mtx(Mtx *out, Mtx *a, Mtx *b, f32 delta) {
     if (out == NULL || a == NULL || b == NULL) { return; }
+#ifdef GBI_FLOATS
+    f32 antiDelta = 1.0f - delta;
+    for (s32 i = 0; i < 4; i++) {
+        for (s32 j = 0; j < 4; j++) {
+            out->m[i][j] = (a->m[i][j] * antiDelta) + (b->m[i][j] * delta);
+        }
+    }
+#else
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
             out->m[r][c] = (s16)delta_interpolate_s32(a->m[r][c], b->m[r][c], delta);
         }
     }
+#endif
 }
 
 void detect_and_skip_mtx_interpolation(Mtx **mtxPrev, Mtx **mtx) {
+#ifdef GBI_FLOATS
+    if (mtxPrev == NULL || mtx == NULL || *mtxPrev == NULL || *mtx == NULL) { return; }
+
+    // If the basis vectors have flipped far enough, interpolation can take the long arc
+    // and cause a visible pop. In that case, skip by clamping "current" to "previous".
+    const f32 minDot = sqrtf(2.0f) / -3.0f;
+
+    Vec3f prevX; vec3f_copy(prevX, (f32*)(*mtxPrev)->m[0]); vec3f_normalize(prevX);
+    Vec3f prevY; vec3f_copy(prevY, (f32*)(*mtxPrev)->m[1]); vec3f_normalize(prevY);
+    Vec3f prevZ; vec3f_copy(prevZ, (f32*)(*mtxPrev)->m[2]); vec3f_normalize(prevZ);
+
+    Vec3f nextX; vec3f_copy(nextX, (f32*)(*mtx)->m[0]); vec3f_normalize(nextX);
+    Vec3f nextY; vec3f_copy(nextY, (f32*)(*mtx)->m[1]); vec3f_normalize(nextY);
+    Vec3f nextZ; vec3f_copy(nextZ, (f32*)(*mtx)->m[2]); vec3f_normalize(nextZ);
+
+    f32 dotX = (prevX[0] * nextX[0]) + (prevX[1] * nextX[1]) + (prevX[2] * nextX[2]);
+    f32 dotY = (prevY[0] * nextY[0]) + (prevY[1] * nextY[1]) + (prevY[2] * nextY[2]);
+    f32 dotZ = (prevZ[0] * nextZ[0]) + (prevZ[1] * nextZ[1]) + (prevZ[2] * nextZ[2]);
+
+    if ((dotX < minDot) || (dotY < minDot) || (dotZ < minDot)) {
+        *mtx = *mtxPrev;
+    }
+#else
     (void)mtxPrev;
     (void)mtx;
+#endif
 }
 
 void str_seperator_concat(char *output_buffer, int buffer_size, char **strings, int num_strings, char *seperator) {

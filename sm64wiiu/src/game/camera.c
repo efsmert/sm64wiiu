@@ -487,6 +487,10 @@ CameraTransition sModeTransitions[] = {
 extern u8 sDanceCutsceneIndexTable[][4];
 extern u8 sZoomOutAreaMasks[];
 
+void skip_camera_interpolation(void) {
+    gLakituState.skipCameraInterpolationTimestamp = gGlobalTimer;
+}
+
 /**
  * Starts a camera shake triggered by an interaction
  */

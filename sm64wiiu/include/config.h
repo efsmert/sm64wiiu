@@ -38,6 +38,22 @@
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
 
+// Wii U / donor parity feature toggles
+//
+// When enabled, the renderer uses a Co-op DX-style graph-node/object/camera
+// interpolation stack (explicit previous-state ownership) instead of the legacy
+// gfx_pc command-stream matrix pairing heuristics.
+#ifndef WIIU_DONOR_INTERP_STACK
+#define WIIU_DONOR_INTERP_STACK 0
+#endif
+
+// Legacy gfx_pc.c command-stream matrix interpolation (heuristics-based).
+// This is known to produce one-frame warps/pops on Wii U with interpolated subframes.
+// Keep off while donor interpolation stack is being ported.
+#ifndef WIIU_LEGACY_GFX_MTX_INTERP
+#define WIIU_LEGACY_GFX_MTX_INTERP 0
+#endif
+
 // Border Height Define for NTSC Versions
 #ifdef TARGET_N64
 #ifndef VERSION_EU

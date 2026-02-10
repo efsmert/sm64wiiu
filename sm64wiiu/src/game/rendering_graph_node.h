@@ -5,6 +5,13 @@
 
 #include "engine/graph_node.h"
 
+#define MATRIX_STACK_SIZE 32
+extern Mat4 gMatStack[MATRIX_STACK_SIZE];
+extern Mat4 gMatStackPrev[MATRIX_STACK_SIZE];
+
+extern Mtx *gMatStackFixed[MATRIX_STACK_SIZE];
+extern Mtx *gMatStackPrevFixed[MATRIX_STACK_SIZE];
+
 extern struct GraphNodeRoot *gCurGraphNodeRoot;
 extern struct GraphNodeMasterList *gCurGraphNodeMasterList;
 extern struct GraphNodePerspective *gCurGraphNodeCamFrustum;
@@ -29,5 +36,7 @@ extern u16 gAreaUpdateCounter;
 
 void geo_process_node_and_siblings(struct GraphNode *firstNode);
 void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor);
+void patch_mtx_before(void);
+void patch_mtx_interpolated(f32 delta);
 
 #endif // RENDERING_GRAPH_NODE_H
