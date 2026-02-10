@@ -868,7 +868,9 @@ void geo_set_animation_globals(struct AnimInfo *node, s32 hasAnimation) {
 static void geo_process_shadow(struct GraphNodeShadow *node) {
     Gfx *shadowList;
     Mat4 mtxf;
+    Mat4 mtxfPrev;
     Vec3f shadowPos;
+    Vec3f shadowPosPrev;
     Vec3f animOffset;
     f32 objScale;
     f32 shadowScale;
@@ -878,12 +880,20 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
     Mtx *mtx;
 
     if (gCurGraphNodeCamera != NULL && gCurGraphNodeObject != NULL) {
+        s32 canInterpolateShadowPos =
+            (gGlobalTimer == gCurGraphNodeObject->prevShadowPosTimestamp + 1 &&
+             gGlobalTimer != gCurGraphNodeObject->skipInterpolationTimestamp &&
+             gGlobalTimer != gLakituState.skipCameraInterpolationTimestamp);
         if (gCurGraphNodeHeldObject != NULL) {
             get_pos_from_transform_mtx(shadowPos, gMatStack[gMatStackIndex],
                                        *gCurGraphNodeCamera->matrixPtr);
             shadowScale = node->shadowScale;
         } else {
-            vec3f_copy(shadowPos, gCurGraphNodeObject->pos);
+            if (gCurGraphNodeObject->disableAutomaticShadowPos) {
+                vec3f_copy(shadowPos, gCurGraphNodeObject->shadowPos);
+            } else {
+                vec3f_copy(shadowPos, gCurGraphNodeObject->pos);
+            }
             shadowScale = node->shadowScale * gCurGraphNodeObject->scale[0];
         }
 
@@ -914,6 +924,22 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
             }
         }
 
+        if (canInterpolateShadowPos) {
+            vec3f_copy(shadowPosPrev, gCurGraphNodeObject->prevShadowPos);
+        } else {
+            vec3f_copy(shadowPosPrev, shadowPos);
+        }
+        // Shadow geometry is built relative to the current parent Y (object Y).
+        // Interpolating the translation Y breaks that relationship and causes
+        // flicker during rapid vertical motion (e.g. jumping). Keep Y pinned.
+        shadowPosPrev[1] = shadowPos[1];
+
+        if (!gCurGraphNodeObject->disableAutomaticShadowPos) {
+            vec3f_copy(gCurGraphNodeObject->shadowPos, shadowPos);
+        }
+        vec3f_copy(gCurGraphNodeObject->prevShadowPos, shadowPos);
+        gCurGraphNodeObject->prevShadowPosTimestamp = gGlobalTimer;
+
         shadowList = create_shadow_below_xyz(shadowPos[0], shadowPos[1], shadowPos[2], shadowScale,
                                              node->shadowSolidity, node->shadowType);
         if (shadowList != NULL) {
@@ -923,7 +949,8 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
             mtxf_translate(mtxf, shadowPos);
             mtxf_mul(gMatStack[gMatStackIndex], mtxf, *gCurGraphNodeCamera->matrixPtr);
             if (gCurGraphNodeCamera->matrixPtrPrev != NULL) {
-                mtxf_mul(gMatStackPrev[gMatStackIndex], mtxf, *gCurGraphNodeCamera->matrixPtrPrev);
+                mtxf_translate(mtxfPrev, shadowPosPrev);
+                mtxf_mul(gMatStackPrev[gMatStackIndex], mtxfPrev, *gCurGraphNodeCamera->matrixPtrPrev);
             } else {
                 mtxf_copy(gMatStackPrev[gMatStackIndex], gMatStack[gMatStackIndex]);
             }
