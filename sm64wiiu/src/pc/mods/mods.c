@@ -15,7 +15,10 @@ char gRemoteModsBasePath[SYS_MAX_PATH] = "";
 static struct Mods *sActiveMods = &gLocalMods;
 static char *sDynamicScriptPaths[MODS_MAX_ACTIVE_SCRIPTS];
 static size_t sDynamicScriptCount = 0;
-static char sLocalModNames[MODS_MAX_ACTIVE_SCRIPTS][MAX_CONFIG_STRING];
+static char sLocalModNames[MODS_MAX_ACTIVE_SCRIPTS][128];
+static char sLocalModDescriptions[MODS_MAX_ACTIVE_SCRIPTS][2048];
+static char sLocalModCategories[MODS_MAX_ACTIVE_SCRIPTS][64];
+static char sLocalModIncompatible[MODS_MAX_ACTIVE_SCRIPTS][128];
 static const char sDefaultModDescription[] = "Wii U donor compatibility mod entry.";
 static const char sDefaultModCategory[] = "misc";
 
@@ -28,6 +31,48 @@ static const char *sBuiltinScripts[] = {
     "mods/faster-swimming.lua",
     "mods/personal-starcount-ex.lua",
 };
+
+static int mods_ascii_tolower(int c) {
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A' + 'a';
+    }
+    return c;
+}
+
+static int mods_ascii_strcasecmp(const char *a, const char *b) {
+    int ca;
+    int cb;
+    if (a == NULL && b == NULL) { return 0; }
+    if (a == NULL) { return -1; }
+    if (b == NULL) { return 1; }
+    while (*a != '\0' || *b != '\0') {
+        ca = mods_ascii_tolower((unsigned char)*a++);
+        cb = mods_ascii_tolower((unsigned char)*b++);
+        if (ca != cb) {
+            return ca - cb;
+        }
+        if (ca == 0) { break; }
+    }
+    return 0;
+}
+
+static int mods_ascii_strncasecmp(const char *a, const char *b, size_t n) {
+    int ca;
+    int cb;
+    if (n == 0) { return 0; }
+    if (a == NULL && b == NULL) { return 0; }
+    if (a == NULL) { return -1; }
+    if (b == NULL) { return 1; }
+    while (n-- > 0) {
+        ca = mods_ascii_tolower((unsigned char)*a++);
+        cb = mods_ascii_tolower((unsigned char)*b++);
+        if (ca != cb) {
+            return ca - cb;
+        }
+        if (ca == 0) { break; }
+    }
+    return 0;
+}
 
 static void mods_extract_name_from_path(const char *path, char *out, size_t outSize) {
     const char *start = NULL;
@@ -78,6 +123,155 @@ static void mods_extract_name_from_path(const char *path, char *out, size_t outS
     out[len] = '\0';
 }
 
+static void mods_string_trim_trailing_newlines(char *s) {
+    size_t len;
+    if (s == NULL) { return; }
+    len = strlen(s);
+    while (len > 0) {
+        char c = s[len - 1];
+        if (c == '\n' || c == '\r') {
+            s[len - 1] = '\0';
+            len--;
+        } else {
+            break;
+        }
+    }
+}
+
+static bool mods_parse_bool(const char *value, bool defaultValue) {
+    if (value == NULL) { return defaultValue; }
+    while (*value == ' ' || *value == '\t') { value++; }
+    if (*value == '\0') { return defaultValue; }
+    if (mods_ascii_strcasecmp(value, "false") == 0 || strcmp(value, "0") == 0) { return false; }
+    if (mods_ascii_strcasecmp(value, "true") == 0 || strcmp(value, "1") == 0) { return true; }
+    return defaultValue;
+}
+
+static void mods_copy_lua_header_string(char *dst, size_t dstSize, const char *src) {
+    size_t out = 0;
+    if (dst == NULL || dstSize == 0) { return; }
+    dst[0] = '\0';
+    if (src == NULL) { return; }
+
+    while (*src == ' ' || *src == '\t') { src++; }
+    for (; *src != '\0' && out + 1 < dstSize; src++) {
+        if (src[0] == '\\') {
+            // Match the most common Lua-style escapes used in mod headers, so the parsed text
+            // matches the runtime strings the author likely tested with.
+            if (src[1] == 'n') { dst[out++] = '\n'; src++; continue; }
+            if (src[1] == 't') { dst[out++] = '\t'; src++; continue; }
+            if (src[1] == 'r') { dst[out++] = '\r'; src++; continue; }
+            if (src[1] == '\\') { dst[out++] = '\\'; src++; continue; }
+        }
+        dst[out++] = src[0];
+    }
+    dst[out] = '\0';
+    mods_string_trim_trailing_newlines(dst);
+}
+
+static bool mods_try_extract_header_field(char *out, size_t outSize, const char *line, const char *key) {
+    const char *p;
+    size_t keyLen;
+    if (out == NULL || outSize == 0 || line == NULL || key == NULL) { return false; }
+
+    // Accept either "-- key:" or "-- key :" with optional whitespace.
+    p = line;
+    while (*p == ' ' || *p == '\t') { p++; }
+    if (p[0] != '-' || p[1] != '-') { return false; }
+    p += 2;
+    while (*p == ' ' || *p == '\t') { p++; }
+
+    keyLen = strlen(key);
+    if (mods_ascii_strncasecmp(p, key, keyLen) != 0) { return false; }
+    p += keyLen;
+    while (*p == ' ' || *p == '\t') { p++; }
+    if (*p != ':') { return false; }
+    p++;
+
+    mods_copy_lua_header_string(out, outSize, p);
+    return out[0] != '\0';
+}
+
+static void mods_try_parse_lua_metadata(const char *scriptPath,
+                                        char *nameOut, size_t nameOutSize,
+                                        char *descOut, size_t descOutSize,
+                                        char *catOut, size_t catOutSize,
+                                        char *incompatOut, size_t incompatOutSize,
+                                        bool *pausableOut) {
+    fs_file_t *file;
+    char line[1024];
+    bool foundAny = false;
+    bool foundName = false;
+    bool foundDesc = false;
+    bool foundCat = false;
+    bool foundIncompat = false;
+    bool foundPausable = false;
+
+    if (nameOut != NULL && nameOutSize > 0) { nameOut[0] = '\0'; }
+    if (descOut != NULL && descOutSize > 0) { descOut[0] = '\0'; }
+    if (catOut != NULL && catOutSize > 0) { catOut[0] = '\0'; }
+    if (incompatOut != NULL && incompatOutSize > 0) { incompatOut[0] = '\0'; }
+    if (pausableOut != NULL) { *pausableOut = true; }
+
+    if (scriptPath == NULL || scriptPath[0] == '\0') {
+        return;
+    }
+
+    file = fs_open(scriptPath);
+    if (file == NULL) {
+        return;
+    }
+
+    for (int i = 0; i < 64; i++) {
+        const char *end = fs_readline(file, line, sizeof(line));
+        if (end == NULL) {
+            break;
+        }
+        (void)end;
+        mods_string_trim_trailing_newlines(line);
+
+        // Skip blank lines at the top.
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') { p++; }
+        if (*p == '\0') {
+            continue;
+        }
+
+        // Stop once we leave the header comment block.
+        if (!(p[0] == '-' && p[1] == '-')) {
+            break;
+        }
+
+        foundAny = true;
+        if (!foundName && nameOut != NULL) {
+            foundName = mods_try_extract_header_field(nameOut, nameOutSize, p, "name");
+        }
+        if (!foundDesc && descOut != NULL) {
+            foundDesc = mods_try_extract_header_field(descOut, descOutSize, p, "description");
+        }
+        if (!foundCat && catOut != NULL) {
+            foundCat = mods_try_extract_header_field(catOut, catOutSize, p, "category");
+        }
+        if (!foundIncompat && incompatOut != NULL) {
+            foundIncompat = mods_try_extract_header_field(incompatOut, incompatOutSize, p, "incompatible");
+        }
+        if (!foundPausable && pausableOut != NULL) {
+            char tmp[32];
+            if (mods_try_extract_header_field(tmp, sizeof(tmp), p, "pausable")) {
+                *pausableOut = mods_parse_bool(tmp, true);
+                foundPausable = true;
+            }
+        }
+
+        if (foundName && foundDesc && foundCat && foundIncompat && (pausableOut == NULL || foundPausable)) {
+            break;
+        }
+    }
+
+    fs_close(file);
+    (void)foundAny;
+}
+
 static void mods_build_compat_views(void) {
     size_t activeCount = 0;
 
@@ -87,17 +281,31 @@ static void mods_build_compat_views(void) {
 
     for (size_t i = 0; i < gLocalMods.available_script_count; i++) {
         struct Mod *mod = &gLocalMods.entry_objects[i];
+        bool pausable = true;
         memset(mod, 0, sizeof(*mod));
+
         mods_extract_name_from_path(gLocalMods.available_script_paths[i], sLocalModNames[i], sizeof(sLocalModNames[i]));
+        sLocalModDescriptions[i][0] = '\0';
+        sLocalModCategories[i][0] = '\0';
+        sLocalModIncompatible[i][0] = '\0';
+
+        mods_try_parse_lua_metadata(gLocalMods.available_script_paths[i],
+                                   sLocalModNames[i], sizeof(sLocalModNames[i]),
+                                   sLocalModDescriptions[i], sizeof(sLocalModDescriptions[i]),
+                                   sLocalModCategories[i], sizeof(sLocalModCategories[i]),
+                                   sLocalModIncompatible[i], sizeof(sLocalModIncompatible[i]),
+                                   &pausable);
+
         mod->name = sLocalModNames[i];
-        mod->description = (char *)sDefaultModDescription;
-        mod->category = (char *)sDefaultModCategory;
+        mod->description = (sLocalModDescriptions[i][0] != '\0') ? sLocalModDescriptions[i] : (char *)sDefaultModDescription;
+        mod->category = (sLocalModCategories[i][0] != '\0') ? sLocalModCategories[i] : (char *)sDefaultModCategory;
+        mod->incompatible = (sLocalModIncompatible[i][0] != '\0') ? sLocalModIncompatible[i] : NULL;
         snprintf(mod->relativePath, sizeof(mod->relativePath), "%s",
                  gLocalMods.available_script_paths[i] != NULL ? gLocalMods.available_script_paths[i] : "");
         mod->index = (s32)i;
         mod->enabled = gLocalMods.available_script_enabled[i];
         mod->selectable = true;
-        mod->pausable = true;
+        mod->pausable = pausable;
         mod->size = 0;
         gLocalMods.entry_ptrs[i] = mod;
     }

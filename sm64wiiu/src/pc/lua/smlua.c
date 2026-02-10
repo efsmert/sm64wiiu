@@ -46,6 +46,18 @@
 #include "smlua.h"
 #include "smlua_cobject.h"
 #include "smlua_hooks.h"
+
+// `djui_hud_utils.h` only forward-declares `struct DjuiColor`, but the Lua HUD
+// bindings need to read the RGBA fields. Mirror the struct layout here to avoid
+// pulling in the full DJUI header graph.
+struct DjuiColor {
+    u8 r;
+    u8 g;
+    u8 b;
+    u8 a;
+};
+
+#include "../djui/djui_hud_utils.h"
 #include "../fs/fs.h"
 #include "../mods/mods.h"
 #ifdef TARGET_WII_U
@@ -1930,56 +1942,52 @@ static int smlua_func_hud_is_hidden(lua_State *L) {
     return 1;
 }
 
-// Returns false because the DJUI pause menu subsystem is not imported yet.
+// Returns whether the DJUI pause menu subsystem is created.
 static int smlua_func_djui_hud_is_pause_menu_created(lua_State *L) {
     (void)L;
-    lua_pushboolean(L, 0);
+    lua_pushboolean(L, djui_hud_is_pause_menu_created() ? 1 : 0);
     return 1;
 }
 
-// Stores current HUD color state so mods can read/write without DJUI renderer.
+// Sets current DJUI HUD color state.
 static int smlua_func_djui_hud_set_color(lua_State *L) {
     sHudColor.r = smlua_to_color_channel(L, 1);
     sHudColor.g = smlua_to_color_channel(L, 2);
     sHudColor.b = smlua_to_color_channel(L, 3);
     sHudColor.a = smlua_to_color_channel(L, 4);
+    djui_hud_set_color(sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
     return 0;
 }
 
-// Returns current HUD color as a DJUI-style table.
+// Returns current DJUI HUD color as a DJUI-style table.
 static int smlua_func_djui_hud_get_color(lua_State *L) {
+    struct DjuiColor *color = djui_hud_get_color();
     lua_newtable(L);
-    lua_pushinteger(L, sHudColor.r);
+    lua_pushinteger(L, color != NULL ? color->r : 255);
     lua_setfield(L, -2, "r");
-    lua_pushinteger(L, sHudColor.g);
+    lua_pushinteger(L, color != NULL ? color->g : 255);
     lua_setfield(L, -2, "g");
-    lua_pushinteger(L, sHudColor.b);
+    lua_pushinteger(L, color != NULL ? color->b : 255);
     lua_setfield(L, -2, "b");
-    lua_pushinteger(L, sHudColor.a);
+    lua_pushinteger(L, color != NULL ? color->a : 255);
     lua_setfield(L, -2, "a");
     return 1;
 }
 
-// Estimates DJUI text width using vanilla HUD glyph spacing.
+// Measures DJUI text width using active DJUI HUD font.
 static int smlua_func_djui_hud_measure_text(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
-    size_t len = (message == NULL) ? 0 : strlen(message);
-    lua_pushnumber(L, (lua_Number)(len * 12));
+    lua_pushnumber(L, (lua_Number)djui_hud_measure_text(message));
     return 1;
 }
 
-// DJUI text shim mapped to vanilla HUD glyph renderer for immediate hook drawing.
+// Renders DJUI HUD text onto the screen.
 static int smlua_func_djui_hud_print_text(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
     f32 x = (f32)luaL_checknumber(L, 2);
     f32 y = (f32)luaL_checknumber(L, 3);
     f32 scale = (f32)luaL_optnumber(L, 4, 1.0f);
-
-    // Vanilla HUD path is fixed-size; keep coarse readability by snapping coordinates.
-    if (scale > 0.0f && scale < 1.0f) {
-        x += 2.0f;
-    }
-    smlua_hud_draw_text(message, (s32)x, (s32)y);
+    djui_hud_print_text(message, x, y, scale);
     return 0;
 }
 
@@ -1999,42 +2007,37 @@ static int smlua_func_djui_hud_render_texture(lua_State *L) {
     return 0;
 }
 
-// Tracks the logical DJUI resolution requested by Lua for width/height helpers.
+// Sets the logical DJUI HUD resolution.
 static int smlua_func_djui_hud_set_resolution(lua_State *L) {
     sHudResolution = (int)luaL_checkinteger(L, 1);
+    djui_hud_set_resolution((enum HudUtilsResolution)sHudResolution);
     return 0;
 }
 
-// Tracks the logical DJUI font requested by Lua; rendering is currently stubbed.
+// Sets the logical DJUI HUD font.
 static int smlua_func_djui_hud_set_font(lua_State *L) {
     sHudFont = (int)luaL_checkinteger(L, 1);
-    (void)sHudFont;
+    djui_hud_set_font((s8)sHudFont);
     return 0;
 }
 
 // Returns the active HUD logical width in pixels for mods that do layout math.
 static int smlua_func_djui_hud_get_screen_width(lua_State *L) {
-    s32 width = SCREEN_WIDTH;
-    if (sHudResolution == SMLUA_RESOLUTION_N64) {
-        width = SCREEN_WIDTH;
-    } else {
-        width = GFX_DIMENSIONS_RECT_FROM_RIGHT_EDGE(0) - GFX_DIMENSIONS_RECT_FROM_LEFT_EDGE(0);
-    }
-    lua_pushinteger(L, width);
+    lua_pushinteger(L, (lua_Integer)djui_hud_get_screen_width());
     return 1;
 }
 
 // Returns the active HUD logical height in pixels for mods that do layout math.
 static int smlua_func_djui_hud_get_screen_height(lua_State *L) {
     (void)L;
-    lua_pushinteger(L, SCREEN_HEIGHT);
+    lua_pushinteger(L, (lua_Integer)djui_hud_get_screen_height());
     return 1;
 }
 
 // Mouse wheel shim for mods that support desktop scroll gestures.
 static int smlua_func_djui_hud_get_mouse_scroll_y(lua_State *L) {
     (void)L;
-    lua_pushinteger(L, 0);
+    lua_pushnumber(L, (lua_Number)djui_hud_get_mouse_scroll_y());
     return 1;
 }
 
@@ -3609,46 +3612,58 @@ static int smlua_func_init_mario_after_warp(lua_State *L) {
     return 0;
 }
 
-// Draws a rectangle in the HUD layer (currently no-op in compatibility mode).
+// Draws a rectangle in the HUD layer.
 static int smlua_func_djui_hud_render_rect(lua_State *L) {
-    (void)L;
+    f32 x = (f32)luaL_checknumber(L, 1);
+    f32 y = (f32)luaL_checknumber(L, 2);
+    f32 width = (f32)luaL_checknumber(L, 3);
+    f32 height = (f32)luaL_checknumber(L, 4);
+    djui_hud_render_rect(x, y, width, height);
     return 0;
 }
 
-// Sets HUD rotation state (currently no-op in compatibility mode).
+// Sets HUD rotation state.
 static int smlua_func_djui_hud_set_rotation(lua_State *L) {
-    (void)L;
+    s16 rotation = (s16)luaL_checkinteger(L, 1);
+    f32 pivotX = (f32)luaL_optnumber(L, 2, 0.0f);
+    f32 pivotY = (f32)luaL_optnumber(L, 3, 0.0f);
+    djui_hud_set_rotation(rotation, pivotX, pivotY);
     return 0;
 }
 
 // Returns currently selected HUD font id.
 static int smlua_func_djui_hud_get_font(lua_State *L) {
-    lua_pushinteger(L, sHudFont);
+    lua_pushinteger(L, (lua_Integer)djui_hud_get_font());
     return 1;
 }
 
-// Applies scissor clip region (currently no-op in compatibility mode).
+// Applies scissor clip region.
 static int smlua_func_djui_hud_set_scissor(lua_State *L) {
-    (void)L;
+    f32 x = (f32)luaL_checknumber(L, 1);
+    f32 y = (f32)luaL_checknumber(L, 2);
+    f32 width = (f32)luaL_checknumber(L, 3);
+    f32 height = (f32)luaL_checknumber(L, 4);
+    djui_hud_set_scissor(x, y, width, height);
     return 0;
 }
 
-// Resets scissor clip region (currently no-op in compatibility mode).
+// Resets scissor clip region.
 static int smlua_func_djui_hud_reset_scissor(lua_State *L) {
     (void)L;
+    djui_hud_reset_scissor();
     return 0;
 }
 
-// Interpolated text shim delegating to immediate text draw at current position.
+// Prints interpolated DJUI HUD text.
 static int smlua_func_djui_hud_print_text_interpolated(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
+    f32 prevX = (f32)luaL_checknumber(L, 2);
+    f32 prevY = (f32)luaL_checknumber(L, 3);
+    f32 prevScale = (f32)luaL_optnumber(L, 4, 1.0f);
     f32 x = (f32)luaL_checknumber(L, 5);
     f32 y = (f32)luaL_checknumber(L, 6);
     f32 scale = (f32)luaL_optnumber(L, 7, 1.0f);
-    if (scale > 0.0f && scale < 1.0f) {
-        x += 2.0f;
-    }
-    smlua_hud_draw_text(message, (s32)x, (s32)y);
+    djui_hud_print_text_interpolated(message, prevX, prevY, prevScale, x, y, scale);
     return 0;
 }
 
@@ -3700,10 +3715,10 @@ static int smlua_func_djui_hud_render_texture_tile_interpolated(lua_State *L) {
     return 0;
 }
 
-// FOV coefficient shim for nametag scale calculations.
+// FOV coefficient for nametag scale calculations.
 static int smlua_func_djui_hud_get_fov_coeff(lua_State *L) {
     (void)L;
-    lua_pushnumber(L, 1.0);
+    lua_pushnumber(L, (lua_Number)djui_hud_get_fov_coeff());
     return 1;
 }
 

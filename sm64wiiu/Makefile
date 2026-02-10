@@ -21,6 +21,9 @@ TARGET_N64 ?= 0
 TARGET_WEB ?= 0
 # Build for the Wii U
 TARGET_WII_U ?= 1
+# Strip debug symbols from the Wii U ELF before converting to RPX.
+# Default off for easier debugging; set WIIU_STRIP=1 for smaller release builds.
+WIIU_STRIP ?= 0
 # Disable no drawing distance by default
 NODRAWINGDISTANCE ?= 0
 # Compiler to use (ido or gcc)
@@ -1084,12 +1087,18 @@ else
 ifeq ($(TARGET_WII_U),1)
 $(ELF): $(O_FILES) $(MIO0_FILES:.mio0=.o) $(SOUND_OBJ_FILES) $(ULTRA_O_FILES) $(GODDARD_O_FILES)
 	$(LD) -L $(BUILD_DIR) -o $@ $(O_FILES) $(SOUND_OBJ_FILES) $(ULTRA_O_FILES) $(GODDARD_O_FILES) $(LDFLAGS)
+ifeq ($(WIIU_STRIP),1)
 $(EXE): $(ELF)
 	@cp $< $*.strip.elf
 	$(SILENTCMD)$(STRIP) -g $*.strip.elf $(ERROR_FILTER)
 	$(SILENTCMD)elf2rpl $*.strip.elf $@ $(ERROR_FILTER)
 	@rm $*.strip.elf
 	@echo built ... $(notdir $@)
+else
+$(EXE): $(ELF)
+	$(SILENTCMD)elf2rpl $< $@ $(ERROR_FILTER)
+	@echo built ... $(notdir $@)
+endif
 else
 $(EXE): $(O_FILES) $(MIO0_FILES:.mio0=.o) $(ULTRA_O_FILES) $(GODDARD_O_FILES)
 	$(LD) -L $(BUILD_DIR) -o $@ $(O_FILES) $(ULTRA_O_FILES) $(GODDARD_O_FILES) $(LDFLAGS)
