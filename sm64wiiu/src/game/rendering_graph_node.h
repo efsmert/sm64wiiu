@@ -2,6 +2,7 @@
 #define RENDERING_GRAPH_NODE_H
 
 #include <PR/ultratypes.h>
+#include <PR/gbi.h>
 
 #include "engine/graph_node.h"
 
@@ -38,5 +39,20 @@ void geo_process_node_and_siblings(struct GraphNode *firstNode);
 void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor);
 void patch_mtx_before(void);
 void patch_mtx_interpolated(f32 delta);
+
+struct ShadowInterp {
+    Gfx *gfx;
+    Vec3f shadowPos;
+    Vec3f shadowPosPrev;
+    Vtx *verts;
+    Gfx *displayList;
+    struct GraphNodeShadow *node;
+    f32 shadowScale;
+    struct GraphNodeObject *obj;
+    struct ShadowInterp *next;
+};
+
+extern u8 gRenderingInterpolated;
+extern struct ShadowInterp *gShadowInterpCurrent;
 
 #endif // RENDERING_GRAPH_NODE_H

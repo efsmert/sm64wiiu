@@ -60,6 +60,9 @@ struct MtxInterp {
 static struct MtxInterp *sMtxInterpHead = NULL;
 static struct DisplayListNode *sGeoLastAppendedDisplayListNode = NULL;
 
+struct ShadowInterp *gShadowInterpCurrent = NULL;
+static struct ShadowInterp *sShadowInterpHead = NULL;
+
 static struct GraphNodeBackground *sBackgroundNode = NULL;
 static struct DisplayListNode *sBackgroundListNode = NULL;
 static Gfx *sBackgroundDLPatchPos = NULL;
@@ -328,6 +331,8 @@ static void geo_process_master_list(struct GraphNodeMasterList *node) {
 void patch_mtx_before(void) {
     sMtxInterpHead = NULL;
     sGeoLastAppendedDisplayListNode = NULL;
+    sShadowInterpHead = NULL;
+    gShadowInterpCurrent = NULL;
 
     sBackgroundNode = NULL;
     sBackgroundListNode = NULL;
@@ -382,6 +387,25 @@ void patch_mtx_interpolated(f32 delta) {
         vec3f_copy(gLakituState.pos, savedPos);
         vec3f_copy(gLakituState.focus, savedFocus);
         gCurGraphNodeRoot = savedRootNode;
+    }
+
+    if (gRenderingInterpolated) {
+        struct GraphNodeObject *savedObj = gCurGraphNodeObject;
+        for (struct ShadowInterp *interp = sShadowInterpHead; interp != NULL; interp = interp->next) {
+            if (interp->gfx == NULL) { continue; }
+            gShadowInterpCurrent = interp;
+            gCurGraphNodeObject = interp->obj;
+
+            Vec3f posInterp;
+            for (s32 i = 0; i < 3; i++) {
+                posInterp[i] = interp->shadowPosPrev[i] + ((interp->shadowPos[i] - interp->shadowPosPrev[i]) * delta);
+            }
+
+            interp->gfx = create_shadow_below_xyz(posInterp[0], posInterp[1], posInterp[2], interp->shadowScale,
+                                                  interp->node->shadowSolidity, interp->node->shadowType);
+            gShadowInterpCurrent = NULL;
+        }
+        gCurGraphNodeObject = savedObj;
     }
 }
 
@@ -929,10 +953,6 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
         } else {
             vec3f_copy(shadowPosPrev, shadowPos);
         }
-        // Shadow geometry is built relative to the current parent Y (object Y).
-        // Interpolating the translation Y breaks that relationship and causes
-        // flicker during rapid vertical motion (e.g. jumping). Keep Y pinned.
-        shadowPosPrev[1] = shadowPos[1];
 
         if (!gCurGraphNodeObject->disableAutomaticShadowPos) {
             vec3f_copy(gCurGraphNodeObject->shadowPos, shadowPos);
@@ -940,8 +960,28 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
         vec3f_copy(gCurGraphNodeObject->prevShadowPos, shadowPos);
         gCurGraphNodeObject->prevShadowPosTimestamp = gGlobalTimer;
 
+        struct ShadowInterp *interp = alloc_display_list(sizeof(*interp));
+        if (interp != NULL) {
+            interp->gfx = NULL;
+            interp->verts = NULL;
+            interp->displayList = NULL;
+            interp->node = node;
+            interp->shadowScale = shadowScale;
+            interp->obj = gCurGraphNodeObject;
+            vec3f_copy(interp->shadowPos, shadowPos);
+            vec3f_copy(interp->shadowPosPrev, shadowPosPrev);
+            interp->next = sShadowInterpHead;
+            sShadowInterpHead = interp;
+        }
+
+        gShadowInterpCurrent = interp;
         shadowList = create_shadow_below_xyz(shadowPos[0], shadowPos[1], shadowPos[2], shadowScale,
                                              node->shadowSolidity, node->shadowType);
+        if (interp != NULL) {
+            interp->gfx = shadowList;
+        }
+        gShadowInterpCurrent = NULL;
+
         if (shadowList != NULL) {
             mtx = alloc_display_list(sizeof(*mtx));
             Mtx *mtxPrev = alloc_display_list(sizeof(*mtxPrev));
