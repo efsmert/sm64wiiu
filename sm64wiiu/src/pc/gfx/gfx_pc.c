@@ -242,9 +242,16 @@ extern bool gDjuiInMainMenu;
 #define GFX_INTERP_MAX_MTX_CMDS 4096
 static float sInterpPrevMatrices[GFX_INTERP_MAX_MTX_CMDS][4][4];
 static float sInterpCurrMatrices[GFX_INTERP_MAX_MTX_CMDS][4][4];
+static uintptr_t sInterpPrevMatrixAddrs[GFX_INTERP_MAX_MTX_CMDS];
+static uintptr_t sInterpCurrMatrixAddrs[GFX_INTERP_MAX_MTX_CMDS];
 static uint32_t sInterpPrevMatrixCount = 0;
 static uint32_t sInterpCurrMatrixCount = 0;
 static uint32_t sInterpMatrixCmdIndex = 0;
+static uint8_t sInterpPrevMatrixClaimed[GFX_INTERP_MAX_MTX_CMDS];
+static float sInterpPrevCameraMatrix[4][4];
+static float sInterpCurrCameraMatrix[4][4];
+static bool sInterpPrevCameraValid = false;
+static bool sInterpCurrCameraValid = false;
 
 static inline bool gfx_matrix_interpolation_active(void) {
     return !gDjuiInMainMenu && (gRenderingDelta < 0.999f);
@@ -258,6 +265,12 @@ static inline bool gfx_matrix_interpolation_layer_safe(void) {
     bool z_upd = (rdp.other_mode_l & Z_UPD) == Z_UPD;
     bool alpha_compare = (rdp.other_mode_l & G_AC_THRESHOLD) == G_AC_THRESHOLD;
     return !(use_alpha || texture_edge || !z_upd || alpha_compare);
+}
+
+static inline bool gfx_projection_is_perspective(void) {
+    // guPerspective produces a projective matrix (m[2][3] ~= -1, m[3][3] ~= 0),
+    // while guOrtho keeps m[2][3] ~= 0 and m[3][3] ~= 1.
+    return fabsf(rsp.P_matrix[2][3]) > 0.001f && fabsf(rsp.P_matrix[3][3]) < 0.99f;
 }
 
 static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, const void* addr);
@@ -960,7 +973,7 @@ static bool gfx_vec3_normalize_safe(float v[3]) {
 
 static bool gfx_matrix_pair_is_safe(const float prev[4][4], const float cur[4][4]) {
     // Reject obvious matrix-pair mismatches (e.g. command-stream shifts) to avoid flicker.
-    const float max_translation_delta_sq = 1800.0f * 1800.0f;
+    const float max_translation_delta_sq = 900.0f * 900.0f;
     const float translation_delta_x = cur[3][0] - prev[3][0];
     const float translation_delta_y = cur[3][1] - prev[3][1];
     const float translation_delta_z = cur[3][2] - prev[3][2];
@@ -987,11 +1000,78 @@ static bool gfx_matrix_pair_is_safe(const float prev[4][4], const float cur[4][4
         cur_axis[0] /= cur_len;
         cur_axis[1] /= cur_len;
         cur_axis[2] /= cur_len;
-        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.55f) {
+        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.80f) {
             return false;
         }
     }
 
+    return true;
+}
+
+static bool gfx_affine_inverse_orthonormal(float out[4][4], const float in[4][4]) {
+    float x_axis[3] = { in[0][0], in[0][1], in[0][2] };
+    float y_axis[3] = { in[1][0], in[1][1], in[1][2] };
+    float z_axis[3] = { in[2][0], in[2][1], in[2][2] };
+    if (gfx_vec3_len(x_axis) < 0.0001f || gfx_vec3_len(y_axis) < 0.0001f || gfx_vec3_len(z_axis) < 0.0001f) {
+        return false;
+    }
+
+    // Rotation inverse for orthonormal matrices is transpose.
+    out[0][0] = in[0][0]; out[0][1] = in[1][0]; out[0][2] = in[2][0]; out[0][3] = 0.0f;
+    out[1][0] = in[0][1]; out[1][1] = in[1][1]; out[1][2] = in[2][1]; out[1][3] = 0.0f;
+    out[2][0] = in[0][2]; out[2][1] = in[1][2]; out[2][2] = in[2][2]; out[2][3] = 0.0f;
+    out[3][3] = 1.0f;
+
+    // Row-vector convention: inverse translation is -T * R^-1.
+    out[3][0] = -((in[3][0] * out[0][0]) + (in[3][1] * out[1][0]) + (in[3][2] * out[2][0]));
+    out[3][1] = -((in[3][0] * out[0][1]) + (in[3][1] * out[1][1]) + (in[3][2] * out[2][1]));
+    out[3][2] = -((in[3][0] * out[0][2]) + (in[3][1] * out[1][2]) + (in[3][2] * out[2][2]));
+    return true;
+}
+
+static bool gfx_matrix_matches_camera(const float matrix[4][4], const float camera[4][4]) {
+    const float max_translation_delta_sq = 4.0f * 4.0f;
+    float dx = matrix[3][0] - camera[3][0];
+    float dy = matrix[3][1] - camera[3][1];
+    float dz = matrix[3][2] - camera[3][2];
+    if (((dx * dx) + (dy * dy) + (dz * dz)) > max_translation_delta_sq) {
+        return false;
+    }
+
+    for (int a = 0; a < 3; a++) {
+        float m_axis[3] = { matrix[a][0], matrix[a][1], matrix[a][2] };
+        float c_axis[3] = { camera[a][0], camera[a][1], camera[a][2] };
+        float m_len = gfx_vec3_len(m_axis);
+        float c_len = gfx_vec3_len(c_axis);
+        if (m_len < 0.0001f || c_len < 0.0001f) {
+            return false;
+        }
+        m_axis[0] /= m_len;
+        m_axis[1] /= m_len;
+        m_axis[2] /= m_len;
+        c_axis[0] /= c_len;
+        c_axis[1] /= c_len;
+        c_axis[2] /= c_len;
+        if (gfx_vec3_dot(m_axis, c_axis) < 0.999f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool gfx_get_interp_camera_inverses(float prev_cam_inv[4][4], float curr_cam_inv[4][4]) {
+    if (!gfx_projection_is_perspective()) {
+        return false;
+    }
+    if (!sInterpPrevCameraValid || !sInterpCurrCameraValid) {
+        return false;
+    }
+    if (!gfx_affine_inverse_orthonormal(prev_cam_inv, sInterpPrevCameraMatrix)) {
+        return false;
+    }
+    if (!gfx_affine_inverse_orthonormal(curr_cam_inv, sInterpCurrCameraMatrix)) {
+        return false;
+    }
     return true;
 }
 
@@ -1002,7 +1082,7 @@ static bool gfx_matrix_pair_is_safe_alpha_exact(const float prev[4][4], const fl
         return false;
     }
 
-    const float max_translation_delta_sq = 900.0f * 900.0f;
+    const float max_translation_delta_sq = 500.0f * 500.0f;
     const float dx = cur[3][0] - prev[3][0];
     const float dy = cur[3][1] - prev[3][1];
     const float dz = cur[3][2] - prev[3][2];
@@ -1025,7 +1105,7 @@ static bool gfx_matrix_pair_is_safe_alpha_exact(const float prev[4][4], const fl
         cur_axis[0] /= cur_len;
         cur_axis[1] /= cur_len;
         cur_axis[2] /= cur_len;
-        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.90f) {
+        if (gfx_vec3_dot(prev_axis, cur_axis) < 0.97f) {
             return false;
         }
     }
@@ -1033,18 +1113,104 @@ static bool gfx_matrix_pair_is_safe_alpha_exact(const float prev[4][4], const fl
     return true;
 }
 
-static bool gfx_find_best_prev_matrix(uint32_t index, const float cur[4][4], const float (**out_prev)[4][4]) {
+static bool gfx_matrix_pair_is_safe_alpha(const float prev_model[4][4], const float cur_model[4][4]) {
+    float prev_cam_inv[4][4];
+    float curr_cam_inv[4][4];
+    float prev_world[4][4];
+    float cur_world[4][4];
+
+    if (gfx_get_interp_camera_inverses(prev_cam_inv, curr_cam_inv)) {
+        gfx_matrix_mul(prev_world, prev_model, prev_cam_inv);
+        gfx_matrix_mul(cur_world, cur_model, curr_cam_inv);
+        return gfx_matrix_pair_is_safe_alpha_exact(prev_world, cur_world);
+    }
+
+    return gfx_matrix_pair_is_safe_alpha_exact(prev_model, cur_model);
+}
+
+static float gfx_matrix_translation_delta_sq_alpha(const float prev_model[4][4], const float cur_model[4][4]) {
+    float prev_cam_inv[4][4];
+    float curr_cam_inv[4][4];
+    float prev_world[4][4];
+    float cur_world[4][4];
+    const float (*prev_cmp)[4] = prev_model;
+    const float (*cur_cmp)[4] = cur_model;
+
+    if (gfx_get_interp_camera_inverses(prev_cam_inv, curr_cam_inv)) {
+        gfx_matrix_mul(prev_world, prev_model, prev_cam_inv);
+        gfx_matrix_mul(cur_world, cur_model, curr_cam_inv);
+        prev_cmp = prev_world;
+        cur_cmp = cur_world;
+    }
+
+    float dx = cur_cmp[3][0] - prev_cmp[3][0];
+    float dy = cur_cmp[3][1] - prev_cmp[3][1];
+    float dz = cur_cmp[3][2] - prev_cmp[3][2];
+    return (dx * dx) + (dy * dy) + (dz * dz);
+}
+
+static bool gfx_find_best_prev_matrix(uint32_t index, const float cur[4][4], const float (**out_prev)[4][4], uint32_t *out_index) {
     if (out_prev == NULL || sInterpPrevMatrixCount == 0) {
         return false;
     }
 
     // Exact-index pairing only. Nearby-index fallback caused one-frame wrong-object matches
     // when command streams shift (observed as UI/world flicker under camera/menu motion).
-    if (index < sInterpPrevMatrixCount && gfx_matrix_pair_is_safe(sInterpPrevMatrices[index], cur)) {
+    if (index < sInterpPrevMatrixCount && !sInterpPrevMatrixClaimed[index] &&
+        gfx_matrix_pair_is_safe(sInterpPrevMatrices[index], cur)) {
         *out_prev = &sInterpPrevMatrices[index];
+        if (out_index != NULL) {
+            *out_index = index;
+        }
         return true;
     }
     return false;
+}
+
+static bool gfx_find_prev_matrix_by_addr(uintptr_t addr_key, uint32_t index, const float cur[4][4], bool alpha_exact,
+                                         const float (**out_prev)[4][4], uint32_t *out_index) {
+    if (out_prev == NULL || sInterpPrevMatrixCount == 0 || addr_key == 0) {
+        return false;
+    }
+
+    bool found = false;
+    uint32_t best_index = 0;
+    float best_score = 0.0f;
+
+    for (uint32_t i = 0; i < sInterpPrevMatrixCount; i++) {
+        if (sInterpPrevMatrixClaimed[i]) {
+            continue;
+        }
+        if (sInterpPrevMatrixAddrs[i] != addr_key) {
+            continue;
+        }
+
+        bool safe = alpha_exact
+            ? gfx_matrix_pair_is_safe_alpha(sInterpPrevMatrices[i], cur)
+            : gfx_matrix_pair_is_safe(sInterpPrevMatrices[i], cur);
+        if (!safe) {
+            continue;
+        }
+
+        float index_delta = fabsf((float)i - (float)index);
+        // Prefer the nearest command index when the same source pointer appears multiple times.
+        float score = index_delta * index_delta;
+        if (!found || score < best_score) {
+            found = true;
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    *out_prev = &sInterpPrevMatrices[best_index];
+    if (out_index != NULL) {
+        *out_index = best_index;
+    }
+    return true;
 }
 
 // Alpha layers (billboards/shadows/water edges) can reorder matrix commands frame-to-frame.
@@ -1054,15 +1220,15 @@ static bool gfx_find_best_prev_matrix_alpha(uint32_t index, const float cur[4][4
         return false;
     }
 
-    const int kWindow = 4;
-    const float kMaxTranslationDeltaSq = 600.0f * 600.0f;
-    const float kMinAxisDot = 0.95f;
+    const int kWindow = 96;
     bool found = false;
     float bestScore = 0.0f;
     uint32_t bestIndex = 0;
 
     int start = (int)index - kWindow;
-    int end = (int)index + kWindow;
+    // Keep fallback matching monotonic in command order. Avoid looking ahead,
+    // which can steal future exact candidates and produce one-frame warps.
+    int end = (int)index;
     if (start < 0) {
         start = 0;
     }
@@ -1071,42 +1237,17 @@ static bool gfx_find_best_prev_matrix_alpha(uint32_t index, const float cur[4][4
     }
 
     for (int i = start; i <= end; i++) {
+        if (sInterpPrevMatrixClaimed[i]) {
+            continue;
+        }
         const float (*prev)[4] = sInterpPrevMatrices[i];
-        const float dx = cur[3][0] - prev[3][0];
-        const float dy = cur[3][1] - prev[3][1];
-        const float dz = cur[3][2] - prev[3][2];
-        const float translationDeltaSq = (dx * dx) + (dy * dy) + (dz * dz);
-        if (translationDeltaSq > kMaxTranslationDeltaSq) {
+        if (!gfx_matrix_pair_is_safe_alpha(prev, cur)) {
             continue;
         }
-
-        bool axesOk = true;
-        for (int a = 0; a < 3; a++) {
-            float prevAxis[3] = { prev[a][0], prev[a][1], prev[a][2] };
-            float curAxis[3] = { cur[a][0], cur[a][1], cur[a][2] };
-            float prevLen = gfx_vec3_len(prevAxis);
-            float curLen = gfx_vec3_len(curAxis);
-            if (prevLen < 0.0001f || curLen < 0.0001f) {
-                axesOk = false;
-                break;
-            }
-            prevAxis[0] /= prevLen;
-            prevAxis[1] /= prevLen;
-            prevAxis[2] /= prevLen;
-            curAxis[0] /= curLen;
-            curAxis[1] /= curLen;
-            curAxis[2] /= curLen;
-            if (gfx_vec3_dot(prevAxis, curAxis) < kMinAxisDot) {
-                axesOk = false;
-                break;
-            }
-        }
-        if (!axesOk) {
-            continue;
-        }
+        const float translationDeltaSq = gfx_matrix_translation_delta_sq_alpha(prev, cur);
 
         float indexDelta = fabsf((float)i - (float)index);
-        float score = translationDeltaSq + (indexDelta * indexDelta * 1024.0f);
+        float score = translationDeltaSq + (indexDelta * indexDelta * 4096.0f);
         if (!found || score < bestScore) {
             found = true;
             bestScore = score;
@@ -1248,40 +1389,142 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     float matrix[4][4];
     float matrix_interp[4][4];
     const float (*matrix_src)[4] = matrix;
-    uint32_t matrix_cmd_index = sInterpMatrixCmdIndex++;
+    uint32_t matrix_cmd_index = 0;
+    uintptr_t matrix_addr_key = (uintptr_t)addr;
+    bool modelview = ((parameters & G_MTX_PROJECTION) == 0);
+    bool perspective_projection = gfx_projection_is_perspective();
+    bool camera_space_root = false;
 
+    if (parameters == G_MTX_INVERSE_CAMERA_EXT) {
+        if (addr != NULL) {
+            float inverse_camera[4][4];
+            float camera[4][4];
+            gfx_decode_matrix_from_addr(addr, inverse_camera);
+            if (gfx_affine_inverse_orthonormal(camera, inverse_camera)) {
+                mtxf_copy(sInterpCurrCameraMatrix, camera);
+                sInterpCurrCameraValid = true;
+            }
+        }
+        return;
+    }
+
+    matrix_cmd_index = sInterpMatrixCmdIndex++;
     gfx_decode_matrix_from_addr(addr, matrix);
+    if (modelview && perspective_projection && ((parameters & G_MTX_LOAD) != 0) && ((parameters & G_MTX_PUSH) == 0)
+        && (rsp.modelview_matrix_stack_size == 1)) {
+        if (sInterpCurrCameraValid) {
+            camera_space_root = gfx_matrix_matches_camera(matrix, sInterpCurrCameraMatrix);
+        } else {
+            // Fallback for paths that don't emit G_MTX_INVERSE_CAMERA_EXT.
+            // We only seed once at the root stack level.
+            mtxf_copy(sInterpCurrCameraMatrix, matrix);
+            sInterpCurrCameraValid = true;
+            camera_space_root = true;
+        }
+    }
 
-    if (!gfx_matrix_interpolation_active()) {
+    // Keep projection matrices deterministic across interpolation subframes.
+    // Modelview interpolation handles camera/object smoothing; interpolating
+    // projection has caused unstable ortho HUD and transient culling artifacts.
+    bool disable_interp_for_this_matrix = (!modelview) || (modelview && !perspective_projection);
+
+    if (!gfx_matrix_interpolation_active() || disable_interp_for_this_matrix) {
         if (matrix_cmd_index < GFX_INTERP_MAX_MTX_CMDS) {
-            mtxf_copy(sInterpCurrMatrices[matrix_cmd_index], matrix);
-            if (sInterpCurrMatrixCount <= matrix_cmd_index) {
-                sInterpCurrMatrixCount = matrix_cmd_index + 1;
+            // Only record command streams on non-interpolated passes; interpolated
+            // orthographic/HUD passes are intentionally excluded from cross-frame pairing.
+            if (!gfx_matrix_interpolation_active()) {
+                mtxf_copy(sInterpCurrMatrices[matrix_cmd_index], matrix);
+                sInterpCurrMatrixAddrs[matrix_cmd_index] = matrix_addr_key;
+                if (sInterpCurrMatrixCount <= matrix_cmd_index) {
+                    sInterpCurrMatrixCount = matrix_cmd_index + 1;
+                }
             }
         }
     } else {
-        bool modelview = ((parameters & G_MTX_PROJECTION) == 0);
         bool alpha_sensitive_layer = modelview && !gfx_matrix_interpolation_layer_safe();
         const float (*prev_matrix)[4][4] = NULL;
         bool alpha_fallback_match = false;
         bool have_prev = false;
-        uint32_t alpha_match_index = matrix_cmd_index;
+        uint32_t matched_prev_index = UINT32_MAX;
 
-        if (alpha_sensitive_layer) {
-            have_prev = gfx_find_best_prev_matrix_alpha(matrix_cmd_index, matrix, &prev_matrix, &alpha_match_index);
-            if (have_prev) {
-                if (!gfx_matrix_pair_is_safe_alpha_exact(*prev_matrix, matrix)) {
-                    have_prev = false;
-                } else {
-                    alpha_fallback_match = (alpha_match_index != matrix_cmd_index);
-                }
+        // For alpha/billboard-like passes, command order can shift with camera yaw.
+        // Avoid cross-frame object pairing and only interpolate the camera transform.
+        if (alpha_sensitive_layer && !camera_space_root && gfx_projection_is_perspective()
+            && sInterpPrevCameraValid && sInterpCurrCameraValid) {
+            float curr_cam_inv[4][4];
+            float curr_world[4][4];
+            float cam_interp[4][4];
+            if (gfx_affine_inverse_orthonormal(curr_cam_inv, sInterpCurrCameraMatrix)) {
+                gfx_matrix_mul(curr_world, matrix, curr_cam_inv);
+                gfx_interpolate_matrix_rigid(cam_interp, sInterpPrevCameraMatrix, sInterpCurrCameraMatrix, gRenderingDelta);
+                gfx_matrix_mul(matrix_interp, curr_world, cam_interp);
+                matrix_src = matrix_interp;
+            }
+        } else if (alpha_sensitive_layer) {
+            // Prefer strict exact-index pairing first. Only fall back when exact
+            // pairing is unavailable/unsafe; this reduces cross-object warps.
+            if (matrix_cmd_index < sInterpPrevMatrixCount &&
+                !sInterpPrevMatrixClaimed[matrix_cmd_index] &&
+                gfx_matrix_pair_is_safe_alpha(sInterpPrevMatrices[matrix_cmd_index], matrix)) {
+                prev_matrix = &sInterpPrevMatrices[matrix_cmd_index];
+                matched_prev_index = matrix_cmd_index;
+                have_prev = true;
+                alpha_fallback_match = false;
             }
         } else {
-            have_prev = gfx_find_best_prev_matrix(matrix_cmd_index, matrix, &prev_matrix);
+            have_prev = gfx_find_best_prev_matrix(matrix_cmd_index, matrix, &prev_matrix, &matched_prev_index);
         }
 
         if (have_prev) {
-            if (alpha_sensitive_layer && alpha_fallback_match) {
+            if (matched_prev_index < GFX_INTERP_MAX_MTX_CMDS) {
+                sInterpPrevMatrixClaimed[matched_prev_index] = 1;
+            }
+            if (!alpha_sensitive_layer && modelview && !camera_space_root && gfx_projection_is_perspective()
+                && sInterpPrevCameraValid && sInterpCurrCameraValid) {
+                float prev_cam_inv[4][4];
+                float curr_cam_inv[4][4];
+                if (gfx_affine_inverse_orthonormal(prev_cam_inv, sInterpPrevCameraMatrix)
+                    && gfx_affine_inverse_orthonormal(curr_cam_inv, sInterpCurrCameraMatrix)) {
+                    float prev_world[4][4];
+                    float curr_world[4][4];
+                    float world_interp[4][4];
+                    float cam_interp[4][4];
+                    gfx_matrix_mul(prev_world, *prev_matrix, prev_cam_inv);
+                    gfx_matrix_mul(curr_world, matrix, curr_cam_inv);
+
+                    gfx_interpolate_matrix(world_interp, prev_world, curr_world, gRenderingDelta);
+                    gfx_interpolate_matrix_rigid(cam_interp, sInterpPrevCameraMatrix, sInterpCurrCameraMatrix, gRenderingDelta);
+                    gfx_matrix_mul(matrix_interp, world_interp, cam_interp);
+                } else {
+                    gfx_interpolate_matrix(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+                }
+            } else if (alpha_sensitive_layer && !camera_space_root && gfx_projection_is_perspective()
+                && sInterpPrevCameraValid && sInterpCurrCameraValid) {
+                float prev_cam_inv[4][4];
+                float curr_cam_inv[4][4];
+                if (gfx_affine_inverse_orthonormal(prev_cam_inv, sInterpPrevCameraMatrix)
+                    && gfx_affine_inverse_orthonormal(curr_cam_inv, sInterpCurrCameraMatrix)) {
+                    float prev_world[4][4];
+                    float curr_world[4][4];
+                    float world_interp[4][4];
+                    float cam_interp[4][4];
+                    gfx_matrix_mul(prev_world, *prev_matrix, prev_cam_inv);
+                    gfx_matrix_mul(curr_world, matrix, curr_cam_inv);
+
+                    if (alpha_fallback_match) {
+                        gfx_interpolate_matrix_translation_only(world_interp, prev_world, curr_world, gRenderingDelta);
+                    } else {
+                        gfx_interpolate_matrix_rigid(world_interp, prev_world, curr_world, gRenderingDelta);
+                    }
+
+                    gfx_interpolate_matrix_rigid(cam_interp, sInterpPrevCameraMatrix, sInterpCurrCameraMatrix, gRenderingDelta);
+                    gfx_matrix_mul(matrix_interp, world_interp, cam_interp);
+                } else if (alpha_fallback_match) {
+                    gfx_interpolate_matrix_translation_only(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+                } else {
+                    gfx_interpolate_matrix_rigid(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
+                }
+            } else if (alpha_sensitive_layer && alpha_fallback_match) {
                 gfx_interpolate_matrix_translation_only(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
             } else if (alpha_sensitive_layer) {
                 gfx_interpolate_matrix_rigid(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
@@ -1289,6 +1532,19 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
                 gfx_interpolate_matrix(matrix_interp, *prev_matrix, matrix, gRenderingDelta);
             }
             matrix_src = matrix_interp;
+        } else if (modelview && !camera_space_root && gfx_projection_is_perspective()
+            && sInterpPrevCameraValid && sInterpCurrCameraValid) {
+            // If no safe previous object matrix is available, still smooth camera motion
+            // without risking cross-object interpolation artifacts.
+            float curr_cam_inv[4][4];
+            float curr_world[4][4];
+            float cam_interp[4][4];
+            if (gfx_affine_inverse_orthonormal(curr_cam_inv, sInterpCurrCameraMatrix)) {
+                gfx_matrix_mul(curr_world, matrix, curr_cam_inv);
+                gfx_interpolate_matrix_rigid(cam_interp, sInterpPrevCameraMatrix, sInterpCurrCameraMatrix, gRenderingDelta);
+                gfx_matrix_mul(matrix_interp, curr_world, cam_interp);
+                matrix_src = matrix_interp;
+            }
         }
     }
 
@@ -2629,6 +2885,10 @@ void gfx_run(Gfx *commands) {
     sGfxDlAbortFrame = false;
     sGfxDlCommandCount = 0;
     sInterpMatrixCmdIndex = 0;
+    sInterpCurrCameraValid = false;
+    if (gfx_matrix_interpolation_active()) {
+        memset(sInterpPrevMatrixClaimed, 0, sizeof(sInterpPrevMatrixClaimed));
+    }
     if (!gfx_matrix_interpolation_active()) {
         sInterpCurrMatrixCount = 0;
     }
@@ -2674,8 +2934,13 @@ void gfx_run(Gfx *commands) {
         }
         if (count > 0) {
             memcpy(sInterpPrevMatrices, sInterpCurrMatrices, sizeof(float) * 16 * count);
+            memcpy(sInterpPrevMatrixAddrs, sInterpCurrMatrixAddrs, sizeof(uintptr_t) * count);
         }
         sInterpPrevMatrixCount = count;
+        if (sInterpCurrCameraValid) {
+            mtxf_copy(sInterpPrevCameraMatrix, sInterpCurrCameraMatrix);
+        }
+        sInterpPrevCameraValid = sInterpCurrCameraValid;
     }
 }
 

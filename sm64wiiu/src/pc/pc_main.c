@@ -75,6 +75,8 @@ static f64 sFrameTimeStart = 0.0;
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
 extern void create_next_audio_buffer(s16 *samples, u32 num_samples);
+extern void patch_djui_hud_before(void);
+extern void patch_djui_hud(f32 delta);
 void game_loop_one_iteration(void);
 
 void dispatch_audio_sptask(UNUSED struct SPTask *spTask) {
@@ -174,6 +176,7 @@ static u32 produce_interpolation_frames_and_delay(void) {
         gRenderingDelta = delta;
         // Match donor pacing semantics: interpolated pass stays "on" for all subframes.
         gRenderingInterpolated = interpolation_active;
+        patch_djui_hud(delta);
         gfx_start_frame();
         exec_display_list(gGfxSPTask);
         gfx_end_frame();
@@ -234,6 +237,7 @@ void produce_one_frame(void) {
         WHBLogPrint("pc: frame1 pre game_loop_one_iteration");
     }
 #endif
+    patch_djui_hud_before();
     pc_diag_mark_stage("produce_one_frame:before_game_loop");
     game_loop_one_iteration();
     pc_diag_mark_stage("produce_one_frame:after_game_loop");
