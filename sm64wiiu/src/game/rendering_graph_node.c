@@ -80,11 +80,46 @@ struct GeoAnimState gGeoTempState;
 u8 gCurAnimType;
 u8 gCurAnimEnabled;
 s16 gCurrAnimFrame;
+s16 gPrevAnimFrame;
 f32 gCurAnimTranslationMultiplier;
 u16 *gCurrAnimAttribute;
 s16 *gCurAnimData;
 
 struct AllocOnlyPool *gDisplayListHeap;
+
+static void anim_process(Vec3f translation, Vec3s rotation, u8 *animType, s16 animFrame, u16 **animAttribute) {
+    if (*animType == ANIM_TYPE_TRANSLATION) {
+        translation[0] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        translation[1] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        translation[2] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        *animType = ANIM_TYPE_ROTATION;
+    } else if (*animType == ANIM_TYPE_LATERAL_TRANSLATION) {
+        translation[0] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        *animAttribute += 2;
+        translation[2] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        *animType = ANIM_TYPE_ROTATION;
+    } else if (*animType == ANIM_TYPE_VERTICAL_TRANSLATION) {
+        *animAttribute += 2;
+        translation[1] +=
+            gCurAnimData[retrieve_animation_index(animFrame, animAttribute)] * gCurAnimTranslationMultiplier;
+        *animAttribute += 2;
+        *animType = ANIM_TYPE_ROTATION;
+    } else if (*animType == ANIM_TYPE_NO_TRANSLATION) {
+        *animAttribute += 6;
+        *animType = ANIM_TYPE_ROTATION;
+    }
+
+    if (*animType == ANIM_TYPE_ROTATION) {
+        rotation[0] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+        rotation[1] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+        rotation[2] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+    }
+}
 
 struct RenderModeContainer {
     u32 modes[8];
@@ -678,51 +713,23 @@ static void geo_process_animated_part(struct GraphNodeAnimatedPart *node) {
     Mat4 matrix;
     Vec3s rotation;
     Vec3f translation;
+    u16 *animAttribute = gCurrAnimAttribute;
+    u8 animType = gCurAnimType;
     Mtx *matrixPtr = alloc_display_list(sizeof(*matrixPtr));
     Mtx *matrixPtrPrev = alloc_display_list(sizeof(*matrixPtrPrev));
 
+    // current frame
     vec3s_copy(rotation, gVec3sZero);
     vec3f_set(translation, node->translation[0], node->translation[1], node->translation[2]);
-    if (gCurAnimType == ANIM_TYPE_TRANSLATION) {
-        translation[0] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        translation[1] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        translation[2] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        gCurAnimType = ANIM_TYPE_ROTATION;
-    } else {
-        if (gCurAnimType == ANIM_TYPE_LATERAL_TRANSLATION) {
-            translation[0] +=
-                gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                * gCurAnimTranslationMultiplier;
-            gCurrAnimAttribute += 2;
-            translation[2] +=
-                gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                * gCurAnimTranslationMultiplier;
-            gCurAnimType = ANIM_TYPE_ROTATION;
-        } else {
-            if (gCurAnimType == ANIM_TYPE_VERTICAL_TRANSLATION) {
-                gCurrAnimAttribute += 2;
-                translation[1] +=
-                    gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                    * gCurAnimTranslationMultiplier;
-                gCurrAnimAttribute += 2;
-                gCurAnimType = ANIM_TYPE_ROTATION;
-            } else if (gCurAnimType == ANIM_TYPE_NO_TRANSLATION) {
-                gCurrAnimAttribute += 6;
-                gCurAnimType = ANIM_TYPE_ROTATION;
-            }
-        }
-    }
-
-    if (gCurAnimType == ANIM_TYPE_ROTATION) {
-        rotation[0] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-        rotation[1] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-        rotation[2] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-    }
+    anim_process(translation, rotation, &gCurAnimType, gCurrAnimFrame, &gCurrAnimAttribute);
     mtxf_rotate_xyz_and_translate(matrix, translation, rotation);
     mtxf_mul(gMatStack[gMatStackIndex + 1], matrix, gMatStack[gMatStackIndex]);
+
+    // previous frame
+    vec3s_copy(rotation, gVec3sZero);
+    vec3f_set(translation, node->translation[0], node->translation[1], node->translation[2]);
+    anim_process(translation, rotation, &animType, gPrevAnimFrame, &animAttribute);
+    mtxf_rotate_xyz_and_translate(matrix, translation, rotation);
     mtxf_mul(gMatStackPrev[gMatStackIndex + 1], matrix, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(matrixPtr, gMatStack[gMatStackIndex]);
@@ -760,6 +767,18 @@ void geo_set_animation_globals(struct AnimInfo *node, s32 hasAnimation) {
     }
 
     gCurrAnimFrame = node->animFrame;
+
+    if (node->prevAnimPtr == anim && node->prevAnimID == node->animID &&
+        gGlobalTimer == node->prevAnimFrameTimestamp + 1) {
+        gPrevAnimFrame = node->prevAnimFrame;
+    } else {
+        gPrevAnimFrame = node->animFrame;
+    }
+    node->prevAnimPtr = anim;
+    node->prevAnimID = node->animID;
+    node->prevAnimFrame = node->animFrame;
+    node->prevAnimFrameTimestamp = gGlobalTimer;
+
     gCurAnimEnabled = (anim->flags & ANIM_FLAG_5) == 0;
     gCurrAnimAttribute = segmented_to_virtual((void *) anim->index);
     gCurAnimData = segmented_to_virtual((void *) anim->values);
