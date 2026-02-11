@@ -98,6 +98,7 @@ make -C sm64wiiu wuhb
 - Dialog override conversion/render integration for common charset.
 - Hook-aware dialog open-veto + state cleanup.
 - DJUI-like HUD text/texture bridge and color handling improvements.
+- Reset DJUI HUD Z accumulator per HUD render so mod HUD elements do not clip out over time; added HUD font fallback so mods printing `@` for the `x` glyph render correctly on vanilla US HUD LUTs.
 - Additional interaction hook coverage.
 
 ### L) Day-night-cycle and skybox parity
@@ -452,6 +453,12 @@ Notes:
   - files: sm64wiiu/src/pc/gfx/gfx_pc.c, SUMMARY.md
   - validation: `export DEVKITPRO=/opt/devkitpro; export DEVKITPPC=/opt/devkitpro/devkitPPC; export PATH="$PATH:$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$DEVKITPRO/portlibs/wiiu/bin"; make -C sm64wiiu -j4`, `make -C sm64wiiu wuhb`
   - outcome: build + wuhb succeed; ready for Cemu relaunch retest with renderer trace logging disabled.
+
+### 2026-02-10
+- Mod HUD persistence + HUD `x` glyph parity: reset the DJUI HUD per-frame Z accumulator before Lua HUD hooks and fixed the HUD font fallback mapping so the `@` “x” glyph used by built-in mods renders on vanilla US HUD LUTs.
+  - files: sm64wiiu/src/game/hud.c, sm64wiiu/src/pc/djui/djui.h, sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/pc/djui/djui_font.c, SUMMARY.md
+  - validation: `./build_wiiu_then_wuhb.sh`
+  - outcome: build + wuhb succeed; ready for Cemu retest of mod HUD persistence + star-counter `x` glyph.
 
 ## 10) Required Format For Future Summary Updates
 

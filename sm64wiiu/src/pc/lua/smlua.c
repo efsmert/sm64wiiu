@@ -208,6 +208,47 @@ struct SmluaTextureInfo {
     s32 height;
 };
 
+static struct TextureInfo *smlua_resolve_builtin_texture_info(const struct SmluaTextureInfo *tex) {
+    if (tex == NULL) {
+        return NULL;
+    }
+
+    // Built-in gTextures shims (Wii U) map to DJUI global textures.
+    if (strcmp(tex->name, "camera") == 0) { return &gGlobalTextures.camera; }
+    if (strcmp(tex->name, "lakitu") == 0) { return &gGlobalTextures.lakitu; }
+    if (strcmp(tex->name, "no_camera") == 0) { return &gGlobalTextures.no_camera; }
+    if (strcmp(tex->name, "arrow_up") == 0) { return &gGlobalTextures.arrow_up; }
+    if (strcmp(tex->name, "arrow_down") == 0) { return &gGlobalTextures.arrow_down; }
+    if (strcmp(tex->name, "coin") == 0) { return &gGlobalTextures.coin; }
+    if (strcmp(tex->name, "star") == 0) { return &gGlobalTextures.star; }
+    if (strcmp(tex->name, "apostrophe") == 0) { return &gGlobalTextures.apostrophe; }
+    if (strcmp(tex->name, "double_quote") == 0) { return &gGlobalTextures.double_quote; }
+    if (strcmp(tex->name, "mario_head") == 0) { return &gGlobalTextures.mario_head; }
+    if (strcmp(tex->name, "luigi_head") == 0) { return &gGlobalTextures.luigi_head; }
+    if (strcmp(tex->name, "toad_head") == 0) { return &gGlobalTextures.toad_head; }
+    if (strcmp(tex->name, "waluigi_head") == 0) { return &gGlobalTextures.waluigi_head; }
+    if (strcmp(tex->name, "wario_head") == 0) { return &gGlobalTextures.wario_head; }
+
+    return NULL;
+}
+
+static struct TextureInfo *smlua_lua_to_texture_info(lua_State *L, int index) {
+    struct SmluaTextureInfo *tex = luaL_testudata(L, index, SMLUA_TEXINFO_METATABLE);
+    if (tex == NULL) {
+        return NULL;
+    }
+
+    struct TextureInfo *builtin = smlua_resolve_builtin_texture_info(tex);
+    if (builtin != NULL) {
+        return builtin;
+    }
+
+    // Mod textures (.tex) are not yet decoded into N64 texture memory on Wii U.
+    // Keep the API safe by returning NULL instead of attempting to render invalid pointers.
+    (void)tex;
+    return NULL;
+}
+
 struct SmluaModAudio {
     char filepath[SYS_MAX_PATH];
     s32 id;
@@ -1993,17 +2034,17 @@ static int smlua_func_djui_hud_print_text(lua_State *L) {
 
 // DJUI texture shim that currently supports HUD-star texture usage from built-in mods.
 static int smlua_func_djui_hud_render_texture(lua_State *L) {
+    struct TextureInfo *texInfo = smlua_lua_to_texture_info(L, 1);
+    if (texInfo == NULL) {
+        return 0;
+    }
+
     f32 x = (f32)luaL_checknumber(L, 2);
     f32 y = (f32)luaL_checknumber(L, 3);
-    (void)luaL_optnumber(L, 4, 1.0f);
-    (void)luaL_optnumber(L, 5, 1.0f);
+    f32 scaleW = (f32)luaL_optnumber(L, 4, 1.0f);
+    f32 scaleH = (f32)luaL_optnumber(L, 5, 1.0f);
 
-    u8 *(*hud_lut)[58] = segmented_to_virtual(&main_hud_lut);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
-    gDPSetEnvColor(gDisplayListHead++, sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
-    render_hud_tex_lut((s32)x, (s32)y, (*hud_lut)[GLYPH_STAR]);
-    gDPSetEnvColor(gDisplayListHead++, 255, 255, 255, 255);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_end);
+    djui_hud_render_texture(texInfo, x, y, scaleW, scaleH);
     return 0;
 }
 
@@ -3669,49 +3710,66 @@ static int smlua_func_djui_hud_print_text_interpolated(lua_State *L) {
 
 // Interpolated texture shim delegating to immediate texture draw at current transform.
 static int smlua_func_djui_hud_render_texture_interpolated(lua_State *L) {
+    struct TextureInfo *texInfo = smlua_lua_to_texture_info(L, 1);
+    if (texInfo == NULL) {
+        return 0;
+    }
+
+    f32 prevX = (f32)luaL_checknumber(L, 2);
+    f32 prevY = (f32)luaL_checknumber(L, 3);
+    f32 prevScaleW = (f32)luaL_optnumber(L, 4, 1.0f);
+    f32 prevScaleH = (f32)luaL_optnumber(L, 5, 1.0f);
     f32 x = (f32)luaL_checknumber(L, 6);
     f32 y = (f32)luaL_checknumber(L, 7);
-    (void)luaL_optnumber(L, 8, 1.0f);
-    (void)luaL_optnumber(L, 9, 1.0f);
+    f32 scaleW = (f32)luaL_optnumber(L, 8, 1.0f);
+    f32 scaleH = (f32)luaL_optnumber(L, 9, 1.0f);
 
-    u8 *(*hud_lut)[58] = segmented_to_virtual(&main_hud_lut);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
-    gDPSetEnvColor(gDisplayListHead++, sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
-    render_hud_tex_lut((s32)x, (s32)y, (*hud_lut)[GLYPH_STAR]);
-    gDPSetEnvColor(gDisplayListHead++, 255, 255, 255, 255);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_end);
+    djui_hud_render_texture_interpolated(texInfo, prevX, prevY, prevScaleW, prevScaleH, x, y, scaleW, scaleH);
     return 0;
 }
 
 // Tile-render shim currently mapped to single-texture draw.
 static int smlua_func_djui_hud_render_texture_tile(lua_State *L) {
+    struct TextureInfo *texInfo = smlua_lua_to_texture_info(L, 1);
+    if (texInfo == NULL) {
+        return 0;
+    }
+
     f32 x = (f32)luaL_checknumber(L, 2);
     f32 y = (f32)luaL_checknumber(L, 3);
-    (void)luaL_optnumber(L, 4, 1.0f);
-    (void)luaL_optnumber(L, 5, 1.0f);
+    f32 scaleW = (f32)luaL_optnumber(L, 4, 1.0f);
+    f32 scaleH = (f32)luaL_optnumber(L, 5, 1.0f);
+    u32 tileX = (u32)luaL_checkinteger(L, 6);
+    u32 tileY = (u32)luaL_checkinteger(L, 7);
+    u32 tileW = (u32)luaL_checkinteger(L, 8);
+    u32 tileH = (u32)luaL_checkinteger(L, 9);
 
-    u8 *(*hud_lut)[58] = segmented_to_virtual(&main_hud_lut);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
-    gDPSetEnvColor(gDisplayListHead++, sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
-    render_hud_tex_lut((s32)x, (s32)y, (*hud_lut)[GLYPH_STAR]);
-    gDPSetEnvColor(gDisplayListHead++, 255, 255, 255, 255);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_end);
+    djui_hud_render_texture_tile(texInfo, x, y, scaleW, scaleH, tileX, tileY, tileW, tileH);
     return 0;
 }
 
 // Interpolated tile-render shim currently mapped to current-texture draw.
 static int smlua_func_djui_hud_render_texture_tile_interpolated(lua_State *L) {
+    struct TextureInfo *texInfo = smlua_lua_to_texture_info(L, 1);
+    if (texInfo == NULL) {
+        return 0;
+    }
+
+    f32 prevX = (f32)luaL_checknumber(L, 2);
+    f32 prevY = (f32)luaL_checknumber(L, 3);
+    f32 prevScaleW = (f32)luaL_optnumber(L, 4, 1.0f);
+    f32 prevScaleH = (f32)luaL_optnumber(L, 5, 1.0f);
     f32 x = (f32)luaL_checknumber(L, 6);
     f32 y = (f32)luaL_checknumber(L, 7);
-    (void)luaL_optnumber(L, 8, 1.0f);
-    (void)luaL_optnumber(L, 9, 1.0f);
+    f32 scaleW = (f32)luaL_optnumber(L, 8, 1.0f);
+    f32 scaleH = (f32)luaL_optnumber(L, 9, 1.0f);
+    u32 tileX = (u32)luaL_checkinteger(L, 10);
+    u32 tileY = (u32)luaL_checkinteger(L, 11);
+    u32 tileW = (u32)luaL_checkinteger(L, 12);
+    u32 tileH = (u32)luaL_checkinteger(L, 13);
 
-    u8 *(*hud_lut)[58] = segmented_to_virtual(&main_hud_lut);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
-    gDPSetEnvColor(gDisplayListHead++, sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
-    render_hud_tex_lut((s32)x, (s32)y, (*hud_lut)[GLYPH_STAR]);
-    gDPSetEnvColor(gDisplayListHead++, 255, 255, 255, 255);
-    gSPDisplayList(gDisplayListHead++, dl_hud_img_end);
+    djui_hud_render_texture_tile_interpolated(texInfo, prevX, prevY, prevScaleW, prevScaleH,
+                                              x, y, scaleW, scaleH, tileX, tileY, tileW, tileH);
     return 0;
 }
 
@@ -4257,17 +4315,33 @@ static void smlua_apply_known_mod_metadata(const char *relative_path, char *name
 // Initializes lightweight globals expected by built-in mods (`gTextures.star`, etc).
 static void smlua_bind_minimal_globals(lua_State *L) {
     lua_newtable(L);
-    smlua_push_texture_info(L, "star", "", 16, 16);
+    smlua_push_texture_info(L, "camera", "", (s32)gGlobalTextures.camera.width, (s32)gGlobalTextures.camera.height);
+    lua_setfield(L, -2, "camera");
+    smlua_push_texture_info(L, "lakitu", "", (s32)gGlobalTextures.lakitu.width, (s32)gGlobalTextures.lakitu.height);
+    lua_setfield(L, -2, "lakitu");
+    smlua_push_texture_info(L, "no_camera", "", (s32)gGlobalTextures.no_camera.width, (s32)gGlobalTextures.no_camera.height);
+    lua_setfield(L, -2, "no_camera");
+    smlua_push_texture_info(L, "arrow_up", "", (s32)gGlobalTextures.arrow_up.width, (s32)gGlobalTextures.arrow_up.height);
+    lua_setfield(L, -2, "arrow_up");
+    smlua_push_texture_info(L, "arrow_down", "", (s32)gGlobalTextures.arrow_down.width, (s32)gGlobalTextures.arrow_down.height);
+    lua_setfield(L, -2, "arrow_down");
+    smlua_push_texture_info(L, "coin", "", (s32)gGlobalTextures.coin.width, (s32)gGlobalTextures.coin.height);
+    lua_setfield(L, -2, "coin");
+    smlua_push_texture_info(L, "star", "", (s32)gGlobalTextures.star.width, (s32)gGlobalTextures.star.height);
     lua_setfield(L, -2, "star");
-    smlua_push_texture_info(L, "mario_head", "", 16, 16);
+    smlua_push_texture_info(L, "apostrophe", "", (s32)gGlobalTextures.apostrophe.width, (s32)gGlobalTextures.apostrophe.height);
+    lua_setfield(L, -2, "apostrophe");
+    smlua_push_texture_info(L, "double_quote", "", (s32)gGlobalTextures.double_quote.width, (s32)gGlobalTextures.double_quote.height);
+    lua_setfield(L, -2, "double_quote");
+    smlua_push_texture_info(L, "mario_head", "", (s32)gGlobalTextures.mario_head.width, (s32)gGlobalTextures.mario_head.height);
     lua_setfield(L, -2, "mario_head");
-    smlua_push_texture_info(L, "luigi_head", "", 16, 16);
+    smlua_push_texture_info(L, "luigi_head", "", (s32)gGlobalTextures.luigi_head.width, (s32)gGlobalTextures.luigi_head.height);
     lua_setfield(L, -2, "luigi_head");
-    smlua_push_texture_info(L, "toad_head", "", 16, 16);
+    smlua_push_texture_info(L, "toad_head", "", (s32)gGlobalTextures.toad_head.width, (s32)gGlobalTextures.toad_head.height);
     lua_setfield(L, -2, "toad_head");
-    smlua_push_texture_info(L, "waluigi_head", "", 16, 16);
+    smlua_push_texture_info(L, "waluigi_head", "", (s32)gGlobalTextures.waluigi_head.width, (s32)gGlobalTextures.waluigi_head.height);
     lua_setfield(L, -2, "waluigi_head");
-    smlua_push_texture_info(L, "wario_head", "", 16, 16);
+    smlua_push_texture_info(L, "wario_head", "", (s32)gGlobalTextures.wario_head.width, (s32)gGlobalTextures.wario_head.height);
     lua_setfield(L, -2, "wario_head");
     lua_setglobal(L, "gTextures");
 

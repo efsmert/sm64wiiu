@@ -74,25 +74,17 @@ void sys_swap_backslashes(char *buffer) {
 }
 
 #ifdef TARGET_WII_U
-// Prioritizes app-folder-on-SD for portable Wii U installs. Falls back to cwd.
+// Wii U homebrew convention: store user data under the app folder on SD.
+// This matches `sdcard://wiiu/apps/sm64wiiu/` (mapped to `/vol/external01/wiiu/apps/sm64wiiu/`).
 static const char *wiiu_default_write_path(void) {
     static char path[SYS_MAX_PATH];
-    struct stat st;
 
     if (path[0] != '\0') {
         return path;
     }
 
-    if (stat("/vol/external01/wiiu/apps/sm64wiiu", &st) == 0 && S_ISDIR(st.st_mode)) {
-        snprintf(path, sizeof(path), "%s", "/vol/external01/wiiu/apps/sm64wiiu");
-        return path;
-    }
-
-    if (getcwd(path, sizeof(path)) != NULL) {
-        return path;
-    }
-
-    snprintf(path, sizeof(path), "%s", ".");
+    // `pc_main.c` is responsible for mounting SD and creating this directory before `fs_init()`.
+    snprintf(path, sizeof(path), "%s", "/vol/external01/wiiu/apps/sm64wiiu");
     return path;
 }
 #endif

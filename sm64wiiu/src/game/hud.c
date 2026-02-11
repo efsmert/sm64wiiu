@@ -459,6 +459,7 @@ void render_hud(void) {
 
 #ifndef TARGET_N64
         // Draw behind-HUD Lua layers after HUD projection setup and before vanilla HUD.
+        djui_hud_begin_frame();
         smlua_call_event_hooks(HOOK_ON_HUD_RENDER_BEHIND);
 #endif
 

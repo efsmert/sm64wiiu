@@ -1023,6 +1023,10 @@ void djui_reset_hud_params(void) {
     djui_hud_reset_scissor();
 }
 
+void djui_hud_begin_frame(void) {
+    gDjuiHudUtilsZ = 0.0f;
+}
+
 void djui_init(void) {
     if (gDjuiUseDonorStack) {
         djui_donor_init();

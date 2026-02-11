@@ -51,6 +51,7 @@ void djui_lua_error(char* text, struct DjuiColor color);
 void djui_lua_error_clear(void);
 void djui_render(void);
 void djui_reset_hud_params(void);
+void djui_hud_begin_frame(void);
 
 void djui_shutdown(void);
 

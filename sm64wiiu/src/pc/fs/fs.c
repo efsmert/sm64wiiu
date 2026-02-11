@@ -376,9 +376,9 @@ uint64_t fs_sys_get_modified_time(const char *path) {
 #endif
 }
 
-bool fs_sys_walk(const char *base, walk_fn_t walk, void *user, const bool recur) {
+fs_walk_result_t fs_sys_walk(const char *base, walk_fn_t walk, void *user, const bool recur) {
 #ifdef DOCKERBUILD
-    return false;
+    return FS_WALK_ERROR;
 #else
     char fullpath[SYS_MAX_PATH];
     DIR *dir;
@@ -386,10 +386,10 @@ bool fs_sys_walk(const char *base, walk_fn_t walk, void *user, const bool recur)
 
     if (!(dir = opendir(base))) {
         fprintf(stderr, "fs_dir_walk(): could not open `%s`\n", base);
-        return false;
+        return FS_WALK_ERROR;
     }
 
-    bool ret = true;
+    fs_walk_result_t ret = FS_WALK_SUCCESS;
 
     while ((ent = readdir(dir)) != NULL) {
         if (ent->d_name[0] == 0 || ent->d_name[0] == '.') continue; // skip ./.. and hidden files
@@ -398,14 +398,15 @@ bool fs_sys_walk(const char *base, walk_fn_t walk, void *user, const bool recur)
         }
         if (fs_sys_dir_exists(fullpath)) {
             if (recur) {
-                if (!fs_sys_walk(fullpath, walk, user, recur)) {
-                    ret = false;
+                fs_walk_result_t sub = fs_sys_walk(fullpath, walk, user, recur);
+                if (sub != FS_WALK_SUCCESS) {
+                    ret = sub;
                     break;
                 }
             }
         } else {
             if (!walk(user, fullpath)) {
-                ret = false;
+                ret = FS_WALK_INTERRUPTED;
                 break;
             }
         }

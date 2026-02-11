@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef TARGET_WEB
 #include <emscripten.h>
@@ -46,6 +47,7 @@
 
 #ifdef TARGET_WII_U
 #include <whb/log.h>
+#include <whb/sdcard.h>
 #endif
 
 OSMesg gMainReceivedMesg;
@@ -80,6 +82,55 @@ extern void patch_djui_hud(f32 delta);
 extern void patch_mtx_before(void);
 extern void patch_mtx_interpolated(f32 delta);
 void game_loop_one_iteration(void);
+
+#ifdef TARGET_WII_U
+static bool wiiu_mkdirs(const char *path) {
+    char buf[SYS_MAX_PATH];
+    size_t len = 0;
+
+    if (path == NULL || path[0] == '\0') {
+        return false;
+    }
+
+    if (fs_sys_dir_exists(path)) {
+        return true;
+    }
+
+    strncpy(buf, path, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
+    len = strlen(buf);
+    while (len > 1 && buf[len - 1] == '/') {
+        buf[len - 1] = '\0';
+        len--;
+    }
+
+    // Create each parent segment (mkdir -p).
+    for (size_t i = 1; i < len; i++) {
+        if (buf[i] != '/') {
+            continue;
+        }
+        buf[i] = '\0';
+        if (!fs_sys_dir_exists(buf)) {
+            fs_sys_mkdir(buf);
+        }
+        buf[i] = '/';
+    }
+
+    if (!fs_sys_dir_exists(buf)) {
+        fs_sys_mkdir(buf);
+    }
+    return fs_sys_dir_exists(buf);
+}
+
+static void wiiu_prepare_sd_storage(void) {
+    // Best-effort mount: some environments pre-mount SD, but WHBMountSdCard keeps it deterministic.
+    WHBMountSdCard();
+
+    // Wii U homebrew data root: `sdcard://wiiu/apps/sm64wiiu/`
+    wiiu_mkdirs("/vol/external01/wiiu/apps/sm64wiiu");
+    wiiu_mkdirs("/vol/external01/wiiu/apps/sm64wiiu/mods");
+}
+#endif
 
 void dispatch_audio_sptask(UNUSED struct SPTask *spTask) {
 }
@@ -367,6 +418,9 @@ void main_func(void) {
     gEffectsMemoryPool = mem_pool_init(0x4000, MEMORY_POOL_LEFT);
 
     // Initialize write path before config/save I/O so Wii U writes stay on SD.
+#ifdef TARGET_WII_U
+    wiiu_prepare_sd_storage();
+#endif
     fs_init(sys_user_path());
     configfile_load();
     gMasterVolume = (f32)configMasterVolume / 127.0f;

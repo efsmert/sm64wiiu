@@ -91,8 +91,13 @@ static const struct DjuiFont sDjuiFontTitle = {
  // font 2 (hud font) //
 ///////////////////////
 
+static u8 djui_font_hud_fallback_index(void) {
+    return (main_hud_lut[41] != NULL) ? 41 : 50;
+}
+
 static u8 djui_font_hud_index(char c) {
-    if ((u8)c < ' ' || (u8)c > 127) { return 41; }
+    u8 fallback = djui_font_hud_fallback_index();
+    if ((u8)c < ' ' || (u8)c > 127) { return fallback; }
 
     switch (c) {
         case '!':  return 36;
@@ -100,7 +105,7 @@ static u8 djui_font_hud_index(char c) {
         case '?':  return 38;
         case '&':  return 39;
         case '%':  return 40;
-        case '@':  return 41;
+        case '@':  return fallback;
         case '$':  return 42;
         case ',':  return 43;
         case '*':  return 44;
@@ -118,8 +123,8 @@ static u8 djui_font_hud_index(char c) {
     if (c >= 'a' && c <= 'z') { return 10 + c - 'a'; }
     if (c >= 'A' && c <= 'Z') { return 10 + c - 'A'; }
 
-    if (c >= 58) { return 41; }
-    if (main_hud_lut[(int)c] == NULL) { return 41; }
+    if (c >= 58) { return fallback; }
+    if (main_hud_lut[(int)c] == NULL) { return fallback; }
 
     return c;
 }
