@@ -25,6 +25,10 @@
 #include "surface_collision.h"
 #include "surface_load.h"
 
+#ifndef TARGET_N64
+#include "data/dynos.c.h"
+#endif
+
 #define CMD_GET(type, offset) (*(type *) (CMD_PROCESS_OFFSET(offset) + (u8 *) sCurrentCmd))
 
 // These are equal
@@ -54,6 +58,10 @@ static uintptr_t *sStackBase = NULL;
 static s16 sScriptStatus;
 static s32 sRegister;
 static struct LevelCommand *sCurrentCmd;
+
+// DynOS: track currently executing level script for token/mod lookups.
+LevelScript* gLevelScriptActive = NULL;
+s32 gLevelScriptModIndex = -1;
 
 #ifdef USE_SYSTEM_MALLOC
 static struct MemoryPool *sMemPoolForGoddard;
@@ -340,6 +348,11 @@ static void level_cmd_clear_level(void) {
 }
 
 static void level_cmd_alloc_level_pool(void) {
+#ifndef TARGET_N64
+    // Clear DynOS level-scoped model pool when a new level pool is allocated.
+    dynos_model_clear_pool(MODEL_POOL_LEVEL);
+    dynos_smlua_clear_gfx_command_cache();
+#endif
     if (sLevelPool == NULL) {
 #ifdef USE_SYSTEM_MALLOC
         sLevelPool = alloc_only_pool_init();
@@ -375,8 +388,13 @@ static void level_cmd_begin_area(void) {
     void *geoLayoutAddr = CMD_GET(void *, 4);
 
     if (areaIndex < 8) {
-        struct GraphNodeRoot *screenArea =
-            (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
+        struct GraphNodeRoot *screenArea = NULL;
+#ifndef TARGET_N64
+        u32 id = 0;
+        screenArea = (struct GraphNodeRoot *) dynos_model_load_geo(&id, MODEL_POOL_LEVEL, geoLayoutAddr, false);
+#else
+        screenArea = (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
+#endif
         struct GraphNodeCamera *node = (struct GraphNodeCamera *) screenArea->views[0];
 
         sCurrAreaIndex = areaIndex;
@@ -850,7 +868,23 @@ struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
     sCurrentCmd = cmd;
 
     while (sScriptStatus == SCRIPT_RUNNING) {
-        LevelScriptJumpTable[sCurrentCmd->type]();
+#ifndef TARGET_N64
+        sCurrentCmd = (struct LevelCommand *) dynos_swap_cmd(sCurrentCmd);
+        void *dynosCurrCmd = (void *) sCurrentCmd;
+#endif
+
+        if (sCurrentCmd->type < ARRAY_COUNT(LevelScriptJumpTable)) {
+            LevelScriptJumpTable[sCurrentCmd->type]();
+        } else {
+            sScriptStatus = SCRIPT_PAUSED;
+        }
+
+#ifndef TARGET_N64
+        void *dynosNextCmd = dynos_update_cmd(dynosCurrCmd);
+        if (dynosNextCmd) {
+            sCurrentCmd = (struct LevelCommand *) dynosNextCmd;
+        }
+#endif
     }
 
     profiler_log_thread5_time(LEVEL_SCRIPT_EXECUTE);

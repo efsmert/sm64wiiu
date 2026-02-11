@@ -62,6 +62,9 @@ enum ObjectList
     NUM_OBJ_LISTS
 };
 
+// Co-op DX compatibility: extra object list reserved for Lua mods.
+#define OBJ_LIST_EXT OBJ_LIST_UNUSED_1
+
 
 extern struct ObjectNode gObjectListArray[];
 
@@ -105,6 +108,7 @@ extern struct MemoryPool *gObjectMemoryPool;
 extern s16 gCheckingSurfaceCollisionsForCamera;
 extern s16 gFindFloorIncludeSurfaceIntangible;
 extern s16 *gEnvironmentRegions;
+extern s32 gEnvironmentRegionsLength;
 extern s32 gEnvironmentLevels[20];
 extern s8 gDoorAdjacentRooms[60][2];
 extern s16 gMarioCurrentRoom;

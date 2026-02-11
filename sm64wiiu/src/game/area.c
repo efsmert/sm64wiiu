@@ -24,6 +24,7 @@
 #include "dialog_ids.h"
 #ifndef TARGET_N64
 #include "pc/djui/djui.h"
+#include "data/dynos.c.h"
 #endif
 
 struct SpawnInfo gPlayerSpawnInfos[1];
@@ -369,6 +370,9 @@ void play_transition_after_delay(s16 transType, s16 time, u8 red, u8 green, u8 b
 }
 
 void render_game(void) {
+#ifndef TARGET_N64
+    dynos_update_gfx();
+#endif
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
 

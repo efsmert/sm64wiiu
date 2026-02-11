@@ -21,6 +21,11 @@
 
 #define MODEL_NONE                        0x00
 
+// Co-op DX / DynOS assume vanilla model ids are <= 255.
+#ifndef VANILLA_ID_END
+#define VANILLA_ID_END 255
+#endif
+
 /* Global models that are loaded for every level */
 
 #define MODEL_MARIO                       0x01        // mario_geo
@@ -417,6 +422,12 @@
 #define MODEL_BOWSER_WAVE                 0x68        // invisible_bowser_accessory_geo
 #define MODEL_BOWSER_NO_SHADOW            0x69        // bowser_geo_no_shadow
 
+// CoopDX compatibility: Wii U does not ship a distinct Bowser2 geo in vanilla.
+// Treat it as Bowser for mod constants / DynOS parsing.
+#ifndef MODEL_BOWSER2
+#define MODEL_BOWSER2 MODEL_BOWSER
+#endif
+
 // group 13
 #define MODEL_BUB                         0x64        // cheep_cheep_geo
 #define MODEL_TREASURE_CHEST_BASE         0x65        // treasure_chest_base_geo
@@ -585,5 +596,12 @@
 #define MODEL_THI_WARP_PIPE                       MODEL_LEVEL_GEOMETRY_16   // warp_pipe_geo
 #define MODEL_VCUTM_WARP_PIPE                     MODEL_LEVEL_GEOMETRY_16   // warp_pipe_geo
 #define MODEL_CASTLE_GROUNDS_WARP_PIPE            MODEL_LEVEL_GEOMETRY_16   // warp_pipe_geo
+
+#ifndef MODEL_ERROR_MODEL
+// Co-op DX/DynOS references an "error model" as a fallback when a requested
+// model slot is missing. The Wii U port does not define a dedicated model for
+// this; use MODEL_NONE so callers safely resolve to "no model".
+#define MODEL_ERROR_MODEL MODEL_NONE
+#endif
 
 #endif // MODEL_IDS_H

@@ -541,6 +541,38 @@ Gfx *geo_mario_rotate_wing_cap_wings(s32 callContext, struct GraphNode *node, UN
 }
 
 /**
+ * Co-op DX provides per-player palette overrides via this geo function.
+ * The Wii U port currently does not support those overrides, but DynOS mods may
+ * reference the symbol. Keep the function present and ensure layer selection is
+ * consistent with Co-op DX expectations.
+ */
+Gfx *geo_mario_set_player_colors(s32 callContext, struct GraphNode *node, UNUSED Mat4 *c) {
+    if (callContext != GEO_CONTEXT_RENDER) {
+        return NULL;
+    }
+
+    struct GraphNodeGenerated *asGenerated = (struct GraphNodeGenerated *) node;
+    u32 layer = LAYER_OPAQUE;
+
+    if (asGenerated != NULL) {
+        if (asGenerated->parameter == 0) {
+            // Put on transparent layer if vanish effect, opaque otherwise.
+            layer = ((gBodyStates[0].modelState >> 8) & 1) ? LAYER_TRANSPARENT : LAYER_OPAQUE;
+        } else if (asGenerated->parameter == 1) {
+            layer = LAYER_OPAQUE;
+        } else if (asGenerated->parameter == 2) {
+            layer = LAYER_TRANSPARENT;
+        } else if (asGenerated->parameter >= 3) {
+            layer = (u32) asGenerated->parameter - 3;
+        }
+
+        asGenerated->fnNode.node.flags = (asGenerated->fnNode.node.flags & 0xFF) | (layer << 8);
+    }
+
+    return NULL;
+}
+
+/**
  * Geo node that updates the held object node and the HOLP.
  */
 Gfx *geo_switch_mario_hand_grab_pos(s32 callContext, struct GraphNode *b, Mat4 *mtx) {

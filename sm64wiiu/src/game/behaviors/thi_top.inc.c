@@ -6,7 +6,7 @@ struct SpawnParticlesInfo sThiTopPuffs = {
 
 void bhv_thi_huge_island_top_loop(void) {
     if (gTHIWaterDrained & 1) {
-        if (o->oTimer == 0)
+        if (o->oTimer == 0 && gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 18)
             gEnvironmentRegions[18] = 3000;
         cur_obj_hide();
     } else
@@ -26,7 +26,9 @@ void bhv_thi_tiny_island_top_loop(void) {
                 }
         } else {
             if (o->oTimer < 50) {
-                gEnvironmentRegions[18]--;
+                if (gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 18) {
+                    gEnvironmentRegions[18]--;
+                }
                 cur_obj_play_sound_1(SOUND_ENV_WATER_DRAIN);
             } else {
                 gTHIWaterDrained |= 1;
@@ -35,7 +37,7 @@ void bhv_thi_tiny_island_top_loop(void) {
             }
         }
     } else {
-        if (o->oTimer == 0)
+        if (o->oTimer == 0 && gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 18)
             gEnvironmentRegions[18] = 700;
         cur_obj_hide();
     }

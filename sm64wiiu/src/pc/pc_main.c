@@ -35,6 +35,7 @@
 #include "djui/djui_lua_profiler.h"
 #include "lua/smlua.h"
 #include "mods/mods.h"
+#include "data/dynos.c.h"
 
 #include "configfile.h"
 #include "platform.h"
@@ -416,6 +417,12 @@ void main_func(void) {
     main_pool_init(pool, pool + sizeof(pool));
 #endif
     gEffectsMemoryPool = mem_pool_init(0x4000, MEMORY_POOL_LEFT);
+
+    // DynOS uses alloc-only pools for model overrides; initialize them before
+    // any `main_pool_push_state()` so they aren't freed by level pool pop.
+#ifndef TARGET_N64
+    dynos_model_init_pools();
+#endif
 
     // Initialize write path before config/save I/O so Wii U writes stay on SD.
 #ifdef TARGET_WII_U

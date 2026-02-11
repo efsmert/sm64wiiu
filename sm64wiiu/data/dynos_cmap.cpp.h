@@ -1,6 +1,7 @@
 #ifndef DYNOS_CMAP_CPP_H
 #define DYNOS_CMAP_CPP_H
 #ifndef __cplusplus
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

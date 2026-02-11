@@ -37,6 +37,8 @@ enum MenuMode {
 
 extern s8 gDialogCourseActNum;
 extern s8 gHudFlash;
+extern s8 gDialogBoxState;
+extern s16 gMenuMode;
 
 struct DialogEntry
 {

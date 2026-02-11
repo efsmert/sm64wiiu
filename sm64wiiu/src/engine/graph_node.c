@@ -32,6 +32,7 @@ void init_scene_graph_node_links(struct GraphNode *graphNode, s32 type) {
     graphNode->extraFlags = 0;
     graphNode->hookProcess = 0;
     graphNode->padding = 0;
+    graphNode->georef = NULL;
 }
 
 /**

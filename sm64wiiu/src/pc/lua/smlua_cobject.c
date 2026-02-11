@@ -4,6 +4,8 @@
 #include <lauxlib.h>
 
 #include "sm64.h"
+#include "game/area.h"
+#include "game/camera.h"
 #include "game/level_update.h"
 #include "game/object_list_processor.h"
 #include "smlua_cobject.h"
@@ -61,6 +63,12 @@ static const char *smlua_cobject_type_name(uint16_t type) {
             return "MarioState";
         case SMLUA_COBJECT_OBJECT:
             return "Object";
+        case SMLUA_COBJECT_AREA:
+            return "Area";
+        case SMLUA_COBJECT_CAMERA:
+            return "Camera";
+        case SMLUA_COBJECT_LAKITU_STATE:
+            return "LakituState";
         default:
             return "Unknown";
     }
@@ -683,6 +691,10 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
         smlua_push_controller(L, m->controller);
         return true;
     }
+    if (strcmp(key, "area") == 0) {
+        smlua_push_area(L, m->area);
+        return true;
+    }
     if (strcmp(key, "marioObj") == 0) {
         smlua_push_object(L, m->marioObj);
         return true;
@@ -701,6 +713,168 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
     }
     if (strcmp(key, "riddenObj") == 0) {
         smlua_push_object(L, m->riddenObj);
+        return true;
+    }
+
+    return false;
+}
+
+// Pushes a known Area field into Lua and returns true on handled key.
+static bool smlua_push_area_field(lua_State *L, struct Area *a, const char *key) {
+    if (strcmp(key, "type") == 0) {
+        lua_pushstring(L, "Area");
+        return true;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, a);
+        return true;
+    }
+    if (strcmp(key, "is_null") == 0) {
+        lua_pushboolean(L, a == NULL ? 1 : 0);
+        return true;
+    }
+    if (strcmp(key, "index") == 0) {
+        lua_pushinteger(L, a->index);
+        return true;
+    }
+    if (strcmp(key, "flags") == 0) {
+        lua_pushinteger(L, a->flags);
+        return true;
+    }
+    if (strcmp(key, "terrainType") == 0) {
+        lua_pushinteger(L, a->terrainType);
+        return true;
+    }
+    if (strcmp(key, "musicParam") == 0) {
+        lua_pushinteger(L, a->musicParam);
+        return true;
+    }
+    if (strcmp(key, "musicParam2") == 0) {
+        lua_pushinteger(L, a->musicParam2);
+        return true;
+    }
+    if (strcmp(key, "camera") == 0) {
+        smlua_push_camera(L, a->camera);
+        return true;
+    }
+
+    return false;
+}
+
+// Pushes a known Camera field into Lua and returns true on handled key.
+static bool smlua_push_camera_field(lua_State *L, struct Camera *c, const char *key) {
+    if (strcmp(key, "type") == 0) {
+        lua_pushstring(L, "Camera");
+        return true;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, c);
+        return true;
+    }
+    if (strcmp(key, "is_null") == 0) {
+        lua_pushboolean(L, c == NULL ? 1 : 0);
+        return true;
+    }
+    if (strcmp(key, "mode") == 0) {
+        lua_pushinteger(L, c->mode);
+        return true;
+    }
+    if (strcmp(key, "defMode") == 0) {
+        lua_pushinteger(L, c->defMode);
+        return true;
+    }
+    if (strcmp(key, "yaw") == 0) {
+        lua_pushinteger(L, c->yaw);
+        return true;
+    }
+    if (strcmp(key, "cutscene") == 0) {
+        lua_pushinteger(L, c->cutscene);
+        return true;
+    }
+    if (strcmp(key, "nextYaw") == 0) {
+        lua_pushinteger(L, c->nextYaw);
+        return true;
+    }
+    if (strcmp(key, "areaCenX") == 0) {
+        lua_pushnumber(L, c->areaCenX);
+        return true;
+    }
+    if (strcmp(key, "areaCenY") == 0) {
+        lua_pushnumber(L, c->areaCenY);
+        return true;
+    }
+    if (strcmp(key, "areaCenZ") == 0) {
+        lua_pushnumber(L, c->areaCenZ);
+        return true;
+    }
+    if (strcmp(key, "pos") == 0) {
+        smlua_push_vec3f(L, c->pos);
+        return true;
+    }
+    if (strcmp(key, "focus") == 0) {
+        smlua_push_vec3f(L, c->focus);
+        return true;
+    }
+
+    return false;
+}
+
+// Pushes a known LakituState field into Lua and returns true on handled key.
+static bool smlua_push_lakitu_state_field(lua_State *L, struct LakituState *s, const char *key) {
+    if (strcmp(key, "type") == 0) {
+        lua_pushstring(L, "LakituState");
+        return true;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, s);
+        return true;
+    }
+    if (strcmp(key, "is_null") == 0) {
+        lua_pushboolean(L, s == NULL ? 1 : 0);
+        return true;
+    }
+    if (strcmp(key, "mode") == 0) {
+        lua_pushinteger(L, s->mode);
+        return true;
+    }
+    if (strcmp(key, "defMode") == 0) {
+        lua_pushinteger(L, s->defMode);
+        return true;
+    }
+    if (strcmp(key, "yaw") == 0) {
+        lua_pushinteger(L, s->yaw);
+        return true;
+    }
+    if (strcmp(key, "nextYaw") == 0) {
+        lua_pushinteger(L, s->nextYaw);
+        return true;
+    }
+    if (strcmp(key, "roll") == 0) {
+        lua_pushinteger(L, s->roll);
+        return true;
+    }
+    if (strcmp(key, "curFocus") == 0) {
+        smlua_push_vec3f(L, s->curFocus);
+        return true;
+    }
+    if (strcmp(key, "curPos") == 0) {
+        smlua_push_vec3f(L, s->curPos);
+        return true;
+    }
+    if (strcmp(key, "goalFocus") == 0) {
+        smlua_push_vec3f(L, s->goalFocus);
+        return true;
+    }
+    if (strcmp(key, "goalPos") == 0) {
+        smlua_push_vec3f(L, s->goalPos);
+        return true;
+    }
+    if (strcmp(key, "focus") == 0) {
+        smlua_push_vec3f(L, s->focus);
+        return true;
+    }
+    if (strcmp(key, "pos") == 0) {
+        smlua_push_vec3f(L, s->pos);
         return true;
     }
 
@@ -1019,6 +1193,176 @@ static bool smlua_set_mario_field(lua_State *L, struct MarioState *m, const char
     return false;
 }
 
+// Writes a known Area field from Lua and returns true on handled key.
+static bool smlua_set_area_field(lua_State *L, struct Area *a, const char *key) {
+    if (strcmp(key, "index") == 0) {
+        a->index = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "flags") == 0) {
+        a->flags = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "terrainType") == 0) {
+        a->terrainType = (u16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "musicParam") == 0) {
+        a->musicParam = (u16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "musicParam2") == 0) {
+        a->musicParam2 = (u16)luaL_checkinteger(L, 3);
+        return true;
+    }
+
+    return false;
+}
+
+// Writes a known Camera field from Lua and returns true on handled key.
+static bool smlua_set_camera_field(lua_State *L, struct Camera *c, const char *key) {
+    if (strcmp(key, "mode") == 0) {
+        c->mode = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "defMode") == 0) {
+        c->defMode = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "yaw") == 0) {
+        c->yaw = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "cutscene") == 0) {
+        c->cutscene = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "nextYaw") == 0) {
+        c->nextYaw = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "areaCenX") == 0) {
+        c->areaCenX = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "areaCenY") == 0) {
+        c->areaCenY = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "areaCenZ") == 0) {
+        c->areaCenZ = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "pos") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected pos table with x/y/z");
+        }
+        c->pos[0] = vec[0];
+        c->pos[1] = vec[1];
+        c->pos[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "focus") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected focus table with x/y/z");
+        }
+        c->focus[0] = vec[0];
+        c->focus[1] = vec[1];
+        c->focus[2] = vec[2];
+        return true;
+    }
+
+    return false;
+}
+
+// Writes a known LakituState field from Lua and returns true on handled key.
+static bool smlua_set_lakitu_state_field(lua_State *L, struct LakituState *s, const char *key) {
+    if (strcmp(key, "mode") == 0) {
+        s->mode = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "defMode") == 0) {
+        s->defMode = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "yaw") == 0) {
+        s->yaw = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "nextYaw") == 0) {
+        s->nextYaw = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "roll") == 0) {
+        s->roll = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "curFocus") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected curFocus table with x/y/z");
+        }
+        s->curFocus[0] = vec[0];
+        s->curFocus[1] = vec[1];
+        s->curFocus[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "curPos") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected curPos table with x/y/z");
+        }
+        s->curPos[0] = vec[0];
+        s->curPos[1] = vec[1];
+        s->curPos[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "goalFocus") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected goalFocus table with x/y/z");
+        }
+        s->goalFocus[0] = vec[0];
+        s->goalFocus[1] = vec[1];
+        s->goalFocus[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "goalPos") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected goalPos table with x/y/z");
+        }
+        s->goalPos[0] = vec[0];
+        s->goalPos[1] = vec[1];
+        s->goalPos[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "pos") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected pos table with x/y/z");
+        }
+        s->pos[0] = vec[0];
+        s->pos[1] = vec[1];
+        s->pos[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "focus") == 0 && lua_istable(L, 3)) {
+        f32 vec[3];
+        if (!smlua_read_vec3f_table(L, 3, vec)) {
+            return luaL_error(L, "expected focus table with x/y/z");
+        }
+        s->focus[0] = vec[0];
+        s->focus[1] = vec[1];
+        s->focus[2] = vec[2];
+        return true;
+    }
+
+    return false;
+}
+
 // Writes a known Object field from Lua and returns true on handled key.
 static bool smlua_set_object_field(lua_State *L, struct Object *o, const char *key) {
     if (strcmp(key, "oPosX") == 0) {
@@ -1237,6 +1581,21 @@ static int smlua_cobject_index(lua_State *L) {
         return 1;
     }
 
+    if (cobj->type == SMLUA_COBJECT_AREA
+        && smlua_push_area_field(L, (struct Area *)cobj->pointer, key)) {
+        return 1;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_CAMERA
+        && smlua_push_camera_field(L, (struct Camera *)cobj->pointer, key)) {
+        return 1;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_LAKITU_STATE
+        && smlua_push_lakitu_state_field(L, (struct LakituState *)cobj->pointer, key)) {
+        return 1;
+    }
+
     if (cobj->type == SMLUA_COBJECT_OBJECT
         && smlua_push_object_field(L, (struct Object *)cobj->pointer, key)) {
         return 1;
@@ -1262,6 +1621,21 @@ static int smlua_cobject_newindex(lua_State *L) {
 
     if (cobj->type == SMLUA_COBJECT_MARIO_STATE
         && smlua_set_mario_field(L, (struct MarioState *)cobj->pointer, key)) {
+        return 0;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_AREA
+        && smlua_set_area_field(L, (struct Area *)cobj->pointer, key)) {
+        return 0;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_CAMERA
+        && smlua_set_camera_field(L, (struct Camera *)cobj->pointer, key)) {
+        return 0;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_LAKITU_STATE
+        && smlua_set_lakitu_state_field(L, (struct LakituState *)cobj->pointer, key)) {
         return 0;
     }
 
@@ -1418,6 +1792,9 @@ void smlua_cobject_init_globals(lua_State *L) {
 
     smlua_push_object(L, gCurrentObject);
     lua_setglobal(L, "gCurrentObject");
+
+    smlua_push_cobject(L, SMLUA_COBJECT_LAKITU_STATE, &gLakituState);
+    lua_setglobal(L, "gLakituState");
 }
 
 // Refreshes dynamic global pointers that can change after Lua startup.
@@ -1439,4 +1816,14 @@ void smlua_push_mario_state(lua_State *L, const void *mario_state) {
 // Wraps an Object pointer as a typed cobject for Lua hook callbacks.
 void smlua_push_object(lua_State *L, const void *object) {
     smlua_push_cobject(L, SMLUA_COBJECT_OBJECT, object);
+}
+
+// Wraps an Area pointer as a typed cobject for Lua access.
+void smlua_push_area(lua_State *L, const void *area) {
+    smlua_push_cobject(L, SMLUA_COBJECT_AREA, area);
+}
+
+// Wraps a Camera pointer as a typed cobject for Lua access.
+void smlua_push_camera(lua_State *L, const void *camera) {
+    smlua_push_cobject(L, SMLUA_COBJECT_CAMERA, camera);
 }

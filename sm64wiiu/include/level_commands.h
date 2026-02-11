@@ -30,6 +30,35 @@
 #define WHIRLPOOL_COND_BOWSER2_BEATEN 2
 #define WHIRLPOOL_COND_AT_LEAST_SECOND_STAR 3
 
+// CoopDX extensions (Lua param indirection for level commands)
+#define OBJECT_EXT_LUA_MODEL        (1 << 0)
+#define OBJECT_EXT_LUA_POS_X        (1 << 1)
+#define OBJECT_EXT_LUA_POS_Y        (1 << 2)
+#define OBJECT_EXT_LUA_POS_Z        (1 << 3)
+#define OBJECT_EXT_LUA_ANGLE_X      (1 << 4)
+#define OBJECT_EXT_LUA_ANGLE_Y      (1 << 5)
+#define OBJECT_EXT_LUA_ANGLE_Z      (1 << 6)
+#define OBJECT_EXT_LUA_BEH_PARAMS   (1 << 7)
+#define OBJECT_EXT_LUA_BEHAVIOR     (1 << 8)
+#define OBJECT_EXT_LUA_ACTS         (1 << 9)
+
+#define OBJECT_EXT_LUA_MODEL_OFFSET(type)           (type == 0x3F ?  3 : (type == 0x40 ? 20 :  4))
+#define OBJECT_EXT_LUA_POS_X_OFFSET(type)           (type == 0x3F ?  4 : (type == 0x40 ?  4 :  8))
+#define OBJECT_EXT_LUA_POS_Y_OFFSET(type)           (type == 0x3F ?  6 : (type == 0x40 ?  6 : 12))
+#define OBJECT_EXT_LUA_POS_Z_OFFSET(type)           (type == 0x3F ?  8 : (type == 0x40 ?  8 : 16))
+#define OBJECT_EXT_LUA_ANGLE_X_OFFSET(type)         (type == 0x3F ? 10 : (type == 0x40 ? 10 : 20))
+#define OBJECT_EXT_LUA_ANGLE_Y_OFFSET(type)         (type == 0x3F ? 12 : (type == 0x40 ? 12 : 24))
+#define OBJECT_EXT_LUA_ANGLE_Z_OFFSET(type)         (type == 0x3F ? 14 : (type == 0x40 ? 14 : 28))
+#define OBJECT_EXT_LUA_BEH_PARAMS_OFFSET(type)      (type == 0x3F ? 16 : (type == 0x40 ? 16 : 32))
+#define OBJECT_EXT_LUA_BEHAVIOR_OFFSET(type)        (type == 0x3F ? 20 : (type == 0x40 ? 24 : 36))
+#define OBJECT_EXT_LUA_ACTS_OFFSET(type)            (type == 0x3F ?  2 : (type == 0x40 ?  2 : 40))
+
+#define SHOW_DIALOG_EXT_LUA_INDEX   (1 << 0)
+#define SHOW_DIALOG_EXT_LUA_DIALOG  (1 << 1)
+
+#define SHOW_DIALOG_EXT_LUA_INDEX_OFFSET(type)  (4)
+#define SHOW_DIALOG_EXT_LUA_DIALOG_OFFSET(type) (8)
+
 // Head defines
 #define REGULAR_FACE 0x0002
 #define DIZZY_FACE 0x0003
@@ -105,7 +134,7 @@
 
 
 #define SKIP_IF(op, arg) \
-    CMD_BBBB(0x0E, 0x08, op, 0) \
+    CMD_BBBB(0x0E, 0x08, op, 0), \
     CMD_W(arg)
 
 #define SKIP() \
@@ -148,6 +177,9 @@
     CMD_BBH(0x18, 0x0C, 0x0000), \
     CMD_PTR(NULL), \
     CMD_PTR(NULL)
+
+#define LOAD_YAY0(seg, romStart, romEnd) \
+    LOAD_MIO0(seg, romStart, romEnd)
 #else
 #define FIXED_LOAD(loadAddr, romStart, romEnd) \
     CMD_BBH(0x16, 0x10, 0x0000), \
@@ -164,6 +196,9 @@
     CMD_BBH(0x18, 0x0C, seg), \
     CMD_PTR(romStart), \
     CMD_PTR(romEnd)
+
+#define LOAD_YAY0(seg, romStart, romEnd) \
+    LOAD_MIO0(seg, romStart, romEnd)
 #endif
 
 #define LOAD_MARIO_HEAD(sethead) \
@@ -174,11 +209,17 @@
     CMD_BBH(0x1A, 0x0C, 0x0000), \
     CMD_PTR(NULL), \
     CMD_PTR(NULL)
+
+#define LOAD_YAY0_TEXTURE(seg, romStart, romEnd) \
+    LOAD_MIO0_TEXTURE(seg, romStart, romEnd)
 #else
 #define LOAD_MIO0_TEXTURE(seg, romStart, romEnd) \
     CMD_BBH(0x1A, 0x0C, seg), \
     CMD_PTR(romStart), \
     CMD_PTR(romEnd)
+
+#define LOAD_YAY0_TEXTURE(seg, romStart, romEnd) \
+    LOAD_MIO0_TEXTURE(seg, romStart, romEnd)
 #endif
 
 #define INIT_LEVEL() \
@@ -314,5 +355,60 @@
 
 #define GET_OR_SET(op, var) \
     CMD_BBBB(0x3C, 0x04, op, var)
+
+// CoopDX extensions: additional level script commands (0x3D - 0x44)
+#define ADV_DEMO() \
+    CMD_BBH(0x3D, 0x04, 0x0000)
+
+#define CLEAR_DEMO_PTR() \
+    CMD_BBH(0x3E, 0x04, 0x0000)
+
+#define OBJECT_WITH_ACTS_EXT(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh, acts) \
+    CMD_BBBB(0x3F, 0x18, acts, model), \
+    CMD_HHHHHH(posX, posY, posZ, angleX, angleY, angleZ), \
+    CMD_W(behParam), \
+    CMD_PTR(beh)
+
+#define OBJECT_WITH_ACTS_EXT2(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh, acts) \
+    CMD_BBBB(0x40, 0x1C, acts, 0), \
+    CMD_HHHHHH(posX, posY, posZ, angleX, angleY, angleZ), \
+    CMD_W(behParam), \
+    CMD_PTR(model), \
+    CMD_PTR(beh)
+
+#define OBJECT_EXT(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh) \
+    OBJECT_WITH_ACTS_EXT(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh, 0x1F)
+
+#define OBJECT_EXT2(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh) \
+    OBJECT_WITH_ACTS_EXT2(model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh, 0x1F)
+
+#define LOAD_MODEL_FROM_GEO_EXT(model, geo) \
+    CMD_BBH(0x41, 0x08, model), \
+    CMD_PTR(geo)
+
+#define JUMP_AREA_EXT(op, arg, target) \
+    CMD_BBBB(0x42, 0x0C, op, 0x00), \
+    CMD_W(arg), \
+    CMD_PTR(target)
+
+// See OBJECT_EXT_LUA flags at the top of this file.
+#define OBJECT_EXT_LUA_PARAMS(flags, model, posX, posY, posZ, angleX, angleY, angleZ, behParam, beh, acts) \
+    CMD_BBH(0x43, 0x2C, flags), \
+    CMD_PTR(model), \
+    CMD_PTR(posX), \
+    CMD_PTR(posY), \
+    CMD_PTR(posZ), \
+    CMD_PTR(angleX), \
+    CMD_PTR(angleY), \
+    CMD_PTR(angleZ), \
+    CMD_PTR(behParam), \
+    CMD_PTR(beh), \
+    CMD_PTR(acts)
+
+// See SHOW_DIALOG_EXT flags at the top of this file.
+#define SHOW_DIALOG_EXT(flags, index, dialogId) \
+    CMD_BBBB(0x44, 0x0C, flags, 0x00), \
+    CMD_PTR(index), \
+    CMD_PTR(dialogId)
 
 #endif // LEVEL_COMMANDS_H

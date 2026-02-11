@@ -28,6 +28,9 @@
 #include "seq_ids.h"
 #include "sound_init.h"
 #include "rumble_init.h"
+#ifndef TARGET_N64
+#include "pc/djui/djui.h"
+#endif
 
 static struct Object *sIntroWarpPipeObj;
 static struct Object *sEndPeachObj;
@@ -254,7 +257,16 @@ void handle_save_menu(struct MarioState *m) {
             save_file_do_save(gCurrSaveFileNum - 1);
 
             if (gSaveOptSelectIndex == MENU_OPT_SAVE_AND_QUIT) {
+#ifndef TARGET_N64
+                disable_time_stop();
+                gMenuOptSelectIndex = MENU_OPT_NONE;
+                gSaveOptSelectIndex = MENU_OPT_NONE;
+                djui_open_main_menu();
+                set_mario_action(m, ACT_IDLE, 0);
+                return;
+#else
                 fade_into_special_warp(-2, 0); // reset game
+#endif
             }
         }
 

@@ -5,10 +5,37 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+// The devkitPPC/libstdc++ headers do not expose LLONG_MAX through <limits.h>
+// in C++ mode, but Lua's luaconf.h uses it as a feature probe. Ensure it's
+// defined before including Lua headers.
+#include <climits>
+#endif
+
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+
+#ifdef __cplusplus
 extern "C" {
 #endif
 
-struct lua_State;
+// DynOS/Lua compatibility surface (subset of Co-op DX smlua_utils).
+// These are used by the DynOS gfx parser on ports.
+#ifndef LOT_GFX
+#define LOT_GFX 100
+#endif
+#ifndef LOT_VTX
+#define LOT_VTX 101
+#endif
+#ifndef LVT_TEXTURE_P
+#define LVT_TEXTURE_P 200
+#endif
+
+extern bool gSmLuaConvertSuccess;
+int64_t smlua_to_integer(lua_State *L, uint32_t index);
+const char *smlua_to_string(lua_State *L, uint32_t index);
+void *smlua_to_cobject(lua_State *L, uint32_t index, uint16_t expected_type);
+void *smlua_to_cpointer(lua_State *L, uint32_t index, uint16_t expected_type);
 
 struct SmluaLightingState {
     float lighting_dir[3];

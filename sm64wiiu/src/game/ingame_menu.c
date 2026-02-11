@@ -23,6 +23,8 @@
 #include "text_strings.h"
 #include "types.h"
 #ifndef TARGET_N64
+#include "pc/djui/djui.h"
+#include "pc/djui/djui_panel_pause.h"
 #include "pc/lua/smlua_hooks.h"
 #endif
 
@@ -2783,9 +2785,7 @@ s16 render_pause_courses_and_castle(void) {
             render_pause_my_score_coins();
             render_pause_red_coins();
 
-            if (gMarioStates[0].action & ACT_FLAG_PAUSE_EXIT) {
-                render_pause_course_options(99, 93, &gDialogLineNum, 15);
-            }
+            render_pause_course_options(99, 93, &gDialogLineNum, 15);
 
 #ifdef VERSION_EU
             if (gPlayer3Controller->buttonPressed & (A_BUTTON | Z_TRIG | START_BUTTON))
@@ -2801,7 +2801,13 @@ s16 render_pause_courses_and_castle(void) {
 
                 if (gDialogLineNum == MENU_OPT_EXIT_COURSE
                     || gDialogLineNum == MENU_OPT_RETURN_TO_MAIN_MENU) {
-                    index = gDialogLineNum;
+                    if (gDialogLineNum == MENU_OPT_RETURN_TO_MAIN_MENU) {
+                        index = gDialogLineNum;
+                    } else if (gMarioStates[0].action & ACT_FLAG_PAUSE_EXIT) {
+                        index = gDialogLineNum;
+                    } else {
+                        index = MENU_OPT_DEFAULT;
+                    }
                 } else { // MENU_OPT_CONTINUE or MENU_OPT_CAMERA_ANGLE_R
                     index = MENU_OPT_DEFAULT;
                 }
@@ -2835,6 +2841,16 @@ s16 render_pause_courses_and_castle(void) {
     if (gDialogTextAlpha < 250) {
         gDialogTextAlpha += 25;
     }
+
+#ifndef TARGET_N64
+    if (gDjuiPanelPauseCreated && !gDjuiInPlayerMenu) {
+        shade_screen();
+    }
+
+    if (gPlayer1Controller != NULL && (gPlayer1Controller->buttonPressed & R_TRIG)) {
+        djui_panel_pause_create(NULL);
+    }
+#endif
 
     return MENU_OPT_NONE;
 }

@@ -231,6 +231,7 @@ extern const BehaviorScript bhvJrbSlidingBox[];
 extern const BehaviorScript bhvShipPart3[];
 extern const BehaviorScript bhvInSunkenShip3[];
 extern const BehaviorScript bhvSunkenShipPart[];
+extern const BehaviorScript bhvSunkenShipSetRotation[];
 extern const BehaviorScript bhvUnused243C[];
 extern const BehaviorScript bhvSunkenShipPart2[];
 extern const BehaviorScript bhvInSunkenShip[];
@@ -542,5 +543,7 @@ extern const BehaviorScript bhvEndBirds1[];
 extern const BehaviorScript bhvEndBirds2[];
 extern const BehaviorScript bhvIntroScene[];
 extern const BehaviorScript bhvUnusedFakeStar[];
+extern const BehaviorScript RM_Scroll_Texture[];
+extern const BehaviorScript editor_Scroll_Texture[];
 
 #endif // BEHAVIOR_DATA_H

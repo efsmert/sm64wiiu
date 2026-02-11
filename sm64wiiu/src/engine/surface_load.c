@@ -521,10 +521,13 @@ static void load_environmental_regions(s16 **data) {
     s32 numRegions;
     s32 i;
 
+    gEnvironmentRegionsLength = 0;
     gEnvironmentRegions = *data;
     numRegions = *(*data)++;
+    gEnvironmentRegionsLength++;
 
     if (numRegions > 20) {
+        numRegions = 20;
     }
 
     for (i = 0; i < numRegions; i++) {
@@ -540,6 +543,7 @@ static void load_environmental_regions(s16 **data) {
 
         height = *(*data)++;
 
+        gEnvironmentRegionsLength += 6;
         gEnvironmentLevels[i] = height;
     }
 }
@@ -558,6 +562,9 @@ void alloc_surface_pools(void) {
     sSurfaceNodePool = main_pool_alloc(7000 * sizeof(struct SurfaceNode), MEMORY_POOL_LEFT);
     sSurfacePool = main_pool_alloc(sSurfacePoolSize * sizeof(struct Surface), MEMORY_POOL_LEFT);
 #endif
+
+    gEnvironmentRegions = NULL;
+    gEnvironmentRegionsLength = 0;
 
     gCCMEnteredSlide = 0;
     reset_red_coins_collected();

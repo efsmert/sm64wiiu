@@ -148,6 +148,8 @@ extern bool configDisablePopups;
 extern char configLanguage[MAX_CONFIG_STRING];
 extern bool configForce4By3;
 extern bool configDynosLocalPlayerModelOnly;
+extern bool configSkipPackGeneration;
+extern bool configCompressOnStartup;
 extern unsigned int configPvpType;
 extern char configPassword[MAX_CONFIG_STRING];
 extern unsigned int configRulesVersion;

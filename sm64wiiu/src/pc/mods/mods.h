@@ -47,4 +47,8 @@ u16 mods_get_character_select_count(void);
 bool mods_get_all_pausable(void);
 bool mods_generate_remote_base_path(void);
 
+// Activates DynOSBIN assets (.lvl/.bin/.col/.tex/.bhv) for currently enabled mods.
+// Called by the Wii U Lua runtime before mod scripts execute.
+void mods_activate_dynos_assets(void);
+
 #endif

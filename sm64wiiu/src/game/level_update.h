@@ -29,6 +29,12 @@
 
 #define WARP_OP_TRIGGERS_LEVEL_SELECT 0x10
 
+// Warp destination types (see level_update.c).
+#define WARP_TYPE_NOT_WARPING 0
+#define WARP_TYPE_CHANGE_LEVEL 1
+#define WARP_TYPE_CHANGE_AREA 2
+#define WARP_TYPE_SAME_AREA 3
+
 #define MARIO_SPAWN_DOOR_WARP             0x01
 #define MARIO_SPAWN_UNKNOWN_02            0x02
 #define MARIO_SPAWN_UNKNOWN_03            0x03
@@ -48,6 +54,11 @@
 #define MARIO_SPAWN_LAUNCH_STAR_COLLECT   0x24
 #define MARIO_SPAWN_LAUNCH_DEATH          0x25
 #define MARIO_SPAWN_UNKNOWN_27            0x27
+
+// CoopDX compatibility aliases.
+#define MARIO_SPAWN_NONE 0x00
+#define MARIO_SPAWN_IDLE MARIO_SPAWN_UNKNOWN_02
+#define MARIO_SPAWN_PIPE MARIO_SPAWN_UNKNOWN_03
 
 
 struct CreditsEntry
@@ -70,6 +81,7 @@ extern u16 D_80339ECA;
 extern s16 sTransitionTimer;
 extern void (*sTransitionUpdate)(s16 *);
 extern u8 unused3[4];
+void set_play_mode(s16 playMode);
 
 struct WarpDest {
     u8 type;

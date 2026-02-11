@@ -7,6 +7,9 @@
 #include "../fs/fs.h"
 #include "../platform.h"
 #include "../configfile.h"
+#include "data/dynos.c.h"
+
+static bool mods_path_has_suffix(const char *path, const char *suffix);
 
 struct Mods gLocalMods;
 struct Mods gRemoteMods;
@@ -340,6 +343,159 @@ static bool mods_path_has_suffix(const char *path, const char *suffix) {
         return false;
     }
     return strcmp(path + path_len - suffix_len, suffix) == 0;
+}
+
+static void mods_copy_basename_without_ext(const char *path, char *out, size_t outSize) {
+    const char *base = path;
+    const char *slash = NULL;
+    const char *dot = NULL;
+    size_t len = 0;
+
+    if (out == NULL || outSize == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (path == NULL) {
+        return;
+    }
+
+    slash = strrchr(path, '/');
+    if (slash != NULL) {
+        base = slash + 1;
+    }
+
+    dot = strrchr(base, '.');
+    len = (dot != NULL && dot > base) ? (size_t)(dot - base) : strlen(base);
+    if (len >= outSize) {
+        len = outSize - 1;
+    }
+
+    memcpy(out, base, len);
+    out[len] = '\0';
+}
+
+static bool mods_resolve_dynos_realpath(const char *vpath, char *out, size_t outSize) {
+    const char *writePath = NULL;
+
+    if (out == NULL || outSize == 0 || vpath == NULL || vpath[0] == '\0') {
+        return false;
+    }
+
+    // Prefer SD/write path so mods live under `sdcard://wiiu/apps/sm64wiiu/`.
+    writePath = fs_get_write_path(vpath);
+    if (writePath != NULL && fs_sys_file_exists(writePath)) {
+        snprintf(out, outSize, "%s", writePath);
+        return true;
+    }
+
+#ifdef TARGET_WII_U
+    // Fallback to WUHB-bundled assets for built-in mods.
+    if (snprintf(out, outSize, "/vol/content/%s", vpath) > 0 && fs_sys_file_exists(out)) {
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+static bool mods_script_path_to_root_dir(const char *script_path, char *out, size_t outSize) {
+    const char *slash = NULL;
+    size_t len = 0;
+
+    if (out == NULL || outSize == 0 || script_path == NULL) {
+        return false;
+    }
+    out[0] = '\0';
+
+    slash = strrchr(script_path, '/');
+    if (slash == NULL) {
+        return false;
+    }
+    len = (size_t)(slash - script_path);
+    if (len + 1 > outSize) {
+        return false;
+    }
+    memcpy(out, script_path, len);
+    out[len] = '\0';
+    return true;
+}
+
+void mods_activate_dynos_assets(void) {
+    // Clear any previously loaded mod resources.
+    dynos_mod_shutdown();
+    dynos_update_gfx();
+
+    if (gActiveMods.entryCount == 0) {
+        return;
+    }
+
+    // Ensure DynOS pack system is initialized (packs are optional; custom mod assets still use core loaders).
+    dynos_gfx_init();
+
+    for (u16 i = 0; i < gActiveMods.entryCount; i++) {
+        struct Mod *mod = gActiveMods.entries[i];
+        char rootDir[SYS_MAX_PATH] = { 0 };
+        fs_pathlist_t files;
+        s32 modFileIndex = 0;
+
+        if (mod == NULL || !mod->enabled) {
+            continue;
+        }
+
+        // Root directory is the script's folder.
+        if (!mods_script_path_to_root_dir(mod->relativePath, rootDir, sizeof(rootDir))) {
+            continue;
+        }
+
+        files = fs_enumerate(rootDir, true);
+        if (files.paths == NULL || files.numpaths <= 0) {
+            fs_pathlist_free(&files);
+            continue;
+        }
+
+        for (int p = 0; p < files.numpaths; p++) {
+            const char *vpath = files.paths[p];
+            char realPath[SYS_MAX_PATH] = { 0 };
+            char name[64] = { 0 };
+
+            if (vpath == NULL) {
+                continue;
+            }
+
+            if (!mods_path_has_suffix(vpath, ".lvl") &&
+                !mods_path_has_suffix(vpath, ".bin") &&
+                !mods_path_has_suffix(vpath, ".col") &&
+                !mods_path_has_suffix(vpath, ".tex") &&
+                !mods_path_has_suffix(vpath, ".bhv")) {
+                continue;
+            }
+
+            if (!mods_resolve_dynos_realpath(vpath, realPath, sizeof(realPath))) {
+                continue;
+            }
+
+            mods_copy_basename_without_ext(vpath, name, sizeof(name));
+            if (name[0] == '\0') {
+                continue;
+            }
+
+            if (mods_path_has_suffix(vpath, ".lvl")) {
+                dynos_add_level(mod->index, realPath, name);
+            } else if (mods_path_has_suffix(vpath, ".bin")) {
+                dynos_add_actor_custom(mod->index, modFileIndex, realPath, name);
+            } else if (mods_path_has_suffix(vpath, ".col")) {
+                dynos_add_collision(realPath, name);
+            } else if (mods_path_has_suffix(vpath, ".tex")) {
+                dynos_add_texture(realPath, name);
+            } else if (mods_path_has_suffix(vpath, ".bhv")) {
+                dynos_add_behavior(mod->index, realPath, name);
+            }
+
+            modFileIndex++;
+        }
+
+        fs_pathlist_free(&files);
+    }
 }
 
 // Returns true if `mods` virtual path should be treated as a root Lua script.

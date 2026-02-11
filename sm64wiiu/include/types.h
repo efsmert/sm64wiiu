@@ -114,6 +114,9 @@ struct GraphNode
     /*0x14*/ u8 extraFlags;
     /*0x15*/ u8 hookProcess;
     /*0x16*/ s16 padding;
+
+    // DynOS / CoopDX compatibility: original geo layout reference (used for actor overrides).
+    /*0x18*/ const void* georef;
 };
 
 struct AnimInfo

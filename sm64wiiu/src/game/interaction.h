@@ -14,6 +14,7 @@
 #define INTERACT_POLE           /* 0x00000040 */ (1 <<  6)
 #define INTERACT_KOOPA          /* 0x00000080 */ (1 <<  7)
 #define INTERACT_UNKNOWN_08     /* 0x00000100 */ (1 <<  8)
+#define INTERACT_SPINY_WALKING  INTERACT_UNKNOWN_08
 #define INTERACT_BREAKABLE      /* 0x00000200 */ (1 <<  9)
 #define INTERACT_STRONG_WIND    /* 0x00000400 */ (1 << 10)
 #define INTERACT_WARP_DOOR      /* 0x00000800 */ (1 << 11)
@@ -37,6 +38,9 @@
 #define INTERACT_SHOCK          /* 0x20000000 */ (1 << 29)
 #define INTERACT_IGLOO_BARRIER  /* 0x40000000 */ (1 << 30)
 #define INTERACT_UNKNOWN_31     /* 0x80000000 */ (1 << 31)
+
+// Co-op DX compatibility: uses INTERACT_PLAYER for the (1<<31) interaction bit.
+#define INTERACT_PLAYER INTERACT_UNKNOWN_31
 
 
 // INTERACT_WARP

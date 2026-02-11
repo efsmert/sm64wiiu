@@ -54,7 +54,8 @@
 #define /*0x090*/ oDialogResponse             OBJECT_FIELD_S16(0x02, 0)
 #define /*0x092*/ oDialogState                OBJECT_FIELD_S16(0x02, 1)
 #define /*0x094*/ oUnk94                      OBJECT_FIELD_U32(0x03)
-// 0x98 unused/removed.
+// 0x98 unused/removed in vanilla; Co-op DX uses this slot for object sync metadata.
+#define /*0x098*/ oSyncID                     OBJECT_FIELD_U32(0x04)
 #define /*0x09C*/ oIntangibleTimer            OBJECT_FIELD_S32(0x05)
 #define /*0x0A0*/ O_POS_INDEX                 0x06
 #define /*0x0A0*/ oPosX                       OBJECT_FIELD_F32(O_POS_INDEX + 0)
@@ -66,7 +67,9 @@
 #define /*0x0B8*/ oForwardVel                 OBJECT_FIELD_F32(0x0C)
 #define /*0x0B8*/ oForwardVelS32              OBJECT_FIELD_S32(0x0C)
 #define /*0x0BC*/ oLeftVel                    OBJECT_FIELD_F32(0x0D)
+#define /*0x0BC*/ oUnkBC                      OBJECT_FIELD_F32(0x0D)
 #define /*0x0C0*/ oUpVel                      OBJECT_FIELD_F32(0x0E)
+#define /*0x0C0*/ oUnkC0                      OBJECT_FIELD_F32(0x0E)
 #define /*0x0C4*/ O_MOVE_ANGLE_INDEX          0x0F
 #define /*0x0C4*/ O_MOVE_ANGLE_PITCH_INDEX    (O_MOVE_ANGLE_INDEX + 0)
 #define /*0x0C4*/ O_MOVE_ANGLE_YAW_INDEX      (O_MOVE_ANGLE_INDEX + 1)
@@ -125,7 +128,8 @@
 #define /*0x198*/ oNumLootCoins               OBJECT_FIELD_S32(0x44)
 #define /*0x19C*/ oDrawingDistance            OBJECT_FIELD_F32(0x45)
 #define /*0x1A0*/ oRoom                       OBJECT_FIELD_S32(0x46)
-// 0x1A4 is unused, possibly related to 0x1A8 in removed macro purposes.
+// 0x1A4 is unused in vanilla; Co-op DX uses this slot for network sync flags.
+#define /*0x1A4*/ oSyncDeath                  OBJECT_FIELD_U32(0x47)
 #define /*0x1A8*/ oUnk1A8                     OBJECT_FIELD_U32(0x48)
 // 0x1AC-0x1B2 (0x48-0x4A) are object specific and defined below the common fields.
 #define /*0x1B4*/ oWallAngle                  OBJECT_FIELD_S32(0x4B)
@@ -164,9 +168,11 @@
 #define /*0x110*/ oMarioLongJumpIsSlow   OBJECT_FIELD_S32(0x22)
 #define /*0x110*/ oMarioSteepJumpYaw     OBJECT_FIELD_S32(0x22)
 #define /*0x110*/ oMarioWalkingPitch     OBJECT_FIELD_S32(0x22)
+#define /*0x110*/ oMarioJumboStarCutscenePosZ OBJECT_FIELD_F32(0x22)
 
 /* 1-Up Hidden */
 #define /*0x0F4*/ o1UpHiddenUnkF4 OBJECT_FIELD_S32(0x1B)
+#define /*0x0F8*/ o1UpForceSpawn  OBJECT_FIELD_S32(0x1C)
 
 /* Activated Back and Forth Platform */
 #define /*0x0F4*/ oActivatedBackAndForthPlatformMaxOffset    OBJECT_FIELD_F32(0x1B)
@@ -275,23 +281,34 @@
 
 /* Bowser */
 #define /*0x088*/ oBowserCamAct          OBJECT_FIELD_S32(0x00)
+#define /*0x088*/ oBowserUnk88           OBJECT_FIELD_S32(0x00)
 #define /*0x0F4*/ oBowserStatus          OBJECT_FIELD_S32(0x1B)
+#define /*0x0F4*/ oBowserUnkF4           OBJECT_FIELD_S32(0x1B)
 #define /*0x0F8*/ oBowserTimer           OBJECT_FIELD_S32(0x1C)
+#define /*0x0F8*/ oBowserUnkF8           OBJECT_FIELD_S32(0x1C)
 #define /*0x0FC*/ oBowserDistToCentre    OBJECT_FIELD_F32(0x1D)
 #define /*0x106*/ oBowserBitsJustJump    OBJECT_FIELD_S16(0x1F, 1)
+#define /*0x106*/ oBowserUnk106          OBJECT_FIELD_S16(0x1F, 1)
 #define /*0x108*/ oBowserRandSplitFloor  OBJECT_FIELD_S16(0x20, 0)
+#define /*0x108*/ oBowserUnk108          OBJECT_FIELD_S16(0x20, 0)
 #define /*0x10A*/ oBowserHeldAnglePitch  OBJECT_FIELD_S16(0x20, 1)
 #define /*0x10D*/ oBowserHeldAngleVelYaw OBJECT_FIELD_S16(0x21, 0)
 #define /*0x10E*/ oBowserGrabbedStatus   OBJECT_FIELD_S16(0x21, 1)
+#define /*0x10E*/ oBowserUnk10E          OBJECT_FIELD_S16(0x21, 1)
 #define /*0x110*/ oBowserIsReacting      OBJECT_FIELD_S16(0x22, 0)
+#define /*0x110*/ oBowserUnk110          OBJECT_FIELD_S16(0x22, 0)
 #define /*0x112*/ oBowserAngleToCentre   OBJECT_FIELD_S16(0x22, 1)
 #define /*0x1AC*/ oBowserTargetOpacity   OBJECT_FIELD_S16(0x49, 0)
+#define /*0x1AC*/ oBowserUnk1AC          OBJECT_FIELD_S16(0x49, 0)
 #define /*0x1AE*/ oBowserEyesTimer       OBJECT_FIELD_S16(0x49, 1)
+#define /*0x1AE*/ oBowserUnk1AE          OBJECT_FIELD_S16(0x49, 1)
 #define /*0x1B0*/ oBowserEyesShut        OBJECT_FIELD_S16(0x4A, 0)
 #define /*0x1B2*/ oBowserRainbowLight    OBJECT_FIELD_S16(0x4A, 1)
+#define /*0x1B2*/ oBowserUnk1B2          OBJECT_FIELD_S16(0x4A, 1)
 
 /* Bowser Shockwave */
 #define /*0x0F4*/ oBowserShockWaveScale OBJECT_FIELD_F32(0x1B)
+#define /*0x0F4*/ oBowserShockWaveUnkF4 OBJECT_FIELD_F32(0x1B)
 
 /* Black Smoke Bowser */
 #define /*0x0F4*/ oBlackSmokeBowserUnkF4 OBJECT_FIELD_F32(0x1B)
@@ -333,6 +350,7 @@
 #define /*0x100*/ oBullyPrevZ                     OBJECT_FIELD_F32(0x1E)
 #define /*0x104*/ oBullyKBTimerAndMinionKOCounter OBJECT_FIELD_S32(0x1F)
 #define /*0x108*/ oBullyMarioCollisionAngle       OBJECT_FIELD_S32(0x20)
+#define /*0x10C*/ oBullyLastNetworkPlayerIndex    OBJECT_FIELD_S16(0x21, 0)
 
 /* Butterfly */
 #define /*0x0F4*/ oButterflyYPhase OBJECT_FIELD_S32(0x1B)
@@ -352,6 +370,7 @@
 #define /*0x0F4*/ oCannonUnkF4  OBJECT_FIELD_S32(0x1B)
 #define /*0x0F8*/ oCannonUnkF8  OBJECT_FIELD_S32(0x1C)
 #define /*0x10C*/ oCannonUnk10C OBJECT_FIELD_S32(0x21)
+#define /*0x110*/ oCannonPlayerIndex OBJECT_FIELD_S32(0x22)
 
 /* Cap */
 #define /*0x0F4*/ oCapUnkF4 OBJECT_FIELD_S32(0x1B)
@@ -456,6 +475,7 @@
 #define /*0x0F4*/ oExclamationBoxUnkF4 OBJECT_FIELD_F32(0x1B) // scale?
 #define /*0x0F8*/ oExclamationBoxUnkF8 OBJECT_FIELD_F32(0x1C) // scale?
 #define /*0x0FC*/ oExclamationBoxUnkFC OBJECT_FIELD_S32(0x1D) // angle?
+#define /*0x100*/ oExclamationBoxForce OBJECT_FIELD_S32(0x49) // angle?
 
 /* Eyerok Boss */
 #define /*0x0F8*/ oEyerokBossNumHands   OBJECT_FIELD_S32(0x1C)
@@ -472,12 +492,14 @@
 #define /*0x0F8*/ oEyerokReceivedAttack  OBJECT_FIELD_S32(0x1C)
 #define /*0x0FC*/ oEyerokHandUnkFC       OBJECT_FIELD_S32(0x1D)
 #define /*0x100*/ oEyerokHandUnk100      OBJECT_FIELD_S32(0x1E)
+#define /*0x100*/ oEyerokHandDead        OBJECT_FIELD_S32(0x1F)
 
 /* Falling Pillar */
 #define /*0x0F4*/ oFallingPillarPitchAcceleration OBJECT_FIELD_F32(0x1B)
 
 /* Fire Spitter */
 #define /*0x0F4*/ oFireSpitterScaleVel OBJECT_FIELD_F32(0x1B)
+#define /*0x0F8*/ oFireSpitterLastWaterY OBJECT_FIELD_F32(0x1C)
 
 /* Blue Fish */
 #define /*0x0F4*/ oBlueFishRandomVel   OBJECT_FIELD_F32(0x1B)
@@ -498,6 +520,7 @@
 #define /*0x0F4*/ oFlameScale            OBJECT_FIELD_F32(0x1B)
 #define /*0x0F8*/ oFlameSpeedTimerOffset OBJECT_FIELD_S32(0x1C)
 #define /*0x0FC*/ oFlameUnusedRand       OBJECT_FIELD_F32(0x1D)
+#define /*0x0FC*/ oFlameUnkFC            OBJECT_FIELD_F32(0x1D)
 #define /*0x100*/ oFlameBowser           OBJECT_FIELD_OBJ(0x1E)
 
 /* Blue Flame */
@@ -556,6 +579,7 @@
 #define /*0x104*/ oGoombaBlinkTimer          OBJECT_FIELD_S32(0x1F)
 #define /*0x108*/ oGoombaTurningAwayFromWall OBJECT_FIELD_S32(0x20)
 #define /*0x10C*/ oGoombaRelativeSpeed       OBJECT_FIELD_F32(0x21)
+#define /*0x110*/ oGoombaJumpCooldown        OBJECT_FIELD_U32(0x22)
 
 /* Haunted Chair */
 #define /*0x0F4*/ oHauntedChairUnkF4  OBJECT_FIELD_S32(0x1B)
@@ -628,6 +652,7 @@
 #define /*0x0FC*/ oKoopaRaceEndpointRaceStatus    OBJECT_FIELD_S32(0x1D)
 #define /*0x100*/ oKoopaRaceEndpointDialog        OBJECT_FIELD_S32(0x1E)
 #define /*0x104*/ oKoopaRaceEndpointRaceEnded     OBJECT_FIELD_S32(0x1F)
+#define /*0x100*/ oKoopaRaceEndpointUnk100        OBJECT_FIELD_S32(0x1E)
 
 /* Koopa Shell Flame */
 #define /*0x0F4*/ oKoopaShellFlameUnkF4 OBJECT_FIELD_F32(0x1B)
@@ -668,6 +693,7 @@
 #define /*0x104*/ oMenuButtonOrigPosZ    OBJECT_FIELD_F32(0x1F)
 #define /*0x108*/ oMenuButtonScale       OBJECT_FIELD_F32(0x20)
 #define /*0x10C*/ oMenuButtonActionPhase OBJECT_FIELD_S32(0x21)
+#define /*0x110*/ oMenuButtonIsCustom    OBJECT_FIELD_S32(0x22)
 
 /* Manta Ray */
 #define /*0x0F4*/ oMantaTargetPitch OBJECT_FIELD_S32(0x1B)
@@ -694,6 +720,9 @@
 /* Monty Mole */
 #define /*0x0F4*/ oMontyMoleCurrentHole           OBJECT_FIELD_OBJ(0x1B)
 #define /*0x0F8*/ oMontyMoleHeightRelativeToFloor OBJECT_FIELD_F32(0x1C)
+#define /*0x0FC*/ oMontyMoleHoleX                 OBJECT_FIELD_F32(0x1D)
+#define /*0x100*/ oMontyMoleHoleY                 OBJECT_FIELD_F32(0x1E)
+#define /*0x104*/ oMontyMoleHoleZ                 OBJECT_FIELD_F32(0x1F)
 
 /* Monty Mole Hole */
 #define /*0x0F4*/ oMontyMoleHoleCooldown OBJECT_FIELD_S32(0x1B)
@@ -778,6 +807,9 @@
 #define /*0x0FC*/ oBitsPlatformTimer    OBJECT_FIELD_S32(0x1D)
 
 /* WF Platform */
+#define /*0x0F4*/ oPlatformTimer  OBJECT_FIELD_S32(0x1B)
+#define /*0x0F8*/ oPlatformUnkF8  OBJECT_FIELD_OBJ(0x1C)
+#define /*0x0FC*/ oPlatformUnkFC  OBJECT_FIELD_S32(0x1D)
 #define /*0x10C*/ oPlatformUnk10C OBJECT_FIELD_F32(0x21)
 #define /*0x110*/ oPlatformUnk110 OBJECT_FIELD_F32(0x22)
 
@@ -861,6 +893,7 @@
 #define /*0x0F8*/ oSkeeterUnkF8       OBJECT_FIELD_S32(0x1C)
 #define /*0x0FC*/ oSkeeterUnkFC       OBJECT_FIELD_F32(0x1D)
 #define /*0x100*/ oSkeeterWaitTime    OBJECT_FIELD_S32(0x1E)
+#define /*0x0F8*/ oSkeeterLastWaterY  OBJECT_FIELD_F32(0x1F)
 #define /*0x1AC*/ oSkeeterUnk1AC      OBJECT_FIELD_S16(0x49, 0)
 
 /* Jrb Sliding Box */
@@ -882,6 +915,7 @@
 
 /* Snowman's Head */
 #define /*0x0F4*/ oSnowmansHeadDialogActive OBJECT_FIELD_S32(0x1B)
+#define /*0x0F4*/ oSnowmansHeadUnkF4 OBJECT_FIELD_S32(0x1B)
 
 /* Snowman Wind Blowing */
 #define /*0x0F4*/ oSLSnowmanWindOriginalYaw OBJECT_FIELD_S32(0x1B)
@@ -917,10 +951,12 @@
 /* Star Spawn */
 #define /*0x0F4*/ oStarSpawnDisFromHome OBJECT_FIELD_F32(0x1B)
 #define /*0x0FC*/ oStarSpawnUnkFC       OBJECT_FIELD_F32(0x1D)
+#define /*0x0FC*/ oStarSpawnExtCutsceneFlags OBJECT_FIELD_S16(0x1E, 0)
 
 /* Hidden Star */
 // Secrets/Red Coins
 #define /*0x0F4*/ oHiddenStarTriggerCounter OBJECT_FIELD_S32(0x1B)
+#define /*0x0F8*/ oHiddenStarLastInteractedObject OBJECT_FIELD_VPTR(0x1D)
 
 // Overall very difficult to determine usage, mostly stubbed code.
 /* Sparkle Spawn Star */
@@ -1032,6 +1068,11 @@
 #define /*0x0F4*/ oTreasureChestUnkF4 OBJECT_FIELD_S32(0x1B)
 #define /*0x0F8*/ oTreasureChestUnkF8 OBJECT_FIELD_S32(0x1C)
 #define /*0x0FC*/ oTreasureChestUnkFC OBJECT_FIELD_S32(0x1D)
+#define /*0x0F4*/ oTreasureChestCurrentAnswer              OBJECT_FIELD_S32(0x1B)
+#define /*0x0F8*/ oTreasureChestIsLastInteractionIncorrect OBJECT_FIELD_S32(0x1C)
+#define /*0x0FC*/ oTreasureChestIsAboveWater               OBJECT_FIELD_S32(0x1D)
+#define /*0x100*/ oTreasureChestSound                      OBJECT_FIELD_S32(0x1E)
+#define /*0x104*/ oTreasureChestLastNetworkPlayerIndex     OBJECT_FIELD_S16(0x21, 0)
 
 /* Tree Snow Or Leaf */
 #define /*0x0F4*/ oTreeSnowOrLeafUnkF4 OBJECT_FIELD_S32(0x1B)
@@ -1123,6 +1164,13 @@
 /* Whirlpool */
 #define /*0x0F4*/ oWhirlpoolInitFacePitch OBJECT_FIELD_S32(0x1B)
 #define /*0x0F8*/ oWhirlpoolInitFaceRoll  OBJECT_FIELD_S32(0x1C)
+#define /*0x0FC*/ oWhirlpoolTimeout       OBJECT_FIELD_S32(0x1D)
+
+/* Breakable Wall */
+#define /*0x104*/ oBreakableWallForce OBJECT_FIELD_S32(0x1F)
+
+/* Light */
+#define /*0x0F4*/ oLightID OBJECT_FIELD_S32(0x1B)
 
 /* White Puff Explode */
 #define /*0x0F4*/ oWhitePuffUnkF4 OBJECT_FIELD_F32(0x1B)

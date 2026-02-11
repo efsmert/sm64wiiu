@@ -405,6 +405,30 @@
     CMD_PTR(displayList)
 
 /**
+ * 0x1D: Create scale scene graph node with optional display list
+ *   0x01: u8 params
+ *     0b1000_0000: if set, enable displayList field and drawingLayer
+ *     0b0100_0000: if set, enable scale XYZ
+ *     0b0000_1111: drawingLayer
+ *   0x02-0x03: unused
+ *   0x04: u32 scale X (0x10000 = 1.0)
+ *   0x08: u32 scale Y (0x10000 = 1.0)
+ *   0x0C: u32 scale Z (0x10000 = 1.0)
+ *   0x10: [u32 displayList: if MSbit bit of params is set, display list segment address]
+ */
+#define GEO_SCALE_XYZ(layer, sx, sy, sz) \
+    CMD_BBH(0x1D, (layer | 0x40), 0x0000), \
+    CMD_W(sx), \
+    CMD_W(sy), \
+    CMD_W(sz)
+#define GEO_SCALE_XYZ_WITH_DL(layer, sx, sy, sz, displayList) \
+    CMD_BBH(0x1D, (layer | 0xC0), 0x0000), \
+    CMD_W(sx), \
+    CMD_W(sy), \
+    CMD_W(sz), \
+    CMD_PTR(displayList)
+
+/**
  * 0x1E: No operation
  */
 #define GEO_NOP_1E() \
@@ -428,5 +452,40 @@
  */
 #define GEO_CULLING_RADIUS(cullingRadius) \
     CMD_BBH(0x20, 0x00, cullingRadius)
+
+/**
+ * 0x21: Custom backgrounds (skyboxes)
+ */
+#define GEO_BACKGROUND_EXT(background, function) \
+    CMD_BBH(0x21, 0x00, 0x00), \
+    CMD_PTR(background), \
+    CMD_PTR(function)
+
+/**
+ * 0x22: Create switch-case scene graph node with a custom Lua callback
+ */
+#define GEO_SWITCH_CASE_EXT(count, luaTokenIndex) \
+    CMD_BBH(0x22, 0x00, count), \
+    CMD_W(luaTokenIndex)
+
+/**
+ * 0x23: Create dynamically generated displaylist scene graph node with a custom Lua callback
+ */
+#define GEO_ASM_EXT(param, luaTokenIndex) \
+    CMD_BBH(0x23, 0x00, param), \
+    CMD_W(luaTokenIndex)
+
+/**
+ * 0x24: Create a scene graph node that is rotated by the object's animation + an initial rotation with optional default scale
+ */
+#define GEO_BONE(layer, tx, ty, tz, rx, ry, rz, displayList) \
+    CMD_BBH(0x24, (0x00 | layer), 0x0000), \
+    CMD_HHHHHH(tx, ty, tz, rx, ry, rz), \
+    CMD_PTR(displayList)
+#define GEO_BONE_WITH_SCALE(layer, tx, ty, tz, rx, ry, rz, sx, sy, sz, displayList) \
+    CMD_BBH(0x24, (0x80 | layer), 0x0000), \
+    CMD_HHHHHH(tx, ty, tz, rx, ry, rz), \
+    CMD_W(sx), CMD_W(sy), CMD_W(sz), \
+    CMD_PTR(displayList)
 
 #endif // GEO_COMMANDS_H

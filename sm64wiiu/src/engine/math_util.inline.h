@@ -10,6 +10,8 @@ MATH_DO_INLINE void *vec3f_copy(Vec3f dest, Vec3f src);
 MATH_DO_INLINE void *vec3f_set(Vec3f dest, f32 x, f32 y, f32 z);
 MATH_DO_INLINE void *vec3f_add(Vec3f dest, Vec3f a);
 MATH_DO_INLINE void *vec3f_sum(Vec3f dest, Vec3f a, Vec3f b);
+MATH_DO_INLINE void *vec3f_dif(Vec3f dest, Vec3f a, Vec3f b);
+MATH_DO_INLINE f32 vec3f_dot(Vec3f a, Vec3f b);
 MATH_DO_INLINE void *vec3s_copy(Vec3s dest, Vec3s src);
 MATH_DO_INLINE void *vec3s_set(Vec3s dest, s16 x, s16 y, s16 z);
 MATH_DO_INLINE void *vec3s_add(Vec3s dest, Vec3s a);
@@ -88,6 +90,19 @@ MATH_DO_INLINE void *vec3f_sum(Vec3f dest, Vec3f a, Vec3f b) {
     dest[1] = a[1] + b[1];
     dest[2] = a[2] + b[2];
     return &dest; //! warning: function returns address of local variable
+}
+
+/// Make 'dest' the difference of vectors a and b.
+MATH_DO_INLINE void *vec3f_dif(Vec3f dest, Vec3f a, Vec3f b) {
+    dest[0] = a[0] - b[0];
+    dest[1] = a[1] - b[1];
+    dest[2] = a[2] - b[2];
+    return &dest; //! warning: function returns address of local variable
+}
+
+/// Dot product of vectors a and b.
+MATH_DO_INLINE f32 vec3f_dot(Vec3f a, Vec3f b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 /// Copy vector src to dest

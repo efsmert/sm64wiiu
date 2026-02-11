@@ -340,7 +340,7 @@ SRC_DIRS := src src/engine src/game src/audio src/menu src/buffers actors levels
 ifeq ($(TARGET_N64),1)
   SRC_DIRS += asm lib
 else
-  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/mods src/pc/djui src/pc/utils
+  SRC_DIRS += src/pc src/pc/gfx src/pc/audio src/pc/controller src/pc/fs src/pc/lua src/pc/lua/utils src/pc/mods src/pc/djui src/pc/utils
 endif
 BIN_DIRS := bin bin/$(VERSION)
 
@@ -550,7 +550,7 @@ ifeq ($(TARGET_LINUX),1)
 endif
 ifeq ($(TARGET_WII_U),1)
   PLATFORM_CFLAGS  := -DTARGET_WII_U -ffunction-sections $(MACHDEP) -ffast-math -D__WIIU__ -D__WUT__ $(INCLUDE)
-  PLATFORM_LDFLAGS := -lm -no-pie -g $(MACHDEP) $(RPXSPECS) $(LIBPATHS)
+  PLATFORM_LDFLAGS := -lm -lz -no-pie -g $(MACHDEP) $(RPXSPECS) $(LIBPATHS)
 endif
 ifeq ($(TARGET_WEB),1)
   PLATFORM_CFLAGS  := -DTARGET_WEB

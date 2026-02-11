@@ -3,6 +3,10 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+#include <climits>
+#endif
+
 #include <lua.h>
 #include <PR/ultratypes.h>
 #include "pc/mods/mod.h"
@@ -72,6 +76,9 @@ enum LuaHookedEventType {
     HOOK_ON_PACKET_BYTESTRING_RECEIVE,
     HOOK_MAX,
 };
+
+// DynOS: register a custom behavior script for Lua mods.
+int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName);
 
 #define ACTION_HOOK_CONTINUE_EXECUTION -1
 #define MAX_HOOKED_MOD_MENU_ELEMENTS 256

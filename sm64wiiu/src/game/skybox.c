@@ -15,6 +15,9 @@
 #define BETTER_SKYBOX_POSITION_PRECISION
 #endif
 
+// DynOS: custom background tile pointers for modded skyboxes (80 = 64 + duplicated columns).
+Texture* gCustomSkyboxPtrList[80] = { 0 };
+
 /**
  * @file skybox.c
  *

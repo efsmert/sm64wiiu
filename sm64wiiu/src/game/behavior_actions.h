@@ -548,6 +548,7 @@ void bhv_intro_peach_loop(void);
 void bhv_end_birds_1_loop(void);
 void bhv_end_birds_2_loop(void);
 void bhv_intro_scene_loop(void);
+void uv_update_scroll(void);
 void bhv_dust_smoke_loop(void);
 void bhv_yoshi_loop(void);
 void bhv_volcano_trap_loop(void);

@@ -3,18 +3,20 @@
 // called when WDW is loaded.
 void bhv_init_changing_water_level_loop(void) {
     if (gCurrentObject->oAction == 0) {
-        if (gEnvironmentRegions != NULL)
+        if (gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 6)
             gCurrentObject->oAction++;
     } else if (gCurrentObject->oTimer < 10)
         *gEnvironmentLevels = gEnvironmentRegions[6];
     else {
-        gEnvironmentRegions[6] = *gEnvironmentLevels + sins(o->oWaterLevelTriggerUnkF4) * 20.0f;
+        if (gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 6) {
+            gEnvironmentRegions[6] = *gEnvironmentLevels + sins(o->oWaterLevelTriggerUnkF4) * 20.0f;
+        }
         gCurrentObject->oWaterLevelTriggerUnkF4 += 0x200;
     }
 }
 
 void bhv_water_level_diamond_loop(void) {
-    if (gEnvironmentRegions != NULL) {
+    if (gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 6) {
         switch (o->oAction) {
             case WATER_LEVEL_DIAMOND_ACT_INIT:
                 o->oFaceAngleYaw = 0;

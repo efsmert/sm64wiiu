@@ -147,6 +147,7 @@ void spawn_mist_particles_variable(s32 count, s32 offsetY, f32 size) {
 #include "behaviors/flame_mario.inc.c"
 #include "behaviors/beta_fish_splash_spawner.inc.c"
 #include "behaviors/spindrift.inc.c"
+#include "behaviors/texscroll.inc.c"
 #include "behaviors/tower_platform.inc.c"
 #include "behaviors/tree_particles.inc.c"
 #include "behaviors/square_platform_cycle.inc.c"

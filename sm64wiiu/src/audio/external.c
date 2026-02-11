@@ -2624,6 +2624,10 @@ void func_80321080(u16 fadeTimer) {
     }
 }
 
+void stop_secondary_music(u16 fadeTimer) {
+    func_80321080(fadeTimer);
+}
+
 /**
  * Called from threads: thread3_main, thread5_game_loop
  */

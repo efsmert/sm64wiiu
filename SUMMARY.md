@@ -93,6 +93,9 @@ make -C sm64wiiu wuhb
   - math helpers/aliases
   - sound bridges (`play_sound`, `set_background_music`, etc.).
 - Added Phase 0/1 parity artifacts generator (`tools/parity/generate_phase0_phase1_matrix.py`) that produces repeatable donor-vs-Wii U Lua/hook/module gap reports (`parity/phase0_matrix.{json,md}`, `parity/phase1_lua_port_queue.md`).
+- Updated multi-file script execution to donor-style top-level lexical order across `.lua` and `.luac` siblings (including `main.lua` in-order), fixing compiled mod startup dependencies such as Flood Expanded `z-api.lua` expecting `main.lua` globals to exist first.
+- Extended Wii U Lua loader to accept common PC-built `.luac` bytecode (endianness + 64-bit `size_t`), enabling compiled-only mods like Flood Expanded to execute on big-endian/32-bit Wii U builds.
+- Added follow-up Flood Lua runtime parity bindings (`get_dialog_id`, `get_ttc_speed_setting`, `set_ttc_speed_setting`, `degrees_to_sm64`, `camera_config_is_free_cam_enabled`, `camera_romhack_set_collisions`, `djui_is_playerlist_open`) plus a safe `gfx_get_from_name` nil-stub for UV-scroll scripts that gracefully disable when display-list introspection is unavailable.
 
 ### K) HUD/dialog/interaction slices
 - Dialog override conversion/render integration for common charset.
@@ -125,7 +128,7 @@ make -C sm64wiiu wuhb
 - Optimized object iteration helpers to avoid repeated full-list scans.
 - Added recursion guard for object-set-model hooks.
 - Switched Lua script loading to VFS-first path (`fs_load_file` + `luaL_loadbufferx`).
-- Hardened VFS Lua load buffers (NUL-termination, size guards, text mode).
+- Hardened VFS Lua load buffers (NUL-termination, size guards, text+bytecode mode).
 - Disabled fast-math for Lua objects (`-fno-fast-math`) to prevent Lua VM corruption.
 - Added deterministic fallback companion loading for known multi-file mods.
 - Added explicit main-script startup markers for runtime diagnosis.
@@ -136,6 +139,7 @@ make -C sm64wiiu wuhb
 ### O) DJUI bootstrap (phase slice 1)
 - Added initial `src/pc/djui` scaffold (`djui.[ch]`) and wired lifecycle hooks into Wii U startup/shutdown (`djui_init`, `djui_init_late`, `djui_shutdown`).
 - Added DJUI render hook call in `end_master_display_list()` so future panel/UI rendering can layer in donor-aligned display-list phase.
+- Added pause-panel host quit flow parity: confirming `STOP HOSTING`/`DISCONNECT` now closes pause panels, runs network shutdown, and returns to DJUI main menu.
 - Added guarded main-menu mode state (`gDjuiInMainMenu`) with temporary debug toggle (`L+R+START`) and first-pass castle-grounds menu-scene control (`djui_update_menu_level`).
 - Suppressed vanilla HUD while DJUI main-menu mode is active to match donor layering expectations.
 - Switched startup entry flow to donor-style `level_main_scripts_entry` boot (castle grounds target) instead of the vanilla intro-script loop.
@@ -164,6 +168,7 @@ make -C sm64wiiu wuhb
 - Reworked `HOST` page structure toward donor `djui_panel_host` semantics by replacing the old two-column placeholder list with a centered panel row stack (`NETWORK SYSTEM`, `PORT`, `PASSWORD`, `SAVE SLOT`, `SETTINGS`, `MODS`, `BACK`, `HOST`) driven by a single top-left row/text anchor model, including local state toggles for network/port/password scaffolding while keeping Wii U flow offline-safe.
 - Replaced ad-hoc page routing with a reusable DJUI page-stack model (`push/pop/reset`) in the Wii U menu shell so nested panels now unwind consistently via stack semantics and root `MAIN` no longer closes on `B`.
 - Added pause-screen parity hook for menu recovery: course pause options now include `MAIN MENU` and selecting it exits pause back into DJUI main menu instead of only resume/exit-course behavior.
+- Routed post-star `SAVE & QUIT` on Wii U to DJUI main-menu flow instead of the vanilla SM64 front-end reset path, matching donor menu ownership expectations for modded sessions.
 - Added dual-path DJUI migration gate and donor-foundation modules: `djui.h` now exposes donor-path control (`gDjuiUseDonorStack`, set/get helpers), legacy menu path remains default, and initial donor-oriented framework files were added (`djui_types`, `djui_base`, `djui_root`, `djui_rect`, `djui_flow_layout`, `djui_text`, `djui_three_panel`, `djui_panel`, `djui_panel_menu`, `djui_donor`) so panel-by-panel donor migration can proceed without destabilizing existing Wii U boot/menu behavior.
 - Added donor-stack interaction slice with controller-edge semantics and panel primitives: strict edge-driven interactable update (`A` click-on-release, `B` back on rising edge), cursor/focus wiring, donor-style button widgets, animated panel-stack transitions, and first donor `panel_main` scaffold (`HOST/JOIN/OPTIONS/QUIT`) backed by new `djui_panel_main` + `djui_button` modules.
 - Hardened active legacy menu input path against repeated face-button activations by deriving menu `pressed` edges from `buttonDown` transitions and persisting per-frame last-button state, so transient `buttonPressed` anomalies on Wii U no longer chain unintended A/B menu actions.
@@ -193,11 +198,12 @@ make -C sm64wiiu wuhb
 - Menu interpolation cadence follow-up: restored donor-like interpolation flag cadence in `pc_main` while gating only matrix interpolation in `gfx_pc` during donor main-menu mode, so panel animations can advance on interpolated subframes without reintroducing matrix-pair flicker in menu transitions.
 - Menu interpolation cadence correction: kept `gRenderingInterpolated` enabled across interpolated subframes (donor-style) and switched DJUI interactable-update gating to run on the final subframe (`delta >= 1.0`), while matrix interpolation remains explicitly gated by `delta < 1.0` and non-menu context to preserve menu flicker mitigation.
 - Renderer log-crash mitigation: disabled high-volume formatted renderer diagnostics in Wii U `gfx_pc.c` (`WHBLogPrintf` hot-path traces compile to no-op) after Cemu traces showed intermittent launch crashes in `_svfprintf_r` during startup render logging.
+- Restored donor-style in-game pause handoff into DJUI: pause now shows the `R Button - Options` hint path and `R` opens the DJUI pause/options panel while paused (including donor-stack render/update visibility for that panel outside main-menu mode).
 
 ## 6) Active Compatibility/Stability Decisions
 - Full Co-op DX networking is not shipped yet on Wii U (runtime-first strategy).
 - Runtime `.m64` injection in `smlua_audio_utils_replace_sequence` remains guarded for stability; sequence aliasing remains enabled.
-- Companion loading prioritizes deterministic fallback lists for known built-ins when applicable.
+- Main-script companion execution now follows donor-style top-level lexical order for `.lua`/`.luac` files; deterministic fallback manifests remain only as a Wii U safety fallback for known built-ins when directory enumeration is unavailable.
 - Donor DJUI now depends on donor GBI-extension opcode handling in the renderer; fallback `gDPLoadTextureBlock` emulation for texture override is considered unstable for Wii U donor atlases.
 - Wii U network stubs intentionally reject `NT_CLIENT`; donor join flows must gate on `network_client_available()` and provide immediate UI error feedback to avoid indefinite “joining” waits.
 - Donor DJUI settings now persist through `sm64config.txt` (including enabled host mods via `enable-mod:` entries); queued mod enables are restored after startup Lua init so boot stays modless, and selected host mods are applied on donor `HOST`/`APPLY`.
@@ -208,6 +214,7 @@ make -C sm64wiiu wuhb
 - GPU cache coherency is manual (`DCFlushRange`, invalidate as needed).
 - ProcUI/WHB lifecycle correctness is mandatory for HOME/background stability.
 - `WHBLogPrint` is non-variadic; use `WHBLogPrintf` for formatted logs.
+- `.luac` bytecode is normally not portable across endianness and `size_t` width; Wii U build patches Lua 5.3.6 undump to accept typical PC chunks (little-endian + 64-bit `size_t`) so compiled-only mods can run.
 - Build success does not guarantee runtime stability; validate startup and gameplay paths.
 - Donor DJUI `gDPSetTextureOverrideDjui` cannot be safely emulated via vanilla `gDPLoadTextureBlock` for large font/logo atlases; use opcode-executed override upload in `gfx_pc.c` or menu rendering can corrupt/hang on frame 1.
 - Donor DJUI language files must be present in WUHB mounted content (`/vol/content/lang/*.ini`); if `content/lang` is stale/missing, UI falls back to raw keys and panel text can look wrong.
@@ -459,6 +466,20 @@ Notes:
   - files: sm64wiiu/src/game/hud.c, sm64wiiu/src/pc/djui/djui.h, sm64wiiu/src/pc/djui/djui.c, sm64wiiu/src/pc/djui/djui_font.c, SUMMARY.md
   - validation: `./build_wiiu_then_wuhb.sh`
   - outcome: build + wuhb succeed; ready for Cemu retest of mod HUD persistence + star-counter `x` glyph.
+
+### 2026-02-11
+- Pause/menu + Flood enablement pass: ensured in-game pause always renders course options (so `MAIN MENU` can be selected even when `ACT_FLAG_PAUSE_EXIT` is not set), routed post-star `SAVE & QUIT` back into DJUI main menu on Wii U, expanded Lua compatibility bindings used by Flood-style menus, fixed multi-file mod script ordering to donor-style lexical `.lua`/`.luac` execution, and patched Lua 5.3.6 undump to accept typical PC `.luac` chunks (little-endian + 64-bit `size_t`) on Wii U.
+  - files: sm64wiiu/src/game/ingame_menu.c, sm64wiiu/src/game/mario_actions_cutscene.c, sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/third_party/lua-5.3.6/src/lundump.c, SUMMARY.md
+  - validation: `tail -n 300 "$HOME/Library/Application Support/Cemu/log.txt"`, `./build_wiiu_then_wuhb.sh`
+  - outcome: build + wuhb succeed; pause has a stable `MAIN MENU` route back into DJUI, and compiled-only mods like Flood Expanded are now loadable on big-endian Wii U.
+- Flood bytecode load + donor pause-options parity follow-up: switched Wii U VFS Lua chunk load mode to accept both text and bytecode (`"bt"`) so `.luac` Flood modules no longer fail with `mode is 't'`, then restored donor pause-entry behavior by wiring `R` in pause flow and rendering/updating donor DJUI pause overlays/panels outside main-menu mode.
+  - files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/src/game/ingame_menu.c, sm64wiiu/src/pc/djui/djui_donor.c, SUMMARY.md
+  - validation: `tail -n 350 "$HOME/Library/Application Support/Cemu/log.txt"`, `./build_wiiu_then_wuhb.sh`
+  - outcome: build + wuhb succeed; Flood `.luac` modules are no longer blocked by text-only load mode, and pause `R Button - Options` path is back on donor stack for in-game settings access.
+- Flood runtime API + pause host-exit follow-up: added missing Lua API bindings observed in Cemu logs, added `MarioState.area` with Area/Camera cobject field access (including `area.camera.cutscene` path), and fixed pause `STOP HOSTING` confirmation to route back to DJUI main menu after shutdown.
+  - files: sm64wiiu/src/pc/lua/smlua.c, sm64wiiu/src/pc/lua/smlua_cobject.c, sm64wiiu/src/pc/lua/smlua_cobject.h, sm64wiiu/src/pc/djui/djui_panel_pause.c, SUMMARY.md
+  - validation: `tail -n 220 "$HOME/Library/Application Support/Cemu/log.txt"`, `./build_wiiu_then_wuhb.sh`
+  - outcome: build + wuhb succeed; prior repeating Flood hook failures (`get_dialog_id`, `set_ttc_speed_setting`, `m.area`) are addressed in runtime bindings/cobjects, and stop-host now returns to main menu.
 
 ## 10) Required Format For Future Summary Updates
 

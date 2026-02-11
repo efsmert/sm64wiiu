@@ -21,6 +21,7 @@
 #include "djui_lua_profiler.h"
 #include "djui_panel_main.h"
 #include "djui_panel_menu_options.h"
+#include "djui_panel_pause.h"
 #include "djui_panel.h"
 #include "djui_root.h"
 #include "djui_theme.h"
@@ -41,11 +42,13 @@ static bool sDonorStaffRollTriggered = false;
 static bool sDonorLastMenuRandom = false;
 static bool sDonorLastMenuStaffRoll = false;
 static unsigned int sDonorLastMenuLevel = 0;
+static struct DjuiRoot* sDjuiRootBehind = NULL;
 
 #define WARP_TYPE_NOT_WARPING 0
 #define DJUI_MENU_LEVEL_COUNT 18
 #define DJUI_MENU_RANDOM_MIN 1
 #define DJUI_MENU_RANDOM_MAX 17
+#define DJUI_PLAY_MODE_PAUSED 2
 
 struct DjuiMenuPreset {
     s16 level;
@@ -157,6 +160,13 @@ void djui_donor_init(void) {
     djui_themes_init();
 
     djui_root_create();
+    sDjuiRootBehind = djui_root_create();
+    gDjuiPauseOptions = djui_text_create(&sDjuiRootBehind->base, DLANG(MISC, R_BUTTON));
+    djui_base_set_size_type(&gDjuiPauseOptions->base, DJUI_SVT_RELATIVE, DJUI_SVT_ABSOLUTE);
+    djui_base_set_size(&gDjuiPauseOptions->base, 1.0f, 32);
+    djui_base_set_location(&gDjuiPauseOptions->base, 0, 16);
+    djui_text_set_alignment(gDjuiPauseOptions, DJUI_HALIGN_CENTER, DJUI_VALIGN_CENTER);
+
     djui_cursor_create();
     djui_fps_display_create();
     djui_ctx_display_create();
@@ -181,6 +191,16 @@ void djui_donor_init_late(void) {
 
 void djui_donor_shutdown(void) {
     djui_panel_shutdown();
+
+    if (gDjuiPauseOptions != NULL) {
+        djui_base_destroy(&gDjuiPauseOptions->base);
+        gDjuiPauseOptions = NULL;
+    }
+    if (sDjuiRootBehind != NULL) {
+        djui_base_destroy(&sDjuiRootBehind->base);
+        sDjuiRootBehind = NULL;
+    }
+
     if (gDjuiRoot != NULL) {
         djui_base_destroy(&gDjuiRoot->base);
     }
@@ -194,17 +214,20 @@ void djui_donor_shutdown(void) {
     sDonorMenuWarpPending = true;
     sDonorRandomLevelLatched = false;
     sDonorStaffRollTriggered = false;
+    gDjuiModReload = NULL;
 }
 
 void djui_donor_update(void) {
     u16 down = 0;
     u16 pressed = 0;
+    bool panelActive = false;
 
     if (!sDonorInitialized) {
         return;
     }
 
-    gInteractableOverridePad = (gDjuiInMainMenu && djui_panel_is_active());
+    panelActive = djui_panel_is_active();
+    gInteractableOverridePad = panelActive && (gDjuiInMainMenu || gDjuiPanelPauseCreated);
 
     if (gInteractableOverridePad) {
         down = gInteractablePad.button;
@@ -351,13 +374,27 @@ void djui_donor_update_menu_level(void) {
 }
 
 void djui_donor_render(void) {
-    if (!sDonorInitialized || !gDjuiInMainMenu || gDjuiDisabled) {
+    bool renderPauseOverlay = false;
+    bool renderPanels = false;
+
+    if (!sDonorInitialized || gDjuiDisabled) {
+        return;
+    }
+
+    renderPauseOverlay = (sCurrPlayMode == DJUI_PLAY_MODE_PAUSED);
+    renderPanels = djui_panel_is_active() || gDjuiPanelPauseCreated;
+    if (!gDjuiInMainMenu && !renderPauseOverlay && !renderPanels) {
         return;
     }
 
     create_dl_ortho_matrix();
     djui_gfx_displaylist_begin();
     djui_reset_hud_params();
+
+    if (sDjuiRootBehind != NULL && renderPauseOverlay && !gDjuiPanelPauseCreated && !gDjuiInMainMenu) {
+        djui_base_render(&sDjuiRootBehind->base);
+    }
+
     djui_panel_update();
     djui_lua_profiler_render();
     if (gDjuiRoot != NULL) {
@@ -368,7 +405,7 @@ void djui_donor_render(void) {
     djui_cursor_update();
     extern u8 gRenderingInterpolated;
     extern f32 gRenderingDelta;
-    if (!gRenderingInterpolated || gRenderingDelta >= 0.999f) {
+    if ((gDjuiInMainMenu || renderPanels) && (!gRenderingInterpolated || gRenderingDelta >= 0.999f)) {
         djui_interactable_update();
     }
     djui_gfx_displaylist_end();

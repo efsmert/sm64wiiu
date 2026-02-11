@@ -38,6 +38,14 @@ u8 gSpecialTripleJump = FALSE;
 s8 gLevelToCourseNumTable[] = {
     #include "levels/level_defines.h"
 };
+
+// CoopDX compatibility helper (used by DynOS level parsing).
+s8 get_level_course_num(s32 levelNum) {
+    if (levelNum <= LEVEL_NONE || levelNum >= LEVEL_COUNT) {
+        return COURSE_NONE;
+    }
+    return gLevelToCourseNumTable[levelNum - 1];
+}
 #undef STUB_LEVEL
 #undef DEFINE_LEVEL
 

@@ -14,6 +14,10 @@
 #include "rendering_graph_node.h"
 #include "object_list_processor.h"
 
+#ifndef TARGET_N64
+struct MovtexQuadCollection* dynos_movtexqc_get_from_index(s32 index);
+#endif
+
 /**
  * This file contains functions for generating display lists with moving textures
  * (abbreviated movtex). This is used for water, sand, haze, mist and treadmills.
@@ -309,7 +313,7 @@ Gfx *geo_wdw_set_initial_water_level(s32 callContext, UNUSED struct GraphNode *n
     // Why was this global variable needed when they could just check for GEO_CONTEXT_AREA_LOAD?
     if (callContext != GEO_CONTEXT_RENDER) {
         gWdwWaterLevelSet = FALSE;
-    } else if (callContext == GEO_CONTEXT_RENDER && gEnvironmentRegions != NULL
+    } else if (callContext == GEO_CONTEXT_RENDER && gEnvironmentRegions != NULL && gEnvironmentRegionsLength > 0
                && !gWdwWaterLevelSet) {
         if (gPaintingMarioYEntry <= 1382.4) {
             wdwWaterHeight = 31;
@@ -319,6 +323,7 @@ Gfx *geo_wdw_set_initial_water_level(s32 callContext, UNUSED struct GraphNode *n
             wdwWaterHeight = 1024;
         }
         for (i = 0; i < *gEnvironmentRegions; i++) {
+            if (((i + 1) * 6) >= gEnvironmentRegionsLength) { break; }
             gEnvironmentRegions[i * 6 + 6] = wdwWaterHeight;
         }
         gWdwWaterLevelSet = TRUE;
@@ -632,7 +637,7 @@ Gfx *geo_movtex_draw_water_regions(s32 callContext, struct GraphNode *node, UNUS
 
     if (callContext == GEO_CONTEXT_RENDER) {
         gMovtexVtxColor = MOVTEX_VTX_COLOR_DEFAULT;
-        if (gEnvironmentRegions == NULL) {
+        if (gEnvironmentRegions == NULL || gEnvironmentRegionsLength <= 0) {
             return NULL;
         }
         numWaterBoxes = gEnvironmentRegions[0];
@@ -666,6 +671,70 @@ Gfx *geo_movtex_draw_water_regions(s32 callContext, struct GraphNode *node, UNUS
         movtex_change_texture_format(asGenerated->parameter, &gfx);
         gMovetexLastTextureId = -1;
         for (i = 0; i < numWaterBoxes; i++) {
+            if (((i + 1) * 6) >= gEnvironmentRegionsLength) { break; }
+            waterId = gEnvironmentRegions[i * 6 + 1];
+            waterY = gEnvironmentRegions[i * 6 + 6];
+            subList = movtex_gen_quads_id(waterId, waterY, quadCollection);
+            if (subList != NULL)
+                gSPDisplayList(gfx++, VIRTUAL_TO_PHYSICAL(subList));
+        }
+        gSPDisplayList(gfx++, dl_waterbox_end);
+        gSPEndDisplayList(gfx);
+    }
+    return gfxHead;
+}
+
+/**
+ * DynOS variant of geo_movtex_draw_water_regions().
+ * Uses DynOS movtex quad collections (by index) instead of vanilla IDs.
+ */
+Gfx *geo_movtex_draw_water_regions_ext(s32 callContext, struct GraphNode *node, UNUSED Mat4 mtx) {
+    Gfx *gfxHead = NULL;
+    Gfx *gfx = NULL;
+    Gfx *subList;
+    void *quadCollection;
+    struct GraphNodeGenerated *asGenerated;
+    s16 numWaterBoxes;
+    s16 waterId;
+    s16 waterY;
+    s32 i;
+
+    if (callContext == GEO_CONTEXT_RENDER) {
+        if (gEnvironmentRegions == NULL || gEnvironmentRegionsLength <= 0) {
+            return NULL;
+        }
+
+        gMovtexVtxColor = MOVTEX_VTX_COLOR_DEFAULT;
+
+        numWaterBoxes = gEnvironmentRegions[0];
+        gfxHead = alloc_display_list((numWaterBoxes + 3) * sizeof(*gfxHead));
+        if (gfxHead == NULL) {
+            return NULL;
+        } else {
+            gfx = gfxHead;
+        }
+
+        asGenerated = (struct GraphNodeGenerated *) node;
+        if (asGenerated == NULL) {
+            return NULL;
+        }
+
+#ifndef TARGET_N64
+        quadCollection = dynos_movtexqc_get_from_index(asGenerated->parameter);
+#else
+        quadCollection = NULL;
+#endif
+        if (quadCollection == NULL) {
+            return NULL;
+        }
+
+        asGenerated->fnNode.node.flags =
+            (asGenerated->fnNode.node.flags & 0xFF) | (LAYER_TRANSPARENT_INTER << 8);
+
+        movtex_change_texture_format(asGenerated->parameter, &gfx);
+        gMovetexLastTextureId = -1;
+        for (i = 0; i < numWaterBoxes; i++) {
+            if (((i + 1) * 6) >= gEnvironmentRegionsLength) { break; }
             waterId = gEnvironmentRegions[i * 6 + 1];
             waterY = gEnvironmentRegions[i * 6 + 6];
             subList = movtex_gen_quads_id(waterId, waterY, quadCollection);

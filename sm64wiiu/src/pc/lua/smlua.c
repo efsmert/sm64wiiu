@@ -22,6 +22,7 @@
 #include "game/game_init.h"
 #include "game/hud.h"
 #include "game/ingame_menu.h"
+#include "game/level_info.h"
 #include "game/memory.h"
 #include "game/object_helpers.h"
 #include "game/object_list_processor.h"
@@ -46,6 +47,7 @@
 #include "smlua.h"
 #include "smlua_cobject.h"
 #include "smlua_hooks.h"
+#include "utils/smlua_audio_utils.h"
 
 // `djui_hud_utils.h` only forward-declares `struct DjuiColor`, but the Lua HUD
 // bindings need to read the RGBA fields. Mirror the struct layout here to avoid
@@ -60,6 +62,9 @@ struct DjuiColor {
 #include "../djui/djui_hud_utils.h"
 #include "../fs/fs.h"
 #include "../mods/mods.h"
+#include "../configfile.h"
+#include "data/dynos.c.h"
+#include "pc/lua/utils/smlua_level_utils.h"
 #ifdef TARGET_WII_U
 #include <whb/log.h>
 #endif
@@ -70,6 +75,10 @@ static const char *SMLUA_TEXINFO_METATABLE = "SM64.TextureInfo";
 static const char *SMLUA_MODAUDIO_METATABLE = "SM64.ModAudio";
 static const char *SMLUA_GRAPH_ROOT_METATABLE = "SM64.GraphNodeRoot";
 static const char *sActiveScriptPath = NULL;
+
+static void smlua_reset_custom_levels(void) {
+    smlua_level_util_reset();
+}
 
 // Exposes the active Lua VM for subsystems that need a stable runtime pointer.
 lua_State *smlua_get_state(void) {
@@ -978,6 +987,16 @@ static void smlua_set_global_integer(lua_State *L, const char *name, lua_Integer
 static void smlua_set_global_function(lua_State *L, const char *name, lua_CFunction function) {
     lua_pushcfunction(L, function);
     lua_setglobal(L, name);
+}
+
+// Creates a Lua global alias from one existing global symbol to another.
+static void smlua_set_global_alias(lua_State *L, const char *alias, const char *target) {
+    lua_getglobal(L, target);
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    lua_setglobal(L, alias);
 }
 
 // Gets parent directory of a script path.
@@ -1935,6 +1954,15 @@ static int smlua_func_mod_storage_save_bool(lua_State *L) {
     return smlua_func_mod_storage_save(L);
 }
 
+// Boolean wrapper for Co-op DX `mod_storage_exists`.
+static int smlua_func_mod_storage_exists(lua_State *L) {
+    lua_settop(L, 1);
+    smlua_func_mod_storage_load(L);
+    lua_pushboolean(L, lua_isnil(L, -1) ? 0 : 1);
+    lua_remove(L, -2);
+    return 1;
+}
+
 // Returns a HUD value field by Co-op DX enum index for Lua script compatibility.
 static int smlua_func_hud_get_value(lua_State *L) {
     s32 type = (s32)luaL_checkinteger(L, 1);
@@ -1997,6 +2025,34 @@ static int smlua_func_djui_hud_set_color(lua_State *L) {
     sHudColor.b = smlua_to_color_channel(L, 3);
     sHudColor.a = smlua_to_color_channel(L, 4);
     djui_hud_set_color(sHudColor.r, sHudColor.g, sHudColor.b, sHudColor.a);
+    return 0;
+}
+
+// Returns current DJUI HUD resolution enum.
+static int smlua_func_djui_hud_get_resolution(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, (lua_Integer)djui_hud_get_resolution());
+    return 1;
+}
+
+// Returns current DJUI HUD filter enum.
+static int smlua_func_djui_hud_get_filter(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, (lua_Integer)djui_hud_get_filter());
+    return 1;
+}
+
+// Sets current DJUI HUD filter enum.
+static int smlua_func_djui_hud_set_filter(lua_State *L) {
+    s32 filter = (s32)luaL_checkinteger(L, 1);
+    djui_hud_set_filter((enum HudUtilsFilter)filter);
+    return 0;
+}
+
+// Resets DJUI HUD color to default white.
+static int smlua_func_djui_hud_reset_color(lua_State *L) {
+    (void)L;
+    djui_hud_reset_color();
     return 0;
 }
 
@@ -2494,28 +2550,65 @@ static int smlua_func_collision_find_surface_on_ray(lua_State *L) {
     return 1;
 }
 
+// Compatibility stub for collision-asset lookups (DynOS-backed on desktop donor).
+static int smlua_func_smlua_collision_util_get(lua_State *L) {
+    (void)luaL_checkstring(L, 1);
+    lua_pushnil(L);
+    return 1;
+}
+
+// Compatibility stub for current terrain collision handle queries.
+static int smlua_func_smlua_collision_util_get_current_terrain_collision(lua_State *L) {
+    (void)L;
+    lua_pushnil(L);
+    return 1;
+}
+
+// Compatibility stub for level collision handle queries.
+static int smlua_func_smlua_collision_util_get_level_collision(lua_State *L) {
+    (void)luaL_optinteger(L, 1, 0);
+    (void)luaL_optinteger(L, 2, 0);
+    lua_pushnil(L);
+    return 1;
+}
+
 // Returns minimal per-level info table used by voice reverb helpers.
 static int smlua_func_smlua_level_util_get_info(lua_State *L) {
-    s32 level_num = (s32)luaL_checkinteger(L, 1);
-    if (level_num <= LEVEL_NONE || level_num >= LEVEL_COUNT) {
+    s16 level_num = (s16)luaL_checkinteger(L, 1);
+    u32 echo1 = 8;
+    u32 echo2 = 8;
+    u32 echo3 = 8;
+
+    if (level_num >= CUSTOM_LEVEL_NUM_START) {
+        struct CustomLevelInfo* info = smlua_level_util_get_info(level_num);
+        if (info != NULL) {
+            echo1 = info->echoLevel1;
+            echo2 = info->echoLevel2;
+            echo3 = info->echoLevel3;
+        }
+    } else if (level_num <= LEVEL_NONE || level_num >= LEVEL_COUNT) {
         lua_pushnil(L);
         return 1;
     }
 
     lua_newtable(L);
-    lua_pushinteger(L, 8);
+    lua_pushinteger(L, (lua_Integer)echo1);
     lua_setfield(L, -2, "echoLevel1");
-    lua_pushinteger(L, 8);
+    lua_pushinteger(L, (lua_Integer)echo2);
     lua_setfield(L, -2, "echoLevel2");
-    lua_pushinteger(L, 8);
+    lua_pushinteger(L, (lua_Integer)echo3);
     lua_setfield(L, -2, "echoLevel3");
     return 1;
 }
 
 // Returns true for stock level numbers to keep vanilla-only mod logic functional.
 static int smlua_func_level_is_vanilla_level(lua_State *L) {
-    s32 level = (s32)luaL_checkinteger(L, 1);
-    lua_pushboolean(L, (level > LEVEL_NONE && level < LEVEL_COUNT) ? 1 : 0);
+    s16 levelNum = (s16)luaL_checkinteger(L, 1);
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_level_is_vanilla_level(levelNum));
+#else
+    lua_pushboolean(L, (levelNum > LEVEL_NONE && levelNum < LEVEL_COUNT) ? 1 : 0);
+#endif
     return 1;
 }
 
@@ -3389,6 +3482,13 @@ static int smlua_func_gfx_set_command(lua_State *L) {
     return 1;
 }
 
+// Display-list lookup shim used by UV-scroll libraries; returns nil when unavailable.
+static int smlua_func_gfx_get_from_name(lua_State *L) {
+    (void)luaL_checkstring(L, 1);
+    lua_pushnil(L);
+    return 1;
+}
+
 // Prints Lua-facing console messages to stdout for debug parity.
 static int smlua_func_log_to_console(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
@@ -3518,6 +3618,13 @@ static int smlua_func_audio_stream_set_volume(lua_State *L) {
     return 0;
 }
 
+// Returns stream volume gain.
+static int smlua_func_audio_stream_get_volume(lua_State *L) {
+    struct SmluaModAudio *audio = smlua_check_mod_audio(L, 1);
+    lua_pushnumber(L, (lua_Number)(audio != NULL ? audio->volume : 0.0f));
+    return 1;
+}
+
 // Stores stream playback frequency multiplier.
 static int smlua_func_audio_stream_set_frequency(lua_State *L) {
     struct SmluaModAudio *audio = smlua_check_mod_audio(L, 1);
@@ -3645,6 +3752,174 @@ static int smlua_func_reset_level(lua_State *L) {
     return 0;
 }
 
+// Opens the DJUI pause panel.
+static int smlua_func_djui_open_pause_menu(lua_State *L) {
+    (void)L;
+    djui_open_pause_menu();
+    return 0;
+}
+
+// Co-op DX level-name helper that returns ASCII level name string.
+static int smlua_func_get_level_name_ascii(lua_State *L) {
+    s16 courseNum = (s16)luaL_checkinteger(L, 1);
+    s16 levelNum = (s16)luaL_checkinteger(L, 2);
+    s16 areaIndex = (s16)luaL_checkinteger(L, 3);
+    s16 charCase = (s16)luaL_checkinteger(L, 4);
+    const char *name = get_level_name_ascii(courseNum, levelNum, areaIndex, charCase);
+    lua_pushstring(L, name != NULL ? name : "");
+    return 1;
+}
+
+// Co-op DX volume helper for Lua UI scripts.
+static int smlua_func_get_volume_level(lua_State *L) {
+    extern u8 gLuaVolumeLevel;
+    (void)L;
+    lua_pushnumber(L, (lua_Number)gLuaVolumeLevel);
+    return 1;
+}
+
+// Co-op DX volume helper for Lua UI scripts.
+static int smlua_func_set_volume_level(lua_State *L) {
+    extern u8 gLuaVolumeLevel;
+    s32 volume = (s32)luaL_checkinteger(L, 1);
+    if (volume < 0) { volume = 0; }
+    if (volume > 127) { volume = 127; }
+    gLuaVolumeLevel = (u8)volume;
+    audio_custom_update_volume();
+    return 0;
+}
+
+// Co-op DX SFX volume helper for Lua UI scripts.
+static int smlua_func_set_volume_sfx(lua_State *L) {
+    extern u8 gLuaVolumeSfx;
+    s32 volume = (s32)luaL_checkinteger(L, 1);
+    if (volume < 0) { volume = 0; }
+    if (volume > 127) { volume = 127; }
+    gLuaVolumeSfx = (u8)volume;
+    audio_custom_update_volume();
+    return 0;
+}
+
+// Minimal warp helper used by Lua mods that request direct level transitions.
+static int smlua_func_warp_to_level(lua_State *L) {
+    extern void initiate_warp(s16 destLevel, s16 destArea, s16 destWarpNode, s32 arg3);
+    s16 level;
+    s16 area;
+    s16 act;
+
+    if (!lua_isnumber(L, 1) || !lua_isnumber(L, 2) || !lua_isnumber(L, 3)) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    level = (s16)lua_tointeger(L, 1);
+    area = (s16)lua_tointeger(L, 2);
+    act = (s16)lua_tointeger(L, 3);
+
+    if (area < 1) { area = 1; }
+    if (area > 8) { area = 8; }
+    if (act < 1) { act = 1; }
+    if (act > 6) { act = 6; }
+
+#ifndef TARGET_N64
+    if (dynos_warp_to_level(level, area, act)) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+#endif
+
+    if (level < LEVEL_MIN || level > LEVEL_MAX) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    gCurrActNum = act;
+    initiate_warp(level, area, 0x0A, 0);
+    fade_into_special_warp(0, 0);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int smlua_func_level_register(lua_State *L) {
+    const char *scriptEntryName = luaL_optstring(L, 1, NULL);
+    s16 courseNum = (s16)luaL_optinteger(L, 2, 0);
+    const char *fullName = luaL_optstring(L, 3, NULL);
+    const char *shortName = luaL_optstring(L, 4, NULL);
+    u32 acousticReach = (u32)luaL_optinteger(L, 5, 0);
+    u32 echoLevel1 = (u32)luaL_optinteger(L, 6, 0);
+    u32 echoLevel2 = (u32)luaL_optinteger(L, 7, 0);
+    u32 echoLevel3 = (u32)luaL_optinteger(L, 8, 0);
+
+    if (scriptEntryName == NULL || fullName == NULL || shortName == NULL) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    s16 levelNum = level_register(scriptEntryName, courseNum, fullName, shortName,
+                                  acousticReach, echoLevel1, echoLevel2, echoLevel3);
+    if (levelNum == 0) {
+        smlua_logf("lua: level_register: missing DynOS level script '%s'", scriptEntryName);
+    }
+    lua_pushinteger(L, levelNum);
+    return 1;
+}
+
+static int smlua_func_warp_to_warpnode(lua_State *L) {
+    s32 level = (s32)luaL_optinteger(L, 1, 0);
+    s32 area = (s32)luaL_optinteger(L, 2, 1);
+    s32 act = (s32)luaL_optinteger(L, 3, 1);
+    s32 warpId = (s32)luaL_optinteger(L, 4, 0x0A);
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_warp_to_warpnode(level, area, act, warpId));
+#else
+    (void)level; (void)area; (void)act; (void)warpId;
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
+static int smlua_func_warp_to_start_level(lua_State *L) {
+    (void)L;
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_warp_to_start_level());
+#else
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
+static int smlua_func_warp_restart_level(lua_State *L) {
+    (void)L;
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_warp_restart_level());
+#else
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
+static int smlua_func_warp_exit_level(lua_State *L) {
+    s32 delay = (s32)luaL_optinteger(L, 1, 0);
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_warp_exit_level(delay));
+#else
+    (void)delay;
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
+static int smlua_func_warp_to_castle(lua_State *L) {
+    s32 level = (s32)luaL_optinteger(L, 1, 0);
+#ifndef TARGET_N64
+    lua_pushboolean(L, dynos_warp_to_castle(level));
+#else
+    (void)level;
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
 // Re-runs spawn-side setup after Lua-triggered warp state changes.
 static int smlua_func_init_mario_after_warp(lua_State *L) {
     extern void init_mario_after_warp(void);
@@ -3663,12 +3938,35 @@ static int smlua_func_djui_hud_render_rect(lua_State *L) {
     return 0;
 }
 
+// Rounded-rect fallback shim: Wii U HUD backend currently renders a normal rect.
+static int smlua_func_djui_hud_render_rounded_rect(lua_State *L) {
+    f32 x = (f32)luaL_checknumber(L, 1);
+    f32 y = (f32)luaL_checknumber(L, 2);
+    f32 width = (f32)luaL_checknumber(L, 3);
+    f32 height = (f32)luaL_checknumber(L, 4);
+    (void)luaL_optnumber(L, 5, 0.0f);
+    djui_hud_render_rect(x, y, width, height);
+    return 0;
+}
+
 // Sets HUD rotation state.
 static int smlua_func_djui_hud_set_rotation(lua_State *L) {
     s16 rotation = (s16)luaL_checkinteger(L, 1);
     f32 pivotX = (f32)luaL_optnumber(L, 2, 0.0f);
     f32 pivotY = (f32)luaL_optnumber(L, 3, 0.0f);
     djui_hud_set_rotation(rotation, pivotX, pivotY);
+    return 0;
+}
+
+// Sets interpolated HUD rotation state for smooth menu animations.
+static int smlua_func_djui_hud_set_rotation_interpolated(lua_State *L) {
+    s32 prevRotation = (s32)luaL_checkinteger(L, 1);
+    f32 prevPivotX = (f32)luaL_checknumber(L, 2);
+    f32 prevPivotY = (f32)luaL_checknumber(L, 3);
+    s32 rotation = (s32)luaL_checkinteger(L, 4);
+    f32 pivotX = (f32)luaL_checknumber(L, 5);
+    f32 pivotY = (f32)luaL_checknumber(L, 6);
+    djui_hud_set_rotation_interpolated(prevRotation, prevPivotX, prevPivotY, rotation, pivotX, pivotY);
     return 0;
 }
 
@@ -3692,6 +3990,26 @@ static int smlua_func_djui_hud_set_scissor(lua_State *L) {
 static int smlua_func_djui_hud_reset_scissor(lua_State *L) {
     (void)L;
     djui_hud_reset_scissor();
+    return 0;
+}
+
+// Returns raw mouse X in screen-space units.
+static int smlua_func_djui_hud_get_raw_mouse_x(lua_State *L) {
+    (void)L;
+    lua_pushnumber(L, (lua_Number)djui_hud_get_raw_mouse_x());
+    return 1;
+}
+
+// Returns raw mouse Y in screen-space units.
+static int smlua_func_djui_hud_get_raw_mouse_y(lua_State *L) {
+    (void)L;
+    lua_pushnumber(L, (lua_Number)djui_hud_get_raw_mouse_y());
+    return 1;
+}
+
+// Toggles mouse-lock state for HUD-driven menus.
+static int smlua_func_djui_hud_set_mouse_locked(lua_State *L) {
+    djui_hud_set_mouse_locked(lua_toboolean(L, 1) != 0);
     return 0;
 }
 
@@ -4381,6 +4699,54 @@ static void smlua_bind_minimal_globals(lua_State *L) {
 static int smlua_func_get_global_timer(lua_State *L) {
     (void)L;
     lua_pushinteger(L, (lua_Integer)gGlobalTimer);
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `get_dialog_id()`.
+static int smlua_func_get_dialog_id(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, (lua_Integer)get_dialog_id());
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `get_ttc_speed_setting()`.
+static int smlua_func_get_ttc_speed_setting(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, (lua_Integer)gTTCSpeedSetting);
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `set_ttc_speed_setting(speed)`.
+static int smlua_func_set_ttc_speed_setting(lua_State *L) {
+    gTTCSpeedSetting = (s16)luaL_checkinteger(L, 1);
+    return 0;
+}
+
+// Compatibility wrapper for Co-op DX `degrees_to_sm64(degrees)`.
+static int smlua_func_degrees_to_sm64(lua_State *L) {
+    f32 degrees = (f32)luaL_checknumber(L, 1);
+    s16 angle = (s16)(degrees * (65536.0f / 360.0f));
+    lua_pushinteger(L, (lua_Integer)angle);
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX camera configuration checks.
+static int smlua_func_camera_config_is_free_cam_enabled(lua_State *L) {
+    (void)L;
+    lua_pushboolean(L, configEnableFreeCamera ? 1 : 0);
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX romhack camera collision override.
+static int smlua_func_camera_romhack_set_collisions(lua_State *L) {
+    configRomhackCameraHasCollision = lua_toboolean(L, 1) != 0;
+    return 0;
+}
+
+// Compatibility wrapper used by mods that gate HUD around player-list visibility.
+static int smlua_func_djui_is_playerlist_open(lua_State *L) {
+    (void)L;
+    lua_pushboolean(L, 0);
     return 1;
 }
 
@@ -5331,6 +5697,15 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "get_time", smlua_func_get_time);
     smlua_set_global_function(L, "get_uncolored_string", smlua_func_get_uncolored_string);
     smlua_set_global_function(L, "get_global_timer", smlua_func_get_global_timer);
+    smlua_set_global_function(L, "get_dialog_id", smlua_func_get_dialog_id);
+    smlua_set_global_function(L, "get_ttc_speed_setting", smlua_func_get_ttc_speed_setting);
+    smlua_set_global_function(L, "set_ttc_speed_setting", smlua_func_set_ttc_speed_setting);
+    smlua_set_global_function(L, "degrees_to_sm64", smlua_func_degrees_to_sm64);
+    smlua_set_global_function(L, "smlua_collision_util_get", smlua_func_smlua_collision_util_get);
+    smlua_set_global_function(L, "smlua_collision_util_get_current_terrain_collision",
+                              smlua_func_smlua_collision_util_get_current_terrain_collision);
+    smlua_set_global_function(L, "smlua_collision_util_get_level_collision",
+                              smlua_func_smlua_collision_util_get_level_collision);
     smlua_set_global_function(L, "log_to_console", smlua_func_log_to_console);
     smlua_set_global_function(L, "djui_popup_create", smlua_func_djui_popup_create);
     smlua_set_global_function(L, "init_mario_after_warp", smlua_func_init_mario_after_warp);
@@ -5387,6 +5762,7 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "get_network_area_timer", smlua_func_get_network_area_timer);
     smlua_set_global_function(L, "smlua_text_utils_get_language", smlua_func_text_utils_get_language);
     smlua_set_global_function(L, "mod_storage_load", smlua_func_mod_storage_load);
+    smlua_set_global_function(L, "mod_storage_exists", smlua_func_mod_storage_exists);
     smlua_set_global_function(L, "mod_storage_save", smlua_func_mod_storage_save);
     smlua_set_global_function(L, "mod_storage_remove", smlua_func_mod_storage_remove);
     smlua_set_global_function(L, "mod_storage_load_number", smlua_func_mod_storage_load_number);
@@ -5405,6 +5781,7 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "audio_stream_set_looping", smlua_func_audio_stream_set_looping);
     smlua_set_global_function(L, "audio_stream_set_loop_points", smlua_func_audio_stream_set_loop_points);
     smlua_set_global_function(L, "audio_stream_set_volume", smlua_func_audio_stream_set_volume);
+    smlua_set_global_function(L, "audio_stream_get_volume", smlua_func_audio_stream_get_volume);
     smlua_set_global_function(L, "audio_stream_set_frequency", smlua_func_audio_stream_set_frequency);
     smlua_set_global_function(L, "audio_sample_load", smlua_func_audio_sample_load);
     smlua_set_global_function(L, "audio_sample_play", smlua_func_audio_sample_play);
@@ -5413,17 +5790,23 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "hud_set_value", smlua_func_hud_set_value);
     smlua_set_global_function(L, "hud_is_hidden", smlua_func_hud_is_hidden);
     smlua_set_global_function(L, "djui_hud_is_pause_menu_created", smlua_func_djui_hud_is_pause_menu_created);
+    smlua_set_global_function(L, "djui_hud_get_resolution", smlua_func_djui_hud_get_resolution);
+    smlua_set_global_function(L, "djui_hud_get_filter", smlua_func_djui_hud_get_filter);
     smlua_set_global_function(L, "djui_hud_get_color", smlua_func_djui_hud_get_color);
     smlua_set_global_function(L, "djui_hud_measure_text", smlua_func_djui_hud_measure_text);
     smlua_set_global_function(L, "djui_hud_set_color", smlua_func_djui_hud_set_color);
+    smlua_set_global_function(L, "djui_hud_set_filter", smlua_func_djui_hud_set_filter);
+    smlua_set_global_function(L, "djui_hud_reset_color", smlua_func_djui_hud_reset_color);
     smlua_set_global_function(L, "djui_hud_print_text", smlua_func_djui_hud_print_text);
     smlua_set_global_function(L, "djui_hud_print_text_interpolated", smlua_func_djui_hud_print_text_interpolated);
     smlua_set_global_function(L, "djui_hud_render_rect", smlua_func_djui_hud_render_rect);
+    smlua_set_global_function(L, "djui_hud_render_rounded_rect", smlua_func_djui_hud_render_rounded_rect);
     smlua_set_global_function(L, "djui_hud_render_texture", smlua_func_djui_hud_render_texture);
     smlua_set_global_function(L, "djui_hud_render_texture_interpolated", smlua_func_djui_hud_render_texture_interpolated);
     smlua_set_global_function(L, "djui_hud_render_texture_tile", smlua_func_djui_hud_render_texture_tile);
     smlua_set_global_function(L, "djui_hud_render_texture_tile_interpolated", smlua_func_djui_hud_render_texture_tile_interpolated);
     smlua_set_global_function(L, "djui_hud_set_rotation", smlua_func_djui_hud_set_rotation);
+    smlua_set_global_function(L, "djui_hud_set_rotation_interpolated", smlua_func_djui_hud_set_rotation_interpolated);
     smlua_set_global_function(L, "djui_hud_set_resolution", smlua_func_djui_hud_set_resolution);
     smlua_set_global_function(L, "djui_hud_set_font", smlua_func_djui_hud_set_font);
     smlua_set_global_function(L, "djui_hud_get_font", smlua_func_djui_hud_get_font);
@@ -5433,12 +5816,16 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "djui_hud_world_pos_to_screen_pos", smlua_func_djui_hud_world_pos_to_screen_pos);
     smlua_set_global_function(L, "djui_hud_get_screen_width", smlua_func_djui_hud_get_screen_width);
     smlua_set_global_function(L, "djui_hud_get_screen_height", smlua_func_djui_hud_get_screen_height);
+    smlua_set_global_function(L, "djui_hud_get_raw_mouse_x", smlua_func_djui_hud_get_raw_mouse_x);
+    smlua_set_global_function(L, "djui_hud_get_raw_mouse_y", smlua_func_djui_hud_get_raw_mouse_y);
+    smlua_set_global_function(L, "djui_hud_set_mouse_locked", smlua_func_djui_hud_set_mouse_locked);
     smlua_set_global_function(L, "djui_hud_get_mouse_scroll_y", smlua_func_djui_hud_get_mouse_scroll_y);
     smlua_set_global_function(L, "djui_menu_get_theme", smlua_func_djui_menu_get_theme);
     smlua_set_global_function(L, "djui_menu_get_font", smlua_func_djui_menu_get_font);
     smlua_set_global_function(L, "djui_menu_get_rainbow_string_color", smlua_func_djui_menu_get_rainbow_string_color);
     smlua_set_global_function(L, "djui_language_get", smlua_func_djui_language_get);
     smlua_set_global_function(L, "djui_attempting_to_open_playerlist", smlua_func_djui_attempting_to_open_playerlist);
+    smlua_set_global_function(L, "djui_is_playerlist_open", smlua_func_djui_is_playerlist_open);
     smlua_set_global_function(L, "gVec3fZero", smlua_func_gvec3f_zero);
     smlua_set_global_function(L, "vec3f_copy", smlua_func_vec3f_copy);
     smlua_set_global_function(L, "is_player_active", smlua_func_is_player_active);
@@ -5458,6 +5845,7 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "cast_graph_node", smlua_func_cast_graph_node);
     smlua_set_global_function(L, "define_custom_obj_fields", smlua_func_define_custom_obj_fields);
     smlua_set_global_function(L, "gfx_set_command", smlua_func_gfx_set_command);
+    smlua_set_global_function(L, "gfx_get_from_name", smlua_func_gfx_get_from_name);
     smlua_set_global_function(L, "hook_chat_command", smlua_func_hook_chat_command);
     smlua_set_global_function(L, "update_chat_command_description", smlua_func_update_chat_command_description);
     smlua_set_global_function(L, "network_player_set_description", smlua_func_network_player_set_description);
@@ -5468,6 +5856,8 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "is_game_paused", smlua_func_is_game_paused);
     smlua_set_global_function(L, "camera_freeze", smlua_func_camera_freeze);
     smlua_set_global_function(L, "camera_unfreeze", smlua_func_camera_unfreeze);
+    smlua_set_global_function(L, "camera_config_is_free_cam_enabled", smlua_func_camera_config_is_free_cam_enabled);
+    smlua_set_global_function(L, "camera_romhack_set_collisions", smlua_func_camera_romhack_set_collisions);
     smlua_set_global_function(L, "hud_hide", smlua_func_hud_hide);
     smlua_set_global_function(L, "hud_show", smlua_func_hud_show);
     smlua_set_global_function(L, "network_local_index_from_global", smlua_func_network_local_index_from_global);
@@ -5482,8 +5872,19 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "network_player_set_full_override_palette", smlua_func_network_player_set_full_override_palette);
     smlua_set_global_function(L, "network_player_reset_override_palette", smlua_func_network_player_reset_override_palette);
     smlua_set_global_function(L, "smlua_level_util_get_info", smlua_func_smlua_level_util_get_info);
+    smlua_set_global_function(L, "level_register", smlua_func_level_register);
     smlua_set_global_function(L, "level_is_vanilla_level", smlua_func_level_is_vanilla_level);
     smlua_set_global_function(L, "get_level_name", smlua_func_get_level_name);
+    smlua_set_global_function(L, "get_level_name_ascii", smlua_func_get_level_name_ascii);
+    smlua_set_global_function(L, "warp_to_level", smlua_func_warp_to_level);
+    smlua_set_global_function(L, "warp_to_warpnode", smlua_func_warp_to_warpnode);
+    smlua_set_global_function(L, "warp_to_start_level", smlua_func_warp_to_start_level);
+    smlua_set_global_function(L, "warp_restart_level", smlua_func_warp_restart_level);
+    smlua_set_global_function(L, "warp_exit_level", smlua_func_warp_exit_level);
+    smlua_set_global_function(L, "warp_to_castle", smlua_func_warp_to_castle);
+    smlua_set_global_function(L, "get_volume_level", smlua_func_get_volume_level);
+    smlua_set_global_function(L, "set_volume_level", smlua_func_set_volume_level);
+    smlua_set_global_function(L, "set_volume_sfx", smlua_func_set_volume_sfx);
     smlua_set_global_function(L, "get_date_and_time", smlua_func_get_date_and_time);
     smlua_set_global_function(L, "get_skybox", smlua_func_get_skybox);
     smlua_set_global_function(L, "geo_get_current_root", smlua_func_geo_get_current_root);
@@ -5527,6 +5928,11 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "update_mod_menu_element_slider", smlua_func_update_mod_menu_element_slider);
     smlua_set_global_function(L, "update_mod_menu_element_inputbox", smlua_func_update_mod_menu_element_inputbox);
     smlua_set_global_function(L, "update_mod_menu_element_name", smlua_func_update_mod_menu_element_name);
+    smlua_set_global_function(L, "djui_open_pause_menu", smlua_func_djui_open_pause_menu);
+    smlua_set_global_function(L, "djui_popup_create_global", smlua_func_djui_popup_create);
+    smlua_set_global_alias(L, "djui_screen_width", "djui_hud_get_screen_width");
+    smlua_set_global_alias(L, "djui_screen_height", "djui_hud_get_screen_height");
+    smlua_set_global_alias(L, "hook_event_modded", "hook_event");
 }
 
 // Returns true when path ends with suffix.
@@ -6105,8 +6511,7 @@ static enum SmluaVfsLoadResult smlua_try_load_file_from_vfs(lua_State *L, const 
         return SMLUA_VFS_LOAD_ERROR;
     }
 
-    // Wii U/Cemu is sensitive to parser input lifetime and mode; use an explicit
-    // NUL-terminated text buffer to keep script loading deterministic.
+    // Wii U/Cemu is sensitive to parser input lifetime; keep a stable owned buffer.
     script_text = malloc((size_t)script_size + 1);
     if (script_text == NULL) {
         free(script_data);
@@ -6118,7 +6523,8 @@ static enum SmluaVfsLoadResult smlua_try_load_file_from_vfs(lua_State *L, const 
     script_text[script_size] = '\0';
     free(script_data);
 
-    lua_status = luaL_loadbufferx(L, script_text, (size_t)script_size, path, "t");
+    // Accept both text and bytecode chunks so Co-op DX style .luac module packs load.
+    lua_status = luaL_loadbufferx(L, script_text, (size_t)script_size, path, "bt");
     free(script_text);
     if (lua_status != LUA_OK) {
         return SMLUA_VFS_LOAD_ERROR;
@@ -6250,6 +6656,7 @@ static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
     char joined[SYS_MAX_PATH];
     char normalized[SYS_MAX_PATH];
     bool has_mod_root = false;
+    bool root_relative = false;
     bool has_slash = false;
 
     int written;
@@ -6264,8 +6671,19 @@ static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
     if (written < 0 || (size_t)written >= sizeof(module_expr)) {
         return false;
     }
-    if (module_expr[0] == '\0' || module_expr[0] == '/') {
+    if (module_expr[0] == '\0') {
         return false;
+    }
+
+    // Co-op DX mods often use require("/lib/foo") for module-root relative loads.
+    if (module_expr[0] == '/') {
+        root_relative = true;
+        while (module_expr[0] == '/') {
+            memmove(module_expr, module_expr + 1, strlen(module_expr));
+        }
+        if (module_expr[0] == '\0') {
+            return false;
+        }
     }
 
     for (char *p = module_expr; *p != '\0'; p++) {
@@ -6285,15 +6703,21 @@ static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
         }
     }
 
-    written = snprintf(joined, sizeof(joined), "%s/%s", script_dir, module_expr);
+    has_mod_root = smlua_get_mod_root_from_script(mod_root, sizeof(mod_root), caller_script);
+    if (root_relative) {
+        if (!has_mod_root) {
+            return false;
+        }
+        written = snprintf(joined, sizeof(joined), "%s/%s", mod_root, module_expr);
+    } else {
+        written = snprintf(joined, sizeof(joined), "%s/%s", script_dir, module_expr);
+    }
     if (written < 0 || (size_t)written >= sizeof(joined)) {
         return false;
     }
     if (!smlua_normalize_virtual_path(normalized, sizeof(normalized), joined)) {
         return false;
     }
-
-    has_mod_root = smlua_get_mod_root_from_script(mod_root, sizeof(mod_root), caller_script);
     if (has_mod_root && !smlua_path_is_within_root(normalized, mod_root)) {
         return false;
     }
@@ -6515,9 +6939,11 @@ static void smlua_run_file(const char *path) {
     sActiveScriptPath = previous_script;
 }
 
-// Loads sibling Lua helpers before `main.lua` so multi-file mods can initialize.
+// Loads top-level mod scripts in donor order (lexicographic by path), including
+// both source `.lua` and compiled `.luac` files.
 static void smlua_run_script_with_companions(const char *script_path) {
-    static const char *MAIN_SUFFIX = "/main.lua";
+    static const char *MAIN_LUA_SUFFIX = "/main.lua";
+    static const char *MAIN_LUAC_SUFFIX = "/main.luac";
     char base_path[SYS_MAX_PATH];
     fs_pathlist_t files;
     const char **companions;
@@ -6526,15 +6952,25 @@ static void smlua_run_script_with_companions(const char *script_path) {
     size_t companion_cap = 0;
     size_t script_len;
     size_t suffix_len = 0;
+    bool is_main_script = false;
+    bool ran_script = false;
 
     if (script_path == NULL) {
         return;
     }
 
+    if (smlua_path_has_suffix(script_path, MAIN_LUA_SUFFIX)) {
+        is_main_script = true;
+        suffix_len = strlen(MAIN_LUA_SUFFIX);
+    } else if (smlua_path_has_suffix(script_path, MAIN_LUAC_SUFFIX)) {
+        is_main_script = true;
+        suffix_len = strlen(MAIN_LUAC_SUFFIX);
+    }
+
 #ifdef TARGET_WII_U
     // Wii U/Cemu path: prefer deterministic bundled fallback companion lists to
     // avoid intermittent VFS directory-walk stalls during startup.
-    if (smlua_path_has_suffix(script_path, MAIN_SUFFIX)) {
+    if (is_main_script) {
         fallback_count = smlua_run_known_companion_fallbacks(script_path);
         if (fallback_count > 0) {
             WHBLogPrintf("lua: loaded %d helper scripts for '%s' (fallback)", fallback_count, script_path);
@@ -6544,13 +6980,12 @@ static void smlua_run_script_with_companions(const char *script_path) {
     }
 #endif
 
-    if (!smlua_path_has_suffix(script_path, MAIN_SUFFIX)) {
+    if (!is_main_script) {
         smlua_run_file(script_path);
         return;
     }
 
     script_len = strlen(script_path);
-    suffix_len = strlen(MAIN_SUFFIX);
     if (script_len <= suffix_len || script_len - suffix_len >= sizeof(base_path)) {
         smlua_run_file(script_path);
         return;
@@ -6569,11 +7004,16 @@ static void smlua_run_script_with_companions(const char *script_path) {
     }
 
     for (int i = 0; i < files.numpaths; i++) {
+        const char *relative;
         const char *path = files.paths[i];
-        if (!smlua_path_has_suffix(path, ".lua")) {
+        if (!smlua_path_has_suffix(path, ".lua") && !smlua_path_has_suffix(path, ".luac")) {
             continue;
         }
-        if (strcmp(path, script_path) == 0) {
+        relative = path + strlen(base_path);
+        if (relative[0] == '/') {
+            relative++;
+        }
+        if (strchr(relative, '/') != NULL || strchr(relative, '\\') != NULL) {
             continue;
         }
         companions[companion_count++] = path;
@@ -6584,6 +7024,9 @@ static void smlua_run_script_with_companions(const char *script_path) {
         qsort(companions, (size_t)companion_count, sizeof(const char *), smlua_compare_paths);
         for (int i = 0; i < companion_count; i++) {
             smlua_run_file(companions[i]);
+            if (strcmp(companions[i], script_path) == 0) {
+                ran_script = true;
+            }
         }
     } else {
         fallback_count = smlua_run_known_companion_fallbacks(script_path);
@@ -6602,7 +7045,9 @@ static void smlua_run_script_with_companions(const char *script_path) {
     free(companions);
     fs_pathlist_free(&files);
 #endif
-    smlua_run_file(script_path);
+    if (!ran_script) {
+        smlua_run_file(script_path);
+    }
 }
 
 #ifdef TARGET_WII_U
@@ -6654,11 +7099,16 @@ void smlua_init(void) {
     smlua_reset_lighting_state();
     smlua_reset_sequence_aliases();
     smlua_reset_custom_animations();
+    smlua_reset_custom_levels();
     smlua_reset_model_overrides();
     smlua_reset_dialog_overrides();
     sLuaAudioPoolCount = 0;
     memset(sLuaAudioPool, 0, sizeof(sLuaAudioPool));
     memset(sLuaCustomActionNextIndex, 0, sizeof(sLuaCustomActionNextIndex));
+
+    // Load DynOSBIN assets for currently enabled mods before Lua executes, so
+    // level_register/warp helpers can resolve custom scripts immediately.
+    mods_activate_dynos_assets();
 
     sLuaState = luaL_newstate();
     if (sLuaState == NULL) {

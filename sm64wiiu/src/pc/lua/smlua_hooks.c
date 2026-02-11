@@ -118,6 +118,14 @@ static void smlua_hook_logf(const char *fmt, ...) {
     printf("\n");
 }
 
+// DynOS compatibility: CoopDX registers custom behavior scripts and exposes them to Lua.
+// Wii U currently does not implement full behavior ID hooking; accept the script and continue.
+int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName) {
+    (void)bhvScript;
+    (void)bhvName;
+    return 1;
+}
+
 // Aborts long-running Lua callbacks so one mod cannot hard-freeze frame/update loops.
 static void smlua_callback_budget_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
