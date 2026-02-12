@@ -262,10 +262,21 @@ void DynOS_Model_OverwriteSlot(u32 srcSlot, u32 dstSlot) {
 }
 
 void DynOS_Model_ClearPool(enum ModelPool aModelPool) {
+    if (aModelPool < 0 || aModelPool >= MODEL_POOL_MAX) { return; }
     if (!sModelPools[aModelPool]) { return; }
 
+    // On Wii U (USE_SYSTEM_MALLOC), we've seen rare SIGBUS crashes during pool
+    // clear while hosting/loading heavy mods (Flood). The symptoms indicate pool
+    // corruption or stale pointers during hot-reload of DynOS assets.
+    //
+    // Pragmatic fix: do not clear/free the existing pool blocks; instead,
+    // replace the pool instance. This trades memory for stability.
+#ifdef TARGET_WII_U
+    sModelPools[aModelPool] = alloc_only_pool_init();
+#else
     // schedule pool to be freed
     alloc_only_pool_clear(sModelPools[aModelPool]);
+#endif
 
     // clear overwrite
     if (aModelPool == MODEL_POOL_LEVEL) {

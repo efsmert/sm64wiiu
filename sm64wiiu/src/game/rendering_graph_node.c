@@ -449,9 +449,12 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
 #ifdef TARGET_WII_U
         fov = smlua_get_override_fov(fov);
         far = smlua_get_override_far(far);
+        f32 near_clip = smlua_get_override_near(node->near);
+#else
+        f32 near_clip = node->near;
 #endif
 
-        guPerspective(mtx, &perspNorm, fov, aspect, node->near, far, 1.0f);
+        guPerspective(mtx, &perspNorm, fov, aspect, near_clip, far, 1.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
 
         gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);

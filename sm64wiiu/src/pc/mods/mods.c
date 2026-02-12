@@ -3,6 +3,10 @@
 #include <string.h>
 #include <ctype.h>
 
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
+
 #include "mods.h"
 #include "../fs/fs.h"
 #include "../platform.h"
@@ -422,15 +426,113 @@ static bool mods_script_path_to_root_dir(const char *script_path, char *out, siz
 
 void mods_activate_dynos_assets(void) {
     // Clear any previously loaded mod resources.
+    //
+    // On Wii U/Cemu, forcing DynOS shutdown here can crash inside
+    // DynOS_Actor_ModShutdown() during host-time reinit. We avoid that path and
+    // rely on duplicate guards in DynOS activators for stability.
+#ifdef TARGET_WII_U
+#else
     dynos_mod_shutdown();
     dynos_update_gfx();
-
-    if (gActiveMods.entryCount == 0) {
-        return;
-    }
+#endif
 
     // Ensure DynOS pack system is initialized (packs are optional; custom mod assets still use core loaders).
     dynos_gfx_init();
+
+    // Source of truth for runtime is the enabled root scripts.
+    // Always activate DynOS assets by scanning the directories containing those scripts.
+    // (On Wii U the host-mod panel may maintain a separate Mod-entry view that can be
+    // stale or mismatched; relying on it causes custom levels to fail to register.)
+    if (sActiveMods != NULL && sActiveMods->script_count > 0) {
+        for (size_t i = 0; i < sActiveMods->script_count; i++) {
+            const char *script_path = sActiveMods->script_paths[i];
+            char rootDir[SYS_MAX_PATH] = { 0 };
+            fs_pathlist_t files;
+            int added = 0;
+            s32 modFileIndex = 0;
+            // Use a stable, non-zero synthetic modIndex per enabled root script.
+            // DynOS uses (modIndex, fileIndex) in its internal keying; reusing
+            // modIndex=0 across multiple mods can corrupt pools or trigger
+            // collisions on reload.
+            s32 modIndex = (s32)i + 1;
+
+            if (script_path == NULL) {
+                continue;
+            }
+
+            if (!mods_script_path_to_root_dir(script_path, rootDir, sizeof(rootDir))) {
+                continue;
+            }
+
+            files = fs_enumerate(rootDir, true);
+            if (files.paths == NULL || files.numpaths <= 0) {
+                fs_pathlist_free(&files);
+                continue;
+            }
+
+            for (int p = 0; p < files.numpaths; p++) {
+                const char *vpath = files.paths[p];
+                char realPath[SYS_MAX_PATH] = { 0 };
+                char name[64] = { 0 };
+
+                if (vpath == NULL) {
+                    continue;
+                }
+
+                if (!mods_path_has_suffix(vpath, ".lvl") &&
+                    !mods_path_has_suffix(vpath, ".bin") &&
+                    !mods_path_has_suffix(vpath, ".col") &&
+                    !mods_path_has_suffix(vpath, ".tex") &&
+                    !mods_path_has_suffix(vpath, ".bhv")) {
+                    continue;
+                }
+
+                if (!mods_resolve_dynos_realpath(vpath, realPath, sizeof(realPath))) {
+                    continue;
+                }
+
+                mods_copy_basename_without_ext(vpath, name, sizeof(name));
+                if (name[0] == '\0') {
+                    continue;
+                }
+
+                if (mods_path_has_suffix(vpath, ".lvl")) {
+                    dynos_add_level(modIndex, realPath, name);
+                } else if (mods_path_has_suffix(vpath, ".bin")) {
+#ifdef TARGET_WII_U
+                    // Wii U: eager actor .bin activation still crashes in DynOS model geo
+                    // processing (observed on Flood `sled_geo.bin` during host startup).
+                    // Keep host path stable by deferring/omitting actor binaries here.
+                    (void)modFileIndex;
+                    (void)realPath;
+                    (void)name;
+#else
+                    // DynOS uses the (modIndex, fileIndex) pair as part of its
+                    // internal keying; keep `fileIndex` unique within the mod's
+                    // root directory scan to avoid collisions/corruption.
+                    dynos_add_actor_custom(modIndex, modFileIndex++, realPath, name);
+#endif
+                } else if (mods_path_has_suffix(vpath, ".col")) {
+                    dynos_add_collision(realPath, name);
+                } else if (mods_path_has_suffix(vpath, ".tex")) {
+                    dynos_add_texture(realPath, name);
+                } else if (mods_path_has_suffix(vpath, ".bhv")) {
+                    dynos_add_behavior(modIndex, realPath, name);
+                }
+                added++;
+            }
+
+#ifdef TARGET_WII_U
+            WHBLogPrintf("mods: dynos assets scan rootDir='%s' script='%s' added=%d",
+                         rootDir, script_path, added);
+#endif
+
+            fs_pathlist_free(&files);
+        }
+
+        dynos_behavior_hook_all_custom_behaviors();
+        return;
+    }
 
     for (u16 i = 0; i < gActiveMods.entryCount; i++) {
         struct Mod *mod = gActiveMods.entries[i];
@@ -439,6 +541,13 @@ void mods_activate_dynos_assets(void) {
         s32 modFileIndex = 0;
 
         if (mod == NULL || !mod->enabled) {
+            continue;
+        }
+
+        // Single-file mods live directly under `mods/` (e.g. `mods/cheats.lua`).
+        // Scanning that directory would pick up DynOS assets from *every* mod,
+        // which makes "enable any mod" accidentally activate unrelated packs.
+        if (!mod->isDirectory) {
             continue;
         }
 
@@ -496,6 +605,8 @@ void mods_activate_dynos_assets(void) {
 
         fs_pathlist_free(&files);
     }
+
+    dynos_behavior_hook_all_custom_behaviors();
 }
 
 // Returns true if `mods` virtual path should be treated as a root Lua script.

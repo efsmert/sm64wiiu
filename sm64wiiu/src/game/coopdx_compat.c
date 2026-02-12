@@ -7,10 +7,22 @@
 #include "level_info.h"
 #include "level_update.h"
 #include "pc/configfile.h"
+#include "engine/surface_collision.h"
 
 NewCamera gNewCamera = { 0 };
 struct FirstPersonCamera gFirstPersonCamera = { .enabled = false, .fov = FIRST_PERSON_DEFAULT_FOV };
-struct LevelValues gLevelValues = { .fixCollisionBugs = 0, .entryLevel = LEVEL_CASTLE_GROUNDS };
+struct LevelValues gLevelValues = {
+    .fixCollisionBugs = 0,
+    .fixCollisionBugsRoundedCorners = 1,
+    .entryLevel = LEVEL_CASTLE_GROUNDS,
+    .pssSlideStarTime = 630,
+    .metalCapDuration = 600,
+    .metalCapDurationCotmc = 600,
+    .vanishCapDurationVcutm = 600,
+    .floorLowerLimit = FLOOR_LOWER_LIMIT,
+    .floorLowerLimitMisc = FLOOR_LOWER_LIMIT_MISC,
+    .floorLowerLimitShadow = (s16)FLOOR_LOWER_LIMIT_SHADOW,
+};
 s16 gDelayedInitSound = -1;
 
 void newcam_init_settings(void) {

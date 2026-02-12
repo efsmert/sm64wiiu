@@ -1,14 +1,23 @@
 #include <ultra64.h>
 #include "sm64.h"
 
+#include <stdio.h>
+
 #include "geo_layout.h"
 #include "math_util.h"
 #include "game/memory.h"
 #include "graph_node.h"
+#include "geo_commands.h"
+
+// Forward declaration to avoid pulling DynOS/Lua headers into the engine layer.
+void dynos_level_load_background(void *ptr);
 
 typedef void (*GeoLayoutCommandProc)(void);
 
-GeoLayoutCommandProc GeoLayoutJumpTable[] = {
+// This jump table is immutable; keep it in read-only memory so accidental writes
+// (e.g. from heap corruption while loading heavy DynOS packs) can't silently
+// redirect control flow into arbitrary functions.
+static const GeoLayoutCommandProc GeoLayoutJumpTable[] = {
     geo_layout_cmd_branch_and_link,
     geo_layout_cmd_end,
     geo_layout_cmd_branch,
@@ -42,6 +51,54 @@ GeoLayoutCommandProc GeoLayoutJumpTable[] = {
     geo_layout_cmd_nop2,
     geo_layout_cmd_nop3,
     geo_layout_cmd_node_culling_radius,
+    // coopdx donor extensions (DynOS/Lua aware)
+    geo_layout_cmd_node_background_ext,
+    geo_layout_cmd_node_switch_case_ext,
+    geo_layout_cmd_node_generated_ext,
+    geo_layout_cmd_bone,
+};
+
+// Canonical copy used as a fallback if the primary jump table gets corrupted.
+// We've seen rare memory scribbles during heavy DynOS mod loading (Flood) that
+// can overwrite function-pointer tables and lead to immediate crashes.
+static const GeoLayoutCommandProc GeoLayoutJumpTableCanonical[] = {
+    geo_layout_cmd_branch_and_link,
+    geo_layout_cmd_end,
+    geo_layout_cmd_branch,
+    geo_layout_cmd_return,
+    geo_layout_cmd_open_node,
+    geo_layout_cmd_close_node,
+    geo_layout_cmd_assign_as_view,
+    geo_layout_cmd_update_node_flags,
+    geo_layout_cmd_node_root,
+    geo_layout_cmd_node_ortho_projection,
+    geo_layout_cmd_node_perspective,
+    geo_layout_cmd_node_start,
+    geo_layout_cmd_node_master_list,
+    geo_layout_cmd_node_level_of_detail,
+    geo_layout_cmd_node_switch_case,
+    geo_layout_cmd_node_camera,
+    geo_layout_cmd_node_translation_rotation,
+    geo_layout_cmd_node_translation,
+    geo_layout_cmd_node_rotation,
+    geo_layout_cmd_node_animated_part,
+    geo_layout_cmd_node_billboard,
+    geo_layout_cmd_node_display_list,
+    geo_layout_cmd_node_shadow,
+    geo_layout_cmd_node_object_parent,
+    geo_layout_cmd_node_generated,
+    geo_layout_cmd_node_background,
+    geo_layout_cmd_nop,
+    geo_layout_cmd_copy_view,
+    geo_layout_cmd_node_held_obj,
+    geo_layout_cmd_node_scale,
+    geo_layout_cmd_nop2,
+    geo_layout_cmd_nop3,
+    geo_layout_cmd_node_culling_radius,
+    geo_layout_cmd_node_background_ext,
+    geo_layout_cmd_node_switch_case_ext,
+    geo_layout_cmd_node_generated_ext,
+    geo_layout_cmd_bone,
 };
 
 struct GraphNode gObjParentGraphNode;
@@ -767,6 +824,103 @@ void geo_layout_cmd_node_culling_radius(void) {
     gGeoLayoutCommand += 0x04 << CMD_SIZE_SHIFT;
 }
 
+/*
+  0x21: Create custom background scene graph node
+*/
+void geo_layout_cmd_node_background_ext(void) {
+    struct GraphNodeBackground *graphNode;
+
+    void *bgPtr = cur_geo_cmd_ptr(0x04);
+    dynos_level_load_background(bgPtr);
+
+    graphNode = init_graph_node_background(
+        gGraphNodePool, NULL,
+        BACKGROUND_CUSTOM,
+        (GraphNodeFunc) cur_geo_cmd_ptr(0x08),
+        1);
+
+    register_scene_graph_node(&graphNode->fnNode.node);
+
+    gGeoLayoutCommand += 0x0C << CMD_SIZE_SHIFT;
+}
+
+/*
+  0x22: Create switch-case scene graph node with a custom Lua callback
+  Wii U: token callback wiring is handled elsewhere; build the node and advance stream.
+*/
+void geo_layout_cmd_node_switch_case_ext(void) {
+    struct GraphNodeSwitchCase *graphNode;
+
+    graphNode = init_graph_node_switch_case(
+        gGraphNodePool, NULL,
+        cur_geo_cmd_s16(0x02),
+        0,
+        NULL,
+        0);
+
+    register_scene_graph_node(&graphNode->fnNode.node);
+
+    gGeoLayoutCommand += 0x08 << CMD_SIZE_SHIFT;
+}
+
+/*
+  0x23: Create dynamically generated displaylist scene graph node with a custom Lua callback
+  Wii U: token callback wiring is handled elsewhere; build the node and advance stream.
+*/
+void geo_layout_cmd_node_generated_ext(void) {
+    struct GraphNodeGenerated *graphNode;
+
+    graphNode = init_graph_node_generated(
+        gGraphNodePool, NULL,
+        NULL,
+        cur_geo_cmd_s16(0x02));
+
+    register_scene_graph_node(&graphNode->fnNode.node);
+
+    gGeoLayoutCommand += 0x08 << CMD_SIZE_SHIFT;
+}
+
+/*
+  0x24: Create a scene graph node that is rotated by the object's animation + an initial rotation.
+*/
+void geo_layout_cmd_bone(void) {
+    struct GraphNodeBone *graphNode;
+    Vec3s translation;
+    Vec3s rotation;
+    s32 params = cur_geo_cmd_u8(0x01);
+    s32 drawingLayer = params;
+    Vec3f scale;
+    vec3f_copy(scale, gVec3fOne);
+
+    void *displayList;
+    s16 *cmdPos = (s16 *) gGeoLayoutCommand;
+
+    cmdPos = read_vec3s(translation, &cmdPos[2]);
+    cmdPos = read_vec3s(rotation, &cmdPos[0]);
+    if (params & 0x80) {
+        drawingLayer &= 0x0F;
+
+        vec3f_set(scale,
+            cur_geo_cmd_u32(0x10) / 65536.0f,
+            cur_geo_cmd_u32(0x14) / 65536.0f,
+            cur_geo_cmd_u32(0x18) / 65536.0f
+        );
+        cmdPos += 6 << CMD_SIZE_SHIFT;
+    }
+    displayList = *(void **) &cmdPos[0];
+    cmdPos += 2 << CMD_SIZE_SHIFT;
+
+    graphNode = init_graph_node_bone(
+        gGraphNodePool, NULL,
+        drawingLayer, displayList,
+        translation, rotation,
+        scale);
+
+    register_scene_graph_node(&graphNode->node);
+
+    gGeoLayoutCommand = (u8 *) cmdPos;
+}
+
 struct GraphNode *process_geo_layout(struct AllocOnlyPool *pool, void *segptr) {
     // set by register_scene_graph_node when gCurGraphNodeIndex is 0
     // and gCurRootGraphNode is NULL
@@ -787,8 +941,31 @@ struct GraphNode *process_geo_layout(struct AllocOnlyPool *pool, void *segptr) {
     gGeoLayoutStack[0] = 0;
     gGeoLayoutStack[1] = 0;
 
+    const GeoLayoutCommandProc *jumpTable = GeoLayoutJumpTable;
+    if (jumpTable[0] != geo_layout_cmd_branch_and_link ||
+        jumpTable[1] != geo_layout_cmd_end ||
+        jumpTable[2] != geo_layout_cmd_branch ||
+        jumpTable[3] != geo_layout_cmd_return) {
+        static int sLoggedCorruption = 0;
+        if (sLoggedCorruption < 8) {
+            printf("geo_layout: jump table corrupted (base=%p), using canonical\n", (void *)jumpTable);
+            sLoggedCorruption++;
+        }
+        jumpTable = GeoLayoutJumpTableCanonical;
+    }
+
     while (gGeoLayoutCommand != NULL) {
-        GeoLayoutJumpTable[gGeoLayoutCommand[0x00]]();
+        u8 cmd = gGeoLayoutCommand[0x00];
+        if (cmd >= (sizeof(GeoLayoutJumpTableCanonical) / sizeof(GeoLayoutJumpTableCanonical[0]))) {
+            printf("geo_layout: unknown cmd %u at %p (segptr=%p)\n", cmd, gGeoLayoutCommand, segptr);
+            gGeoLayoutCommand = NULL;
+            break;
+        }
+        jumpTable[cmd]();
+    }
+
+    if (gCurRootGraphNode) {
+        gCurRootGraphNode->georef = (const void *) segptr;
     }
 
     return gCurRootGraphNode;

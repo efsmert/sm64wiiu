@@ -11,6 +11,7 @@
 #include "level_table.h"
 #include "course_table.h"
 #include "rumble_init.h"
+#include "pc/network/network.h"
 
 #define MENU_DATA_MAGIC 0x4849
 #define SAVE_FILE_MAGIC 0x4441
@@ -23,6 +24,7 @@ struct WarpCheckpoint gWarpCheckpoint;
 
 s8 gMainMenuDataModified;
 s8 gSaveFileModified;
+u8 gSaveFileUsingBackupSlot = FALSE;
 
 u8 gLastCompletedCourseNum = COURSE_NONE;
 u8 gLastCompletedStarNum = 0;
@@ -259,13 +261,17 @@ static void restore_save_file_data(s32 fileIndex, s32 srcSlot) {
 
 void save_file_do_save(s32 fileIndex) {
     if (gSaveFileModified) {
-        // Compute checksum
-        add_save_block_signature(&gSaveBuffer.files[fileIndex][0],
-                                 sizeof(gSaveBuffer.files[fileIndex][0]), SAVE_FILE_MAGIC);
+        u8 slot = gSaveFileUsingBackupSlot ? 1 : 0;
 
-        // Copy to backup slot
-        bcopy(&gSaveBuffer.files[fileIndex][0], &gSaveBuffer.files[fileIndex][1],
-              sizeof(gSaveBuffer.files[fileIndex][1]));
+        // Compute checksum for the active slot.
+        add_save_block_signature(&gSaveBuffer.files[fileIndex][slot],
+                                 sizeof(gSaveBuffer.files[fileIndex][slot]), SAVE_FILE_MAGIC);
+
+        // Vanilla redundancy: mirror slot 0 into slot 1 unless mods explicitly use the backup slot as its own save.
+        if (!gSaveFileUsingBackupSlot) {
+            bcopy(&gSaveBuffer.files[fileIndex][0], &gSaveBuffer.files[fileIndex][1],
+                  sizeof(gSaveBuffer.files[fileIndex][1]));
+        }
 
         // Write to EEPROM
         write_eeprom_data(gSaveBuffer.files[fileIndex], sizeof(gSaveBuffer.files[fileIndex]));
@@ -356,6 +362,29 @@ void save_file_reload(void) {
 
     gMainMenuDataModified = FALSE;
     gSaveFileModified = FALSE;
+}
+
+u8 save_file_get_using_backup_slot(void) {
+    return gSaveFileUsingBackupSlot ? TRUE : FALSE;
+}
+
+void save_file_set_using_backup_slot(u8 usingBackupSlot) {
+    gSaveFileUsingBackupSlot = usingBackupSlot ? TRUE : FALSE;
+}
+
+void save_file_erase_current_backup_save(void) {
+    s32 fileIndex = gCurrSaveFileNum - 1;
+    if (fileIndex < 0 || fileIndex >= NUM_SAVE_FILES) {
+        return;
+    }
+    if (gNetworkType != NT_SERVER) {
+        return;
+    }
+
+    bzero(&gSaveBuffer.files[fileIndex][1], sizeof(gSaveBuffer.files[fileIndex][1]));
+
+    // Persist the cleared backup slot without touching the main slot.
+    write_eeprom_data(gSaveBuffer.files[fileIndex], sizeof(gSaveBuffer.files[fileIndex]));
 }
 
 /**
@@ -472,13 +501,14 @@ s32 save_file_get_total_star_count(s32 fileIndex, s32 minCourse, s32 maxCourse) 
 }
 
 void save_file_set_flags(u32 flags) {
-    gSaveBuffer.files[gCurrSaveFileNum - 1][0].flags |= (flags | SAVE_FLAG_FILE_EXISTS);
+    gSaveBuffer.files[gCurrSaveFileNum - 1][gSaveFileUsingBackupSlot ? 1 : 0].flags |= (flags | SAVE_FLAG_FILE_EXISTS);
     gSaveFileModified = TRUE;
 }
 
 void save_file_clear_flags(u32 flags) {
-    gSaveBuffer.files[gCurrSaveFileNum - 1][0].flags &= ~flags;
-    gSaveBuffer.files[gCurrSaveFileNum - 1][0].flags |= SAVE_FLAG_FILE_EXISTS;
+    u8 slot = gSaveFileUsingBackupSlot ? 1 : 0;
+    gSaveBuffer.files[gCurrSaveFileNum - 1][slot].flags &= ~flags;
+    gSaveBuffer.files[gCurrSaveFileNum - 1][slot].flags |= SAVE_FLAG_FILE_EXISTS;
     gSaveFileModified = TRUE;
 }
 
@@ -486,7 +516,7 @@ u32 save_file_get_flags(void) {
     if (gCurrCreditsEntry != NULL || gCurrDemoInput != NULL) {
         return 0;
     }
-    return gSaveBuffer.files[gCurrSaveFileNum - 1][0].flags;
+    return gSaveBuffer.files[gCurrSaveFileNum - 1][gSaveFileUsingBackupSlot ? 1 : 0].flags;
 }
 
 /**

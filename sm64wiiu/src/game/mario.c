@@ -37,6 +37,10 @@
 u32 unused80339F10;
 s8 filler80339F1C[20];
 
+#ifndef PLAY_MODE_PAUSED
+#define PLAY_MODE_PAUSED 2
+#endif
+
 /**************************************************
  *                    ANIMATIONS                  *
  **************************************************/
@@ -1380,6 +1384,10 @@ void update_mario_geometry_inputs(struct MarioState *m) {
  * Handles Mario's input flags as well as a couple timers.
  */
 void update_mario_inputs(struct MarioState *m) {
+    // Co-op DX compat: allow Lua mods to freeze Mario input (e.g. pause menu / spectator).
+    // This is a side-channel field stored by `smlua_*_mario_freeze_timer`.
+    const u8 freezeTimer = smlua_get_mario_freeze_timer(m);
+
     m->particleFlags = 0;
     m->input = 0;
     m->collidedObjInteractTypes = m->marioObj->collidedObjInteractTypes;
@@ -1388,6 +1396,11 @@ void update_mario_inputs(struct MarioState *m) {
     update_mario_button_inputs(m);
     update_mario_joystick_inputs(m);
     update_mario_geometry_inputs(m);
+
+    if (sCurrPlayMode == PLAY_MODE_PAUSED || freezeTimer > 0) {
+        m->input = 0;
+        m->intendedMag = 0.0f;
+    }
 
     debug_print_speed_action_normal(m);
 
@@ -1810,6 +1823,13 @@ void init_mario(void) {
 
     unused80339F10 = 0;
 
+    // Some mods expect `marioBodyState` to exist during transitions/hooks.
+    // Vanilla assigns it in `init_mario_from_save_file()`, but ensure it is
+    // present even if callers invoke `init_mario()` earlier.
+    if (gMarioState->marioBodyState == NULL) {
+        gMarioState->marioBodyState = &gBodyStates[0];
+    }
+
     gMarioState->actionTimer = 0;
     gMarioState->framesSinceA = 0xFF;
     gMarioState->framesSinceB = 0xFF;
@@ -1884,6 +1904,23 @@ void init_mario(void) {
         capObject->oForwardVelS32 = 0;
 
         capObject->oMoveAngleYaw = 0;
+    }
+}
+
+// Co-op DX exposes init_single_mario(m) to mods. Wii U is single-player only (gMarioStates[1]),
+// so treat this as a safe re-init of the local Mario and ensure he renders again.
+void init_single_mario(struct MarioState *m) {
+    if (m == NULL) {
+        return;
+    }
+    if (m != gMarioState) {
+        return;
+    }
+
+    init_mario();
+    if (gMarioState->marioObj != NULL) {
+        gMarioState->marioObj->header.gfx.node.flags |= GRAPH_RENDER_ACTIVE;
+        gMarioState->marioObj->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;
     }
 }
 

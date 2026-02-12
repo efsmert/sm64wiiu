@@ -271,10 +271,23 @@ DataNode<TexData>* DynOS_Tex_Load(BinFile *aFile, GfxData *aGfxData) {
         aFile->SetOffset(_FileOffset);
         _Node->mData->mPngData.Read(aFile);
         if (!_Node->mData->mPngData.Empty()) {
-            u8 *_RawData = stbi_load_from_memory(_Node->mData->mPngData.begin(), _Node->mData->mPngData.Count(), &_Node->mData->mRawWidth, &_Node->mData->mRawHeight, NULL, 4);
-            _Node->mData->mRawFormat = G_IM_FMT_RGBA;
-            _Node->mData->mRawSize   = G_IM_SIZ_32b;
-            _Node->mData->mRawData   = Array<u8>(_RawData, _RawData + (_Node->mData->mRawWidth * _Node->mData->mRawHeight * 4));
+            int rawWidth = 0;
+            int rawHeight = 0;
+            u8 *_RawData = stbi_load_from_memory(_Node->mData->mPngData.begin(), _Node->mData->mPngData.Count(), &rawWidth, &rawHeight, NULL, 4);
+            if (_RawData != NULL && rawWidth > 0 && rawHeight > 0) {
+                _Node->mData->mRawFormat = G_IM_FMT_RGBA;
+                _Node->mData->mRawSize   = G_IM_SIZ_32b;
+                _Node->mData->mRawWidth  = rawWidth;
+                _Node->mData->mRawHeight = rawHeight;
+                _Node->mData->mRawData   = Array<u8>(_RawData, _RawData + (_Node->mData->mRawWidth * _Node->mData->mRawHeight * 4));
+            } else {
+                _Node->mData->mRawData   = Array<u8>();
+                _Node->mData->mRawWidth  = 0;
+                _Node->mData->mRawHeight = 0;
+                _Node->mData->mRawFormat = 0;
+                _Node->mData->mRawSize   = 0;
+                PrintDataError("  ERROR: Failed to decode PNG texture \"%s\" from binary", _Node->mName.begin());
+            }
             free(_RawData);
         } else { // Probably a palette
             _Node->mData->mRawData   = Array<u8>();

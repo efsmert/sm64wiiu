@@ -49,6 +49,7 @@ s32 transition_submerged_to_walking(struct MarioState *m);
 s32 set_water_plunge_action(struct MarioState *m);
 s32 execute_mario_action(UNUSED struct Object *o);
 void init_mario(void);
+void init_single_mario(struct MarioState *m);
 void init_mario_from_save_file(void);
 
 #endif // MARIO_H

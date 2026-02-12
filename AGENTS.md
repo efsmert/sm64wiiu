@@ -10,11 +10,12 @@ This file is project-specific guidance for agents working in `/Users/samiareski/
 - The project already compiles and runs. Main risk is Lua/mod runtime stability, not toolchain setup.
 - Strategy: runtime and gameplay parity first, networking last.
 - Focus outputs: `.rpx` and `.wuhb`.
+- The project root contains a folder `flood-expanded-release/` which contains the mod data for the `Flood` mod. For easy access to debug the mod's behavior against our port, use that. This makes it so you do not have to search the computer for the files that are also in cemu's emulated sdcard.
 
 ## 2) First steps every session
 1. Read `SUMMARY.md` — but read smart, not linearly. See section 7 below for how.
 2. Check repo state (`git status`) and preserve in-flight work.
-3. Build before and after major edits using the project build script.
+3. After major edits, use the project build script.
 
 ## 3) Build and artifact workflow
 
@@ -53,13 +54,14 @@ Expected outputs:
 
 ## 5) Current porting priorities
 1. Keep startup and gameplay stable on Wii U.
-2. Expand gameplay/mod parity in small validated slices.
+2. Expand gameplay/mod parity in validated slices.
 3. Preserve donor compatibility where practical.
 4. Defer full networking parity until runtime parity is stable.
+**Be ambitous, this is a lot of work and will be a lot of porting. Don't Be afraid to make significant change if it's going to be worth it**
 
 ## 6) Working rules for this repo
 - Keep `sm64wiiu` buildable at all times.
-- Prefer incremental compatibility shims over large risky rewrites.
+- Prefer incremental compatibility shims over large risky rewrites, unless the user suggests an overhaul to the codebase.
 - Add comments for non-obvious Wii U behavior and stability workarounds.
 - If runtime behavior changes, record validation and result in `SUMMARY.md`.
 

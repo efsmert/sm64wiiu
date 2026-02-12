@@ -390,8 +390,19 @@ static void level_cmd_begin_area(void) {
     if (areaIndex < 8) {
         struct GraphNodeRoot *screenArea = NULL;
 #ifndef TARGET_N64
-        u32 id = 0;
-        screenArea = (struct GraphNodeRoot *) dynos_model_load_geo(&id, MODEL_POOL_LEVEL, geoLayoutAddr, false);
+#ifdef TARGET_WII_U
+        // DynOS custom levels pass raw geo pointers (0x1xxxxxxx). On Wii U this
+        // path can fault inside DynOS model-map bookkeeping during host warp.
+        // Parse raw custom geo directly through the level pool while keeping
+        // vanilla segmented geo on the existing DynOS path.
+        if ((uintptr_t)geoLayoutAddr >= 0x10000000u) {
+            screenArea = (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
+        } else
+#endif
+        {
+            u32 id = 0;
+            screenArea = (struct GraphNodeRoot *) dynos_model_load_geo(&id, MODEL_POOL_LEVEL, geoLayoutAddr, false);
+        }
 #else
         screenArea = (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
 #endif
@@ -863,9 +874,83 @@ static void (*LevelScriptJumpTable[])(void) = {
     /*3C*/ level_cmd_get_or_set_var,
 };
 
+// Canonical copy used if the jump table is corrupted by memory scribbles during
+// heavy DynOS mod loads. The symptom is jumping into unrelated functions due to
+// overwritten function pointers.
+static void (*LevelScriptJumpTableCanonical[])(void) = {
+    /*00*/ level_cmd_load_and_execute,
+    /*01*/ level_cmd_exit_and_execute,
+    /*02*/ level_cmd_exit,
+    /*03*/ level_cmd_sleep,
+    /*04*/ level_cmd_sleep2,
+    /*05*/ level_cmd_jump,
+    /*06*/ level_cmd_jump_and_link,
+    /*07*/ level_cmd_return,
+    /*08*/ level_cmd_jump_and_link_push_arg,
+    /*09*/ level_cmd_jump_repeat,
+    /*0A*/ level_cmd_loop_begin,
+    /*0B*/ level_cmd_loop_until,
+    /*0C*/ level_cmd_jump_if,
+    /*0D*/ level_cmd_jump_and_link_if,
+    /*0E*/ level_cmd_skip_if,
+    /*0F*/ level_cmd_skip,
+    /*10*/ level_cmd_skippable_nop,
+    /*11*/ level_cmd_call,
+    /*12*/ level_cmd_call_loop,
+    /*13*/ level_cmd_set_register,
+    /*14*/ level_cmd_push_pool_state,
+    /*15*/ level_cmd_pop_pool_state,
+    /*16*/ level_cmd_load_to_fixed_address,
+    /*17*/ level_cmd_load_raw,
+    /*18*/ level_cmd_load_mio0,
+    /*19*/ level_cmd_load_mario_head,
+    /*1A*/ level_cmd_load_mio0_texture,
+    /*1B*/ level_cmd_init_level,
+    /*1C*/ level_cmd_clear_level,
+    /*1D*/ level_cmd_alloc_level_pool,
+    /*1E*/ level_cmd_free_level_pool,
+    /*1F*/ level_cmd_begin_area,
+    /*20*/ level_cmd_end_area,
+    /*21*/ level_cmd_load_model_from_dl,
+    /*22*/ level_cmd_load_model_from_geo,
+    /*23*/ level_cmd_23,
+    /*24*/ level_cmd_place_object,
+    /*25*/ level_cmd_init_mario,
+    /*26*/ level_cmd_create_warp_node,
+    /*27*/ level_cmd_create_painting_warp_node,
+    /*28*/ level_cmd_create_instant_warp,
+    /*29*/ level_cmd_load_area,
+    /*2A*/ level_cmd_unload_area,
+    /*2B*/ level_cmd_set_mario_start_pos,
+    /*2C*/ level_cmd_2C,
+    /*2D*/ level_cmd_2D,
+    /*2E*/ level_cmd_set_terrain_data,
+    /*2F*/ level_cmd_set_rooms,
+    /*30*/ level_cmd_show_dialog,
+    /*31*/ level_cmd_set_terrain_type,
+    /*32*/ level_cmd_nop,
+    /*33*/ level_cmd_set_transition,
+    /*34*/ level_cmd_set_blackout,
+    /*35*/ level_cmd_set_gamma,
+    /*36*/ level_cmd_set_music,
+    /*37*/ level_cmd_set_menu_music,
+    /*38*/ level_cmd_38,
+    /*39*/ level_cmd_set_macro_objects,
+    /*3A*/ level_cmd_3A,
+    /*3B*/ level_cmd_create_whirlpool,
+    /*3C*/ level_cmd_get_or_set_var,
+};
+
 struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
     sScriptStatus = SCRIPT_RUNNING;
     sCurrentCmd = cmd;
+
+    void (**jumpTable)(void) = LevelScriptJumpTable;
+    if (jumpTable[0] != level_cmd_load_and_execute ||
+        jumpTable[1] != level_cmd_exit_and_execute ||
+        jumpTable[2] != level_cmd_exit) {
+        jumpTable = LevelScriptJumpTableCanonical;
+    }
 
     while (sScriptStatus == SCRIPT_RUNNING) {
 #ifndef TARGET_N64
@@ -873,8 +958,8 @@ struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
         void *dynosCurrCmd = (void *) sCurrentCmd;
 #endif
 
-        if (sCurrentCmd->type < ARRAY_COUNT(LevelScriptJumpTable)) {
-            LevelScriptJumpTable[sCurrentCmd->type]();
+        if (sCurrentCmd->type < ARRAY_COUNT(LevelScriptJumpTableCanonical)) {
+            jumpTable[sCurrentCmd->type]();
         } else {
             sScriptStatus = SCRIPT_PAUSED;
         }

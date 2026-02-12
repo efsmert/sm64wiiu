@@ -575,6 +575,10 @@ void read_controller_inputs(void) {
         if (controller->controllerData != NULL) {
             controller->rawStickX = controller->controllerData->stick_x;
             controller->rawStickY = controller->controllerData->stick_y;
+            // Wii U input backends currently do not provide an independent right-stick.
+            // Keep ext stick values valid for Co-op DX Lua mods (0 means "use C-buttons fallback").
+            controller->extStickX = 0;
+            controller->extStickY = 0;
             controller->buttonPressed = controller->controllerData->button
                                         & (controller->controllerData->button ^ controller->buttonDown);
             // 0.5x A presses are a good meme
@@ -584,6 +588,8 @@ void read_controller_inputs(void) {
         {
             controller->rawStickX = 0;
             controller->rawStickY = 0;
+            controller->extStickX = 0;
+            controller->extStickY = 0;
             controller->buttonPressed = 0;
             controller->buttonDown = 0;
             controller->stickX = 0;
@@ -597,6 +603,8 @@ void read_controller_inputs(void) {
     // the inputs for demos, despite record_demo existing.
     gPlayer3Controller->rawStickX = gPlayer1Controller->rawStickX;
     gPlayer3Controller->rawStickY = gPlayer1Controller->rawStickY;
+    gPlayer3Controller->extStickX = gPlayer1Controller->extStickX;
+    gPlayer3Controller->extStickY = gPlayer1Controller->extStickY;
     gPlayer3Controller->stickX = gPlayer1Controller->stickX;
     gPlayer3Controller->stickY = gPlayer1Controller->stickY;
     gPlayer3Controller->stickMag = gPlayer1Controller->stickMag;

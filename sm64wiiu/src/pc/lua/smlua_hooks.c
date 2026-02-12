@@ -5,8 +5,11 @@
 #include <stdlib.h>
 
 #include "sm64.h"
+#include "behavior_commands.h"
 #include "behavior_data.h"
+#include "behavior_table.h"
 #include "game/mario.h"
+#include "game/level_update.h"
 #include "game/object_list_processor.h"
 
 #include "smlua.h"
@@ -18,10 +21,14 @@
 #endif
 
 #define MAX_HOOKED_REFERENCES 64
+#define LUA_BEHAVIOR_FLAG (1 << 15)
 #define MAX_SYNC_TABLE_CHANGE_HOOKS 64
 #define MAX_MARIO_ACTION_HOOKS 128
-#define MAX_BEHAVIOR_HOOKS 64
-#define SMLUA_CALLBACK_INSTRUCTION_BUDGET 20000000
+#define MAX_BEHAVIOR_HOOKS 1024
+#define MAX_HOOKED_CUSTOM_BEHAVIORS 1024
+// Keep Wii U runtime safe: if a mod spins in an update hook we want it to fail fast
+// with a traceback instead of stalling the frame for seconds.
+#define SMLUA_CALLBACK_INSTRUCTION_BUDGET 1000000
 
 struct LuaHookedEvent {
     int references[MAX_HOOKED_REFERENCES];
@@ -38,6 +45,7 @@ static bool sBeforePhysStepTypeLogged[4] = { false, false, false, false };
 static int sBeforePhysEarlyReturnLogs = 0;
 static bool sHookStateReboundLogged = false;
 static bool sHookStateUnavailableLogged = false;
+static u8 sMarioFreezeTimers[MAX_PLAYERS] = { 0 };
 
 struct LuaSyncTableChangeHook {
     int tableRef;
@@ -76,10 +84,22 @@ struct LuaBehaviorHook {
     bool active;
 };
 
+struct LuaHookedCustomBehavior {
+    u32 behaviorId;
+    u32 overrideId;
+    u32 originalId;
+    BehaviorScript *behavior;
+    const BehaviorScript *originalBehavior;
+    const char *bhvName;
+    bool ownedBehavior;
+};
+
 static struct LuaMarioActionHook sMarioActionHooks[MAX_MARIO_ACTION_HOOKS];
 static int sMarioActionHookCount = 0;
 static struct LuaBehaviorHook sBehaviorHooks[MAX_BEHAVIOR_HOOKS];
 static int sBehaviorHookCount = 0;
+static struct LuaHookedCustomBehavior sHookedCustomBehaviors[MAX_HOOKED_CUSTOM_BEHAVIORS];
+static int sHookedCustomBehaviorsCount = 0;
 static int sObjectSetModelDispatchDepth = 0;
 
 typedef void (*SmluaHookPushArgsFn)(lua_State *L, const void *ctx);
@@ -102,6 +122,72 @@ static lua_State *smlua_resolve_hook_state(void) {
     return sHookState;
 }
 
+u8 smlua_get_mario_freeze_timer(const struct MarioState *m) {
+    if (m == NULL) {
+        return 0;
+    }
+    int idx = (int)(m - gMarioStates);
+    if (idx < 0 || idx >= MAX_PLAYERS) {
+        return 0;
+    }
+    return sMarioFreezeTimers[idx];
+}
+
+void smlua_set_mario_freeze_timer(const struct MarioState *m, u8 value) {
+    if (m == NULL) {
+        return;
+    }
+    int idx = (int)(m - gMarioStates);
+    if (idx < 0 || idx >= MAX_PLAYERS) {
+        return;
+    }
+    sMarioFreezeTimers[idx] = value;
+}
+
+static bool smlua_try_resolve_behavior_id(lua_State *L, int idx, s32 *outBehaviorId) {
+    if (outBehaviorId == NULL) {
+        return false;
+    }
+    *outBehaviorId = -1;
+
+    if (L == NULL) {
+        return false;
+    }
+
+    if (lua_isinteger(L, idx)) {
+        *outBehaviorId = (s32)lua_tointeger(L, idx);
+        return true;
+    }
+
+    if (lua_islightuserdata(L, idx)) {
+        BehaviorScript *script = (BehaviorScript *)lua_touserdata(L, idx);
+        if (script == NULL) {
+            return false;
+        }
+        *outBehaviorId = (s32)get_id_from_behavior(script);
+        return true;
+    }
+
+    if (lua_isstring(L, idx)) {
+        const char *name = lua_tostring(L, idx);
+        if (name == NULL || name[0] == '\0') {
+            return false;
+        }
+
+        // Allow passing behavior names as strings (common in some CoopDX mods).
+        lua_getglobal(L, name);
+        if (!lua_isinteger(L, -1)) {
+            lua_pop(L, 1);
+            return false;
+        }
+        *outBehaviorId = (s32)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        return true;
+    }
+
+    return false;
+}
+
 // Emits hook-runtime diagnostics to both stdout and Wii U OS console.
 static void smlua_hook_logf(const char *fmt, ...) {
     va_list args;
@@ -118,11 +204,72 @@ static void smlua_hook_logf(const char *fmt, ...) {
     printf("\n");
 }
 
-// DynOS compatibility: CoopDX registers custom behavior scripts and exposes them to Lua.
-// Wii U currently does not implement full behavior ID hooking; accept the script and continue.
+const BehaviorScript *smlua_get_hooked_behavior_from_id(s32 id, bool returnOriginal) {
+    if (id < 0) {
+        return NULL;
+    }
+
+    for (int i = 0; i < sHookedCustomBehaviorsCount; i++) {
+        struct LuaHookedCustomBehavior *hooked = &sHookedCustomBehaviors[i];
+        if ((s32)hooked->behaviorId != id && (s32)hooked->overrideId != id) {
+            continue;
+        }
+        if (returnOriginal) {
+            return hooked->originalBehavior;
+        }
+        return hooked->behavior;
+    }
+    return NULL;
+}
+
+// DynOS compatibility: register custom behavior IDs and expose globals to Lua like CoopDX.
 int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName) {
-    (void)bhvScript;
-    (void)bhvName;
+    if (bhvScript == NULL || bhvName == NULL || bhvName[0] == '\0') {
+        return 0;
+    }
+    if (sHookedCustomBehaviorsCount >= MAX_HOOKED_CUSTOM_BEHAVIORS) {
+        smlua_hook_logf("lua: custom behavior registry exceeded max references");
+        return 0;
+    }
+
+    for (int i = 0; i < sHookedCustomBehaviorsCount; i++) {
+        struct LuaHookedCustomBehavior *existing = &sHookedCustomBehaviors[i];
+        if (existing->behavior == bhvScript || (existing->bhvName != NULL && strcmp(existing->bhvName, bhvName) == 0)) {
+            lua_State *state = smlua_resolve_hook_state();
+            if (state != NULL) {
+                lua_pushinteger(state, existing->behaviorId);
+                lua_setglobal(state, bhvName);
+            }
+            return 1;
+        }
+    }
+
+    u32 originalBehaviorId = get_id_from_behavior(bhvScript);
+    if (originalBehaviorId == id_bhvMario) {
+        smlua_hook_logf("lua: refusing to hook Mario behavior as custom");
+        return 0;
+    }
+
+    bool newBehavior = originalBehaviorId >= id_bhv_max_count;
+    struct LuaHookedCustomBehavior *hooked = &sHookedCustomBehaviors[sHookedCustomBehaviorsCount];
+    u16 customBehaviorId = (u16)((sHookedCustomBehaviorsCount & 0x7FFF) | LUA_BEHAVIOR_FLAG);
+
+    memset(hooked, 0, sizeof(*hooked));
+    hooked->behavior = bhvScript;
+    hooked->behavior[1] = (BehaviorScript)BC_B0H(0x39, customBehaviorId);
+    hooked->behaviorId = customBehaviorId;
+    hooked->overrideId = newBehavior ? customBehaviorId : originalBehaviorId;
+    hooked->originalId = originalBehaviorId;
+    hooked->originalBehavior = newBehavior ? bhvScript : get_behavior_from_id((enum BehaviorId)originalBehaviorId);
+    hooked->bhvName = bhvName;
+    hooked->ownedBehavior = false;
+    sHookedCustomBehaviorsCount++;
+
+    lua_State *state = smlua_resolve_hook_state();
+    if (state != NULL) {
+        lua_pushinteger(state, customBehaviorId);
+        lua_setglobal(state, bhvName);
+    }
     return 1;
 }
 
@@ -132,12 +279,30 @@ static void smlua_callback_budget_hook(lua_State *L, lua_Debug *ar) {
     luaL_error(L, "callback exceeded instruction budget");
 }
 
+// Error handler that appends a Lua traceback to the error message.
+static int smlua_traceback(lua_State *L) {
+    const char *msg = lua_tostring(L, 1);
+    if (msg == NULL) {
+        msg = "<unknown>";
+    }
+    luaL_traceback(L, L, msg, 1);
+    return 1;
+}
+
 // Runs a Lua callback under an instruction budget guard.
 static int smlua_pcall_with_budget(lua_State *L, int nargs, int nresults) {
     int status;
+    // Insert traceback handler beneath the function + args.
+    int base = lua_gettop(L) - nargs;
+    lua_pushcfunction(L, smlua_traceback);
+    lua_insert(L, base);
+
     lua_sethook(L, smlua_callback_budget_hook, LUA_MASKCOUNT, SMLUA_CALLBACK_INSTRUCTION_BUDGET);
-    status = lua_pcall(L, nargs, nresults, 0);
+    status = lua_pcall(L, nargs, nresults, base);
     lua_sethook(L, NULL, 0, 0);
+
+    // Remove traceback handler regardless of success/failure.
+    lua_remove(L, base);
     return status;
 }
 
@@ -290,6 +455,11 @@ static int smlua_hook_mod_menu_inputbox(lua_State *L) {
 
 // Converts known Co-op DX behavior IDs into vanilla behavior-script pointers.
 static const BehaviorScript *smlua_behavior_from_id(s32 behavior_id) {
+    const BehaviorScript *hooked = smlua_get_hooked_behavior_from_id(behavior_id, false);
+    if (hooked != NULL) {
+        return hooked;
+    }
+
     switch (behavior_id) {
         case SMLUA_BEHAVIOR_ID_ACT_SELECTOR:
             return bhvActSelector;
@@ -308,8 +478,13 @@ static const BehaviorScript *smlua_behavior_from_id(s32 behavior_id) {
         case SMLUA_BEHAVIOR_ID_WING_CAP:
             return bhvWingCap;
         default:
-            return NULL;
+            break;
     }
+
+    if (behavior_id >= 0 && behavior_id < (s32)id_bhv_max_count) {
+        return get_behavior_from_id((enum BehaviorId)behavior_id);
+    }
+    return NULL;
 }
 
 // Registers a callback for a specific action ID allocated by Lua.
@@ -339,48 +514,121 @@ static int smlua_hook_mario_action(lua_State *L) {
 
 // Registers Lua behavior init/loop callbacks for a known behavior ID.
 static int smlua_hook_behavior(lua_State *L) {
-    if (lua_gettop(L) < 5 || !lua_isinteger(L, 1) || !lua_isinteger(L, 2) || !lua_isboolean(L, 3)) {
+    int paramCount = lua_gettop(L);
+    bool noOverrideId = false;
+    s32 behaviorId = -1;
+    int objectList = 0;
+    bool replaceBehavior = false;
+    const char *bhvName = NULL;
+    int initRef = LUA_NOREF;
+    int loopRef = LUA_NOREF;
+
+    if (paramCount < 5) {
+        smlua_hook_logf("lua: hook_behavior requires at least 5 arguments");
         return 0;
     }
     if (sBehaviorHookCount >= MAX_BEHAVIOR_HOOKS) {
         smlua_hook_logf("lua: behavior hook exceeded max references");
         return 0;
     }
-
-    s32 behaviorId = (s32)lua_tointeger(L, 1);
-    if (smlua_behavior_from_id(behaviorId) == NULL) {
+    noOverrideId = lua_isnil(L, 1);
+    if (!lua_isnumber(L, 2)) {
+        smlua_hook_logf("lua: hook_behavior invalid object list type");
         return 0;
+    }
+    objectList = (int)lua_tointeger(L, 2);
+    replaceBehavior = lua_toboolean(L, 3);
+    if (objectList <= 0 || objectList >= NUM_OBJ_LISTS) {
+        smlua_hook_logf("lua: hook_behavior invalid object list %d", objectList);
+        return 0;
+    }
+    if (paramCount >= 6 && lua_isstring(L, 6)) {
+        bhvName = lua_tostring(L, 6);
+    }
+
+    if (noOverrideId) {
+        static char sGeneratedName[64];
+        struct LuaHookedCustomBehavior *hooked = NULL;
+        u16 customBehaviorId = 0;
+        BehaviorScript *script = NULL;
+
+        if (sHookedCustomBehaviorsCount >= MAX_HOOKED_CUSTOM_BEHAVIORS) {
+            return 0;
+        }
+
+        customBehaviorId = (u16)((sHookedCustomBehaviorsCount & 0x7FFF) | LUA_BEHAVIOR_FLAG);
+        script = calloc(4, sizeof(BehaviorScript));
+        if (script == NULL) {
+            return 0;
+        }
+
+        script[0] = (BehaviorScript)BC_BB(0x00, objectList);
+        script[1] = (BehaviorScript)BC_B0H(0x39, customBehaviorId);
+        script[2] = (BehaviorScript)BC_B(0x0A);
+        script[3] = (BehaviorScript)BC_B(0x0A);
+
+        if (bhvName == NULL || bhvName[0] == '\0') {
+            snprintf(sGeneratedName, sizeof(sGeneratedName), "bhvCustom%03u",
+                     (unsigned)(sHookedCustomBehaviorsCount + 1));
+            bhvName = sGeneratedName;
+        }
+
+        hooked = &sHookedCustomBehaviors[sHookedCustomBehaviorsCount];
+        memset(hooked, 0, sizeof(*hooked));
+        hooked->behaviorId = customBehaviorId;
+        hooked->overrideId = customBehaviorId;
+        hooked->originalId = customBehaviorId;
+        hooked->behavior = script;
+        hooked->originalBehavior = script;
+        hooked->bhvName = bhvName;
+        hooked->ownedBehavior = true;
+        sHookedCustomBehaviorsCount++;
+
+        if (bhvName != NULL && bhvName[0] != '\0') {
+            lua_pushinteger(L, customBehaviorId);
+            lua_setglobal(L, bhvName);
+        }
+        behaviorId = customBehaviorId;
+    } else {
+        if (!smlua_try_resolve_behavior_id(L, 1, &behaviorId)) {
+            smlua_hook_logf("lua: hook_behavior could not resolve override behavior id");
+            return 0;
+        }
+        if (smlua_behavior_from_id(behaviorId) == NULL) {
+            replaceBehavior = true;
+        }
+    }
+
+    if (!lua_isnil(L, 4) && !lua_isfunction(L, 4)) {
+        smlua_hook_logf("lua: hook_behavior init callback must be function or nil");
+        return 0;
+    }
+    if (!lua_isnil(L, 5) && !lua_isfunction(L, 5)) {
+        smlua_hook_logf("lua: hook_behavior loop callback must be function or nil");
+        return 0;
+    }
+
+    if (lua_isfunction(L, 4)) {
+        lua_pushvalue(L, 4);
+        initRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    if (lua_isfunction(L, 5)) {
+        lua_pushvalue(L, 5);
+        loopRef = luaL_ref(L, LUA_REGISTRYINDEX);
     }
 
     struct LuaBehaviorHook *hook = &sBehaviorHooks[sBehaviorHookCount];
     memset(hook, 0, sizeof(*hook));
     hook->behaviorId = behaviorId;
-    hook->objList = (int)lua_tointeger(L, 2);
-    hook->sync = lua_toboolean(L, 3) != 0;
-    hook->initRef = LUA_NOREF;
-    hook->loopRef = LUA_NOREF;
-
-    if (lua_isfunction(L, 4)) {
-        lua_pushvalue(L, 4);
-        hook->initRef = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
-    if (lua_isfunction(L, 5)) {
-        lua_pushvalue(L, 5);
-        hook->loopRef = luaL_ref(L, LUA_REGISTRYINDEX);
-    }
-
-    hook->active = hook->initRef != LUA_NOREF || hook->loopRef != LUA_NOREF;
-    if (!hook->active) {
-        if (hook->initRef != LUA_NOREF) {
-            luaL_unref(L, LUA_REGISTRYINDEX, hook->initRef);
-        }
-        if (hook->loopRef != LUA_NOREF) {
-            luaL_unref(L, LUA_REGISTRYINDEX, hook->loopRef);
-        }
-        return 0;
-    }
+    hook->objList = objectList;
+    hook->sync = replaceBehavior;
+    hook->initRef = initRef;
+    hook->loopRef = loopRef;
+    hook->active = true;
 
     sBehaviorHookCount++;
+    // Match CoopDX: return the resolved behavior ID so mods can assign it.
+    lua_pushinteger(L, (lua_Integer)behaviorId);
     return 1;
 }
 
@@ -931,13 +1179,22 @@ void smlua_clear_hooks(lua_State *L) {
             hook->active = false;
         }
     }
+    for (int i = 0; i < sHookedCustomBehaviorsCount; i++) {
+        struct LuaHookedCustomBehavior *hooked = &sHookedCustomBehaviors[i];
+        if (hooked->ownedBehavior && hooked->behavior != NULL) {
+            free(hooked->behavior);
+            hooked->behavior = NULL;
+        }
+    }
     memset(sHookedEvents, 0, sizeof(sHookedEvents));
     memset(sSyncTableChangeHooks, 0, sizeof(sSyncTableChangeHooks));
     memset(sMarioActionHooks, 0, sizeof(sMarioActionHooks));
     memset(sBehaviorHooks, 0, sizeof(sBehaviorHooks));
+    memset(sHookedCustomBehaviors, 0, sizeof(sHookedCustomBehaviors));
     sSyncTableChangeHookCount = 0;
     sMarioActionHookCount = 0;
     sBehaviorHookCount = 0;
+    sHookedCustomBehaviorsCount = 0;
     sBeforePhysWaterHookCountLogged = false;
     sBeforePhysWaterVelChangeLogs = 0;
     sBeforePhysEarlyReturnLogs = 0;

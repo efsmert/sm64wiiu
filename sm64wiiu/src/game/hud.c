@@ -431,38 +431,49 @@ void render_hud(void) {
 
     hudDisplayFlags = gHudDisplay.flags;
 #ifndef TARGET_N64
-    if (gDjuiInMainMenu) {
+    const bool allowLuaHud = !gDjuiInMainMenu;
+    if (!allowLuaHud) {
         hudDisplayFlags = HUD_DISPLAY_NONE;
     }
+#else
+    const bool allowLuaHud = true;
 #endif
 
     if (hudDisplayFlags == HUD_DISPLAY_NONE) {
         sPowerMeterHUD.animation = POWER_METER_HIDDEN;
         sPowerMeterStoredHealth = 8;
         sPowerMeterVisibleTimer = 0;
-    } else {
-#ifdef VERSION_EU
-        // basically create_dl_ortho_matrix but guOrtho screen width is different
+    }
 
-        mtx = alloc_display_list(sizeof(*mtx));
-        if (mtx == NULL) {
-            return;
-        }
-        create_dl_identity_matrix();
-        guOrtho(mtx, -16.0f, SCREEN_WIDTH + 16, 0, SCREEN_HEIGHT, -10.0f, 10.0f, 1.0f);
-        gSPPerspNormalize(gDisplayListHead++, 0xFFFF);
-        gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
-                G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
+    // Co-op DX behavior: even when vanilla HUD is hidden, still allow Lua HUD hooks
+    // to draw (Flood uses hud_hide() and renders its own HUD via HOOK_ON_HUD_RENDER).
+    if (!allowLuaHud) {
+        return;
+    }
+
+#ifdef VERSION_EU
+    // basically create_dl_ortho_matrix but guOrtho screen width is different
+
+    mtx = alloc_display_list(sizeof(*mtx));
+    if (mtx == NULL) {
+        return;
+    }
+    create_dl_identity_matrix();
+    guOrtho(mtx, -16.0f, SCREEN_WIDTH + 16, 0, SCREEN_HEIGHT, -10.0f, 10.0f, 1.0f);
+    gSPPerspNormalize(gDisplayListHead++, 0xFFFF);
+    gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
+              G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
 #else
-        create_dl_ortho_matrix();
+    create_dl_ortho_matrix();
 #endif
 
 #ifndef TARGET_N64
-        // Draw behind-HUD Lua layers after HUD projection setup and before vanilla HUD.
-        djui_hud_begin_frame();
-        smlua_call_event_hooks(HOOK_ON_HUD_RENDER_BEHIND);
+    // Draw behind-HUD Lua layers after HUD projection setup and before vanilla HUD.
+    djui_hud_begin_frame();
+    smlua_call_event_hooks(HOOK_ON_HUD_RENDER_BEHIND);
 #endif
 
+    if (hudDisplayFlags != HUD_DISPLAY_NONE) {
         if (gCurrentArea != NULL && gCurrentArea->camera->mode == CAMERA_MODE_INSIDE_CANNON) {
             render_hud_cannon_reticle();
         }
@@ -491,11 +502,11 @@ void render_hud(void) {
         if (hudDisplayFlags & HUD_DISPLAY_FLAG_TIMER) {
             render_hud_timer();
         }
+    }
 
 #ifndef TARGET_N64
-        // Draw front-HUD Lua layers after vanilla HUD so overlays appear above counters.
-        smlua_call_event_hooks(HOOK_ON_HUD_RENDER);
-        smlua_render_mod_overlay();
+    // Draw front-HUD Lua layers after vanilla HUD so overlays appear above counters.
+    smlua_call_event_hooks(HOOK_ON_HUD_RENDER);
+    smlua_render_mod_overlay();
 #endif
-    }
 }

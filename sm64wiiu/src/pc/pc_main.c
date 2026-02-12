@@ -268,6 +268,12 @@ static u32 produce_interpolation_frames_and_delay(void) {
 
 void produce_one_frame(void) {
     pc_diag_mark_stage("produce_one_frame:begin");
+    // Some UI actions (e.g. starting host) used to call `smlua_init()` mid-render,
+    // which can trigger DynOS shutdown while the scenegraph is being traversed.
+    // Consume re-init requests here at a stable point before game/render steps.
+    if (smlua_consume_reinit_request()) {
+        smlua_init();
+    }
     if (configWindow.settings_changed) {
         configWindow.settings_changed = false;
         if (wm_api != NULL && wm_api->set_fullscreen != NULL) {
@@ -519,6 +525,7 @@ void main_func(void) {
     djui_init_late();
 #ifdef TARGET_WII_U
     WHBLogPrint("pc: entering main loop");
+    WHBLogPrintf("pc: build %s %s", __DATE__, __TIME__);
 #endif
 #ifdef TARGET_WEB
     /*for (int i = 0; i < atoi(argv[1]); i++) {

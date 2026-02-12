@@ -33,6 +33,9 @@
 #include "pc/djui/djui.h"
 #include "pc/configfile.h"
 #endif
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 #define PLAY_MODE_NORMAL 0
 #define PLAY_MODE_PAUSED 2
@@ -396,6 +399,18 @@ void set_mario_initial_action(struct MarioState *m, u32 spawnType, u32 actionArg
 
 void init_mario_after_warp(void) {
     struct ObjectWarpNode *spawnNode = area_get_warp_node(sWarpDest.nodeId);
+    if (spawnNode == NULL || spawnNode->object == NULL) {
+#ifdef TARGET_WII_U
+        // Mods can sometimes request warps before the target area has valid warp nodes.
+        // Avoid crashing; cancel the warp and keep the last known good state.
+        WHBLogPrintf("warp: invalid spawn nodeId=%d type=%d area=%d", (int)sWarpDest.nodeId, (int)sWarpDest.type,
+                     (int)sWarpDest.areaIdx);
+#endif
+        sWarpDest.type = WARP_TYPE_NOT_WARPING;
+        sDelayedWarpOp = WARP_OP_NONE;
+        return;
+    }
+
     u32 marioSpawnType = get_mario_spawn_type(spawnNode->object);
 #ifndef TARGET_N64
     u8 warpType = sWarpDest.type;

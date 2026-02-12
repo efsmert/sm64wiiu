@@ -1065,22 +1065,30 @@ static DataNode<LevelScript>* DynOS_Lvl_Load(BinFile *aFile, GfxData *aGfxData) 
 
     // Read it
     for (u32 i = 0; i != _Node->mSize; ++i) {
-        u32 _Value = aFile->Read<u32>();
+        // Keep raw command-word bytes in memory for level-script execution/parsing.
+        // Separately, compute a swapped numeric value for decoding DynOS pointer tokens
+        // (FUNC/PNTR/LUAV) which are written in host-endian on little-endian builders.
+        u32 _RawValue = 0;
+        aFile->Read<u8>((u8 *) &_RawValue, sizeof(_RawValue));
+        u32 _TokenValue = DynOS_EndianFix<u32>::Read(_RawValue);
 
-        bool requirePointer = DynOS_Lvl_Validate_RequirePointer(_Value);
+        // Validate using the level-script word layout (CMD_* packing), not token layout.
+        bool requirePointer = DynOS_Lvl_Validate_RequirePointer(_RawValue);
 
-        void *_Ptr = DynOS_Pointer_Load(aFile, aGfxData, _Value, FUNCTION_LVL, &_Node->mFlags);
+        void *_Ptr = DynOS_Pointer_Load(aFile, aGfxData, _TokenValue, FUNCTION_LVL, &_Node->mFlags);
         if (_Ptr) {
-            if (!requirePointer && _Value != LUA_VAR_CODE) {
-                PrintError("Didn't expect a pointer while reading level script: %s, %u", _Node->mName.begin(), _Value);
+            if (!requirePointer && _TokenValue != LUA_VAR_CODE) {
+                PrintError("Didn't expect a pointer while reading level script: %s, %u", _Node->mName.begin(), _TokenValue);
             }
             _Node->mData[i] = (uintptr_t) _Ptr;
         } else {
-            if (requirePointer && _Value != LUA_VAR_CODE) {
-                PrintError("Expected a pointer while reading level script: %s, %u", _Node->mName.begin(), _Value);
+            if (requirePointer && _TokenValue != LUA_VAR_CODE) {
+                PrintError("Expected a pointer while reading level script: %s, %u", _Node->mName.begin(), _TokenValue);
                 _Node->mData[i] = 0;
             } else {
-                _Node->mData[i] = (uintptr_t) _Value;
+                // Store non-pointer command words exactly as authored on disk so
+                // command decoding works on both endian types.
+                _Node->mData[i] = (uintptr_t) _RawValue;
             }
         }
     }

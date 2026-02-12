@@ -16,10 +16,12 @@
 
 #include "sm64.h"
 #include "behavior_data.h"
+#include "behavior_table.h"
 #include "gfx_dimensions.h"
 #include "game/area.h"
 #include "game/camera.h"
 #include "game/game_init.h"
+#include "game/hardcoded.h"
 #include "game/hud.h"
 #include "game/ingame_menu.h"
 #include "game/level_info.h"
@@ -32,6 +34,7 @@
 #include "game/interaction.h"
 #include "game/level_update.h"
 #include "game/mario.h"
+#include "game/save_file.h"
 #include "engine/graph_node.h"
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
@@ -48,6 +51,8 @@
 #include "smlua_cobject.h"
 #include "smlua_hooks.h"
 #include "utils/smlua_audio_utils.h"
+#include "pc/utils/misc.h"
+#include "pc/network/network.h"
 
 // `djui_hud_utils.h` only forward-declares `struct DjuiColor`, but the Lua HUD
 // bindings need to read the RGBA fields. Mirror the struct layout here to avoid
@@ -100,7 +105,7 @@ lua_State *smlua_get_state(void) {
 #define SMLUA_DIALOG_CHAR_COLON 0xE6
 #define SMLUA_DIALOG_CHAR_STAR 0xFB
 
-#define SMLUA_MOD_STORAGE_MAX_KEYS 256
+#define SMLUA_MOD_STORAGE_MAX_KEYS 1024
 #define SMLUA_MOD_STORAGE_MAX_KEY 127
 #define SMLUA_MOD_STORAGE_MAX_VALUE 1023
 #define SMLUA_MOD_STORAGE_LINE_SIZE (SMLUA_MOD_STORAGE_MAX_KEY + SMLUA_MOD_STORAGE_MAX_VALUE + 8)
@@ -150,6 +155,19 @@ struct SmluaModStorageEntry {
     char value[SMLUA_MOD_STORAGE_MAX_VALUE + 1];
 };
 
+// Co-op DX caches mod storage files; without caching, repeated SD I/O can stall frames.
+#define SMLUA_MOD_STORAGE_CACHE_SLOTS 4
+struct SmluaModStorageCacheSlot {
+    char filename[SYS_MAX_PATH];
+    bool loaded;
+    bool dirty;
+    struct SmluaModStorageEntry entries[SMLUA_MOD_STORAGE_MAX_KEYS];
+    size_t count;
+};
+
+static struct SmluaModStorageCacheSlot sModStorageCache[SMLUA_MOD_STORAGE_CACHE_SLOTS];
+static int sModStorageCacheNextVictim = 0;
+
 struct SmluaHudColor {
     int r;
     int g;
@@ -174,6 +192,7 @@ static bool sLuaHasFogColor = false;
 static bool sLuaHasFogIntensity = false;
 static s32 sLuaOverrideFar = -1;
 static f32 sLuaOverrideFov = 0.0f;
+static f32 sLuaOverrideNear = 0.0f;
 static s32 sLuaScriptOverrideSkybox = -1;
 static s32 sLuaDncOverrideSkybox = -1;
 static u8 sLuaScriptSkyboxColor[3] = { 255, 255, 255 };
@@ -208,7 +227,36 @@ static void smlua_extract_mod_relative_path(const char *script_path, char *out, 
 static void smlua_format_mod_display_name(const char *relative_path, char *out, size_t out_size);
 
 #define SMLUA_SCRIPT_LOAD_INSTRUCTION_BUDGET 10000000
-#define SMLUA_UPDATE_INSTRUCTION_BUDGET 5000000
+#define SMLUA_UPDATE_INSTRUCTION_BUDGET 1000000
+
+// Error handler that appends a Lua traceback to the error message.
+static int smlua_traceback(lua_State *L) {
+    const char *msg = lua_tostring(L, 1);
+    if (msg == NULL) {
+        msg = "<unknown>";
+    }
+    luaL_traceback(L, L, msg, 1);
+    return 1;
+}
+
+// Co-op DX helper for scripted warp transitions (Flood uses it).
+static int smlua_func_play_transition(lua_State *L) {
+    s16 trans_type = (s16)luaL_checkinteger(L, 1);
+    s16 time = (s16)luaL_checkinteger(L, 2);
+    u8 red = (u8)luaL_optinteger(L, 3, 0);
+    u8 green = (u8)luaL_optinteger(L, 4, 0);
+    u8 blue = (u8)luaL_optinteger(L, 5, 0);
+    play_transition(trans_type, time, red, green, blue);
+    return 0;
+}
+
+// Co-op DX audio helper `seq_player_fade_out(player, fadeDuration)`.
+static int smlua_func_seq_player_fade_out(lua_State *L) {
+    u8 player = (u8)luaL_checkinteger(L, 1);
+    u16 fade_duration = (u16)luaL_checkinteger(L, 2);
+    seq_player_fade_out(player, fade_duration);
+    return 0;
+}
 
 struct SmluaTextureInfo {
     char name[128];
@@ -277,10 +325,11 @@ struct SmluaGraphRootRef {
 static struct SmluaModAudio sLuaAudioPool[SMLUA_MAX_MOD_AUDIO];
 static s32 sLuaAudioPoolCount = 0;
 static u32 sLuaUpdateCounter = 0;
+static bool sSmluaPendingReinit = false;
 
 #define SMLUA_MOD_OVERLAY_MAX_LINES 4
 #define SMLUA_MOD_OVERLAY_LINE_MAX 48
-#define SMLUA_MOD_OVERLAY_SHOW_FRAMES 900
+#define SMLUA_MOD_OVERLAY_SHOW_FRAMES 0
 static char sLuaModOverlayLines[SMLUA_MOD_OVERLAY_MAX_LINES][SMLUA_MOD_OVERLAY_LINE_MAX];
 static s32 sLuaModOverlayLineCount = 0;
 static s32 sLuaModOverlayFramesLeft = 0;
@@ -369,90 +418,12 @@ static void smlua_logf(const char *fmt, ...) {
 #endif
 }
 
-// Converts one script path into a short HUD-safe mod label.
-static void smlua_mod_overlay_make_label(char *out, size_t out_size, const char *script_path) {
-    const char *name = script_path;
-    const char *slash;
-    const char *dot;
-    size_t limit = 0;
-    size_t pos = 0;
-
-    if (out == NULL || out_size == 0) {
-        return;
-    }
-
-    out[0] = '\0';
-    if (name == NULL || name[0] == '\0') {
-        snprintf(out, out_size, "UNKNOWN");
-        return;
-    }
-
-    if (strncmp(name, "mods/", 5) == 0) {
-        name += 5;
-    }
-
-    slash = strchr(name, '/');
-    if (slash != NULL) {
-        // Folder mods are represented by folder name (mods/foo/main.lua -> foo).
-        limit = (size_t)(slash - name);
-    } else {
-        dot = strrchr(name, '.');
-        limit = dot != NULL ? (size_t)(dot - name) : strlen(name);
-    }
-    if (limit == 0) {
-        snprintf(out, out_size, "MOD");
-        return;
-    }
-
-    for (size_t i = 0; i < limit && pos + 1 < out_size; i++) {
-        char c = name[i];
-        if (isalnum((unsigned char)c) || c == '.' || c == '/') {
-            out[pos++] = (char)toupper((unsigned char)c);
-        } else {
-            out[pos++] = ' ';
-        }
-    }
-    while (pos > 0 && out[pos - 1] == ' ') {
-        pos--;
-    }
-    if (pos == 0) {
-        snprintf(out, out_size, "MOD");
-        return;
-    }
-    out[pos] = '\0';
-}
-
 // Rebuilds startup overlay lines showing currently active root scripts.
 static void smlua_refresh_mod_overlay_lines(void) {
-    size_t script_count = mods_get_active_script_count();
-    size_t max_listed = (size_t)(SMLUA_MOD_OVERLAY_MAX_LINES - 1);
-    size_t listed = 0;
-
     memset(sLuaModOverlayLines, 0, sizeof(sLuaModOverlayLines));
     sLuaModOverlayLineCount = 0;
-
-    snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "MODS %u",
-             (unsigned)script_count);
-
-    if (script_count == 0) {
-        snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "NONE");
-    } else {
-        for (size_t i = 0; i < script_count && listed < max_listed; i++) {
-            const char *script_path = mods_get_active_script_path(i);
-            smlua_mod_overlay_make_label(
-                sLuaModOverlayLines[sLuaModOverlayLineCount++],
-                SMLUA_MOD_OVERLAY_LINE_MAX,
-                script_path
-            );
-            listed++;
-        }
-        if (script_count > listed && sLuaModOverlayLineCount < SMLUA_MOD_OVERLAY_MAX_LINES) {
-            snprintf(sLuaModOverlayLines[sLuaModOverlayLineCount++], SMLUA_MOD_OVERLAY_LINE_MAX, "MORE %u",
-                     (unsigned)(script_count - listed));
-        }
-    }
-
-    sLuaModOverlayFramesLeft = SMLUA_MOD_OVERLAY_SHOW_FRAMES;
+    sLuaModOverlayFramesLeft = 0;
+    return;
 }
 
 // Draws startup overlay with loaded mod count and names for quick runtime verification.
@@ -521,6 +492,19 @@ int16_t smlua_get_override_far(int16_t default_far) {
     return (int16_t)sLuaOverrideFar;
 }
 
+float smlua_get_override_near(float default_near) {
+    if (sLuaOverrideNear > 0.0f) {
+        if (sLuaOverrideNear < 0.1f) {
+            return 0.1f;
+        }
+        if (sLuaOverrideNear > 1000.0f) {
+            return 1000.0f;
+        }
+        return sLuaOverrideNear;
+    }
+    return default_near;
+}
+
 // Returns the active Lua FOV override when scripts request one.
 float smlua_get_override_fov(float default_fov) {
     if (sLuaOverrideFov > 0.0f) {
@@ -582,6 +566,7 @@ static void smlua_reset_lighting_state(void) {
     sLuaHasFogIntensity = false;
     sLuaOverrideFar = -1;
     sLuaOverrideFov = 0.0f;
+    sLuaOverrideNear = 0.0f;
     sLuaScriptOverrideSkybox = -1;
     sLuaDncOverrideSkybox = -1;
     sLuaScriptSkyboxColor[0] = 255;
@@ -1428,6 +1413,29 @@ static struct MarioState *smlua_to_mario_state_arg(lua_State *L, int index) {
     return gMarioState;
 }
 
+// Converts a Lua argument into Camera userdata when possible.
+static struct Camera *smlua_to_camera_arg(lua_State *L, int index) {
+    SmluaCObject *cobj = luaL_testudata(L, index, SMLUA_COBJECT_METATABLE);
+    if (cobj != NULL && cobj->type == SMLUA_COBJECT_CAMERA) {
+        return (struct Camera *)cobj->pointer;
+    }
+
+    if (gMarioState != NULL && gMarioState->area != NULL && gMarioState->area->camera != NULL) {
+        return gMarioState->area->camera;
+    }
+
+    return gCamera;
+}
+
+// Converts a Lua argument into Object userdata when possible.
+static struct Object *smlua_to_object_arg(lua_State *L, int index) {
+    SmluaCObject *cobj = luaL_testudata(L, index, SMLUA_COBJECT_METATABLE);
+    if (cobj != NULL && cobj->type == SMLUA_COBJECT_OBJECT) {
+        return (struct Object *)cobj->pointer;
+    }
+    return NULL;
+}
+
 // Sanitizes a script path into a filesystem-safe mod-storage filename token.
 static void smlua_sanitize_filename_component(char *dst, size_t dst_size, const char *src) {
     size_t pos = 0;
@@ -1454,14 +1462,56 @@ static void smlua_sanitize_filename_component(char *dst, size_t dst_size, const 
     dst[pos] = '\0';
 }
 
-// Computes a script-scoped writable storage file under the FS write path.
+// Extracts a mod id from a VFS script path ("mods/<mod>/...").
+static void smlua_extract_mod_storage_id(const char *script_path, char *out, size_t out_size) {
+    const char *start;
+    const char *slash;
+    size_t len;
+
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    if (script_path == NULL || script_path[0] == '\0') {
+        return;
+    }
+
+    start = script_path;
+    if (strncmp(start, "mods/", 5) == 0) {
+        start += 5;
+    }
+
+    slash = strchr(start, '/');
+    len = (slash != NULL) ? (size_t)(slash - start) : strlen(start);
+
+    // Single-file mods may include extension in the id; strip it.
+    if (len >= 4 && strcmp(start + len - 4, ".lua") == 0) {
+        len -= 4;
+    } else if (len >= 5 && strcmp(start + len - 5, ".luac") == 0) {
+        len -= 5;
+    }
+
+    if (len == 0) {
+        return;
+    }
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
+// Computes a mod-scoped writable storage file under the FS write path.
 static const char *smlua_get_mod_storage_file_path(const char *script_path) {
     static char out_path[SYS_MAX_PATH];
     char safe_name[SYS_MAX_PATH];
     char relative_path[SYS_MAX_PATH];
     const char *full_path;
 
-    smlua_sanitize_filename_component(safe_name, sizeof(safe_name), script_path);
+    char mod_id[SYS_MAX_PATH];
+    smlua_extract_mod_storage_id(script_path, mod_id, sizeof(mod_id));
+    smlua_sanitize_filename_component(safe_name, sizeof(safe_name), mod_id);
     if (snprintf(relative_path, sizeof(relative_path), "sav/%s.sav", safe_name) < 0) {
         return NULL;
     }
@@ -1479,7 +1529,14 @@ static const char *smlua_get_mod_storage_file_path(const char *script_path) {
 static const char *smlua_get_caller_script_path(lua_State *L) {
     lua_Debug ar;
     if (lua_getstack(L, 1, &ar) && lua_getinfo(L, "S", &ar) && ar.source != NULL && ar.source[0] == '@') {
-        return ar.source + 1;
+        const char *source_path = ar.source + 1;
+
+        // .luac chunks often preserve their original compile-time source name (e.g. "b-levels.lua"),
+        // which is not a real virtual path in our VFS and breaks mod-relative resolution.
+        // Prefer the actively running VFS path when the debug source is not a scoped path.
+        if (source_path[0] != '\0' && (strncmp(source_path, "mods/", 5) == 0 || strchr(source_path, '/') != NULL)) {
+            return source_path;
+        }
     }
     return sActiveScriptPath;
 }
@@ -1769,14 +1826,66 @@ static bool smlua_mod_storage_write_entries(const char *filename, const struct S
     return true;
 }
 
-// Co-op DX compat wrapper for mod_storage_load(key) using per-script save files.
+static bool smlua_mod_storage_cache_flush(struct SmluaModStorageCacheSlot *slot) {
+    if (slot == NULL || !slot->loaded || !slot->dirty) {
+        return true;
+    }
+    if (!smlua_ensure_mod_storage_dir()) {
+        return false;
+    }
+    if (!smlua_mod_storage_write_entries(slot->filename, slot->entries, slot->count)) {
+        return false;
+    }
+    slot->dirty = false;
+    return true;
+}
+
+static bool smlua_mod_storage_cache_load(struct SmluaModStorageCacheSlot *slot, const char *filename) {
+    if (slot == NULL || filename == NULL) {
+        return false;
+    }
+    snprintf(slot->filename, sizeof(slot->filename), "%s", filename);
+    slot->filename[sizeof(slot->filename) - 1] = '\0';
+    slot->loaded = true;
+    slot->dirty = false;
+    slot->count = 0;
+    return smlua_mod_storage_read_entries(slot->filename, slot->entries, &slot->count);
+}
+
+static struct SmluaModStorageCacheSlot *smlua_mod_storage_cache_get(const char *filename) {
+    if (filename == NULL || filename[0] == '\0') {
+        return NULL;
+    }
+
+    for (int i = 0; i < SMLUA_MOD_STORAGE_CACHE_SLOTS; i++) {
+        if (sModStorageCache[i].loaded && strcmp(sModStorageCache[i].filename, filename) == 0) {
+            return &sModStorageCache[i];
+        }
+    }
+
+    int victim = -1;
+    for (int i = 0; i < SMLUA_MOD_STORAGE_CACHE_SLOTS; i++) {
+        if (!sModStorageCache[i].loaded) {
+            victim = i;
+            break;
+        }
+    }
+    if (victim < 0) {
+        victim = sModStorageCacheNextVictim++ % SMLUA_MOD_STORAGE_CACHE_SLOTS;
+    }
+
+    (void)smlua_mod_storage_cache_flush(&sModStorageCache[victim]);
+    (void)smlua_mod_storage_cache_load(&sModStorageCache[victim], filename);
+    return &sModStorageCache[victim];
+}
+
+// Co-op DX compat wrapper for mod_storage_load(key) using mod-scoped save files.
 static int smlua_func_mod_storage_load(lua_State *L) {
     const char *key = luaL_checkstring(L, 1);
     const char *script_path = smlua_get_caller_script_path(L);
     const char *filename;
-    struct SmluaModStorageEntry entries[SMLUA_MOD_STORAGE_MAX_KEYS];
-    size_t count = 0;
     ssize_t index;
+    struct SmluaModStorageCacheSlot *slot;
 
     if (key == NULL || key[0] == '\0' || strlen(key) > SMLUA_MOD_STORAGE_MAX_KEY) {
         lua_pushnil(L);
@@ -1784,18 +1893,19 @@ static int smlua_func_mod_storage_load(lua_State *L) {
     }
 
     filename = smlua_get_mod_storage_file_path(script_path);
-    if (filename == NULL || !smlua_mod_storage_read_entries(filename, entries, &count)) {
+    slot = smlua_mod_storage_cache_get(filename);
+    if (slot == NULL || !slot->loaded) {
         lua_pushnil(L);
         return 1;
     }
 
-    index = smlua_mod_storage_find_entry(entries, count, key);
+    index = smlua_mod_storage_find_entry(slot->entries, slot->count, key);
     if (index < 0) {
         lua_pushnil(L);
         return 1;
     }
 
-    lua_pushstring(L, entries[index].value);
+    lua_pushstring(L, slot->entries[index].value);
     return 1;
 }
 
@@ -1805,10 +1915,9 @@ static int smlua_func_mod_storage_save(lua_State *L) {
     const char *value = luaL_checkstring(L, 2);
     const char *script_path = smlua_get_caller_script_path(L);
     const char *filename;
-    struct SmluaModStorageEntry entries[SMLUA_MOD_STORAGE_MAX_KEYS];
-    size_t count = 0;
     ssize_t index;
     bool success = false;
+    struct SmluaModStorageCacheSlot *slot;
 
     if (key == NULL || value == NULL || key[0] == '\0' || strlen(key) > SMLUA_MOD_STORAGE_MAX_KEY ||
         strlen(value) > SMLUA_MOD_STORAGE_MAX_VALUE) {
@@ -1816,24 +1925,19 @@ static int smlua_func_mod_storage_save(lua_State *L) {
         return 1;
     }
 
-    if (!smlua_ensure_mod_storage_dir()) {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-
     filename = smlua_get_mod_storage_file_path(script_path);
-    if (filename != NULL) {
-        if (smlua_mod_storage_read_entries(filename, entries, &count)) {
-            index = smlua_mod_storage_find_entry(entries, count, key);
-            if (index < 0 && count < SMLUA_MOD_STORAGE_MAX_KEYS) {
-                index = (ssize_t)count;
-                count++;
-            }
-            if (index >= 0) {
-                snprintf(entries[index].key, sizeof(entries[index].key), "%s", key);
-                snprintf(entries[index].value, sizeof(entries[index].value), "%s", value);
-                success = smlua_mod_storage_write_entries(filename, entries, count);
-            }
+    slot = smlua_mod_storage_cache_get(filename);
+    if (slot != NULL && slot->loaded) {
+        index = smlua_mod_storage_find_entry(slot->entries, slot->count, key);
+        if (index < 0 && slot->count < SMLUA_MOD_STORAGE_MAX_KEYS) {
+            index = (ssize_t)slot->count;
+            slot->count++;
+        }
+        if (index >= 0) {
+            snprintf(slot->entries[index].key, sizeof(slot->entries[index].key), "%s", key);
+            snprintf(slot->entries[index].value, sizeof(slot->entries[index].value), "%s", value);
+            slot->dirty = true;
+            success = smlua_mod_storage_cache_flush(slot);
         }
     }
 
@@ -1846,31 +1950,32 @@ static int smlua_func_mod_storage_remove(lua_State *L) {
     const char *key = luaL_checkstring(L, 1);
     const char *script_path = smlua_get_caller_script_path(L);
     const char *filename = smlua_get_mod_storage_file_path(script_path);
-    struct SmluaModStorageEntry entries[SMLUA_MOD_STORAGE_MAX_KEYS];
-    size_t count = 0;
     ssize_t index;
+    struct SmluaModStorageCacheSlot *slot;
 
     if (key == NULL || key[0] == '\0' || filename == NULL) {
         lua_pushboolean(L, 0);
         return 1;
     }
-    if (!smlua_mod_storage_read_entries(filename, entries, &count)) {
+    slot = smlua_mod_storage_cache_get(filename);
+    if (slot == NULL || !slot->loaded) {
         lua_pushboolean(L, 0);
         return 1;
     }
 
-    index = smlua_mod_storage_find_entry(entries, count, key);
+    index = smlua_mod_storage_find_entry(slot->entries, slot->count, key);
     if (index < 0) {
         lua_pushboolean(L, 0);
         return 1;
     }
 
-    for (size_t i = (size_t)index; i + 1 < count; i++) {
-        entries[i] = entries[i + 1];
+    for (size_t i = (size_t)index; i + 1 < slot->count; i++) {
+        slot->entries[i] = slot->entries[i + 1];
     }
-    count--;
+    slot->count--;
+    slot->dirty = true;
 
-    lua_pushboolean(L, smlua_mod_storage_write_entries(filename, entries, count) ? 1 : 0);
+    lua_pushboolean(L, smlua_mod_storage_cache_flush(slot) ? 1 : 0);
     return 1;
 }
 
@@ -2222,30 +2327,26 @@ static int smlua_func_djui_attempting_to_open_playerlist(lua_State *L) {
 
 // Returns behavior script pointer for currently supported Co-op DX behavior IDs.
 static const BehaviorScript *smlua_behavior_from_id(s32 behavior_id) {
+    const BehaviorScript *hooked = smlua_get_hooked_behavior_from_id(behavior_id, false);
+    if (hooked != NULL) {
+        return hooked;
+    }
+
     switch (behavior_id) {
-        case SMLUA_BEHAVIOR_ID_ACT_SELECTOR:
-            return bhvActSelector;
-        case SMLUA_BEHAVIOR_ID_ACT_SELECTOR_STAR_TYPE:
-            return bhvActSelectorStarType;
-        case SMLUA_BEHAVIOR_ID_KOOPA:
-            return bhvKoopa;
-        case SMLUA_BEHAVIOR_ID_MARIO:
-            return bhvMario;
-        case SMLUA_BEHAVIOR_ID_METAL_CAP:
-            return bhvMetalCap;
-        case SMLUA_BEHAVIOR_ID_NORMAL_CAP:
-            return bhvNormalCap;
-        case SMLUA_BEHAVIOR_ID_VANISH_CAP:
-            return bhvVanishCap;
-        case SMLUA_BEHAVIOR_ID_WING_CAP:
-            return bhvWingCap;
         case SMLUA_BEHAVIOR_ID_DNC_SKYBOX:
         case SMLUA_BEHAVIOR_ID_DNC_NO_SKYBOX:
             // Spawn as stable static objects; Lua loop/init callbacks are driven separately.
             return bhvStaticObject;
         default:
-            return NULL;
+            break;
     }
+
+    // Default to the full behavior table for Co-op DX parity (Flood relies on it).
+    if (behavior_id >= 0 && behavior_id < (s32)id_bhv_max_count) {
+        return get_behavior_from_id((enum BehaviorId)behavior_id);
+    }
+
+    return NULL;
 }
 
 // Resolves custom Lua behavior IDs to marker values for lookup/spawn compatibility.
@@ -2476,6 +2577,17 @@ static int smlua_func_camera_freeze(lua_State *L) {
 static int smlua_func_camera_unfreeze(lua_State *L) {
     (void)L;
     sLuaCameraFrozen = false;
+    return 0;
+}
+
+// Co-op DX camera helper used by Flood spectator/camera scripts.
+static int smlua_func_set_camera_mode(lua_State *L) {
+    struct Camera *camera = smlua_to_camera_arg(L, 1);
+    s16 mode = (s16)luaL_checkinteger(L, 2);
+    s16 frames = (s16)luaL_checkinteger(L, 3);
+    if (camera != NULL) {
+        set_camera_mode(camera, mode, frames);
+    }
     return 0;
 }
 
@@ -2981,10 +3093,56 @@ static int smlua_func_set_override_far(lua_State *L) {
     return 0;
 }
 
+static int smlua_func_set_override_near(lua_State *L) {
+    f32 value = (f32)luaL_checknumber(L, 1);
+    sLuaOverrideNear = (value > 0.0f) ? value : 0.0f;
+    return 0;
+}
+
 // Stores a manual projection FOV override used by character-select camera scripts.
 static int smlua_func_set_override_fov(lua_State *L) {
     f32 value = (f32)luaL_checknumber(L, 1);
     sLuaOverrideFov = (value > 0.0f) ? value : 0.0f;
+    return 0;
+}
+
+static int smlua_func_save_file_set_flags(lua_State *L) {
+    u32 flags = (u32)luaL_checkinteger(L, 1);
+    save_file_set_flags(flags);
+    return 0;
+}
+
+static int smlua_func_save_file_clear_flags(lua_State *L) {
+    u32 flags = (u32)luaL_checkinteger(L, 1);
+    save_file_clear_flags(flags);
+    return 0;
+}
+
+static int smlua_func_save_file_get_flags(lua_State *L) {
+    lua_pushinteger(L, (lua_Integer)save_file_get_flags());
+    return 1;
+}
+
+// Co-op DX compatibility: clears the "backup slot" save used by some mods for server state.
+static int smlua_func_save_file_erase_current_backup_save(lua_State *L) {
+    (void)L;
+    save_file_erase_current_backup_save();
+    return 0;
+}
+
+static int smlua_func_save_file_set_using_backup_slot(lua_State *L) {
+    int using_backup = lua_toboolean(L, 1);
+    save_file_set_using_backup_slot(using_backup ? 1 : 0);
+    return 0;
+}
+
+static int smlua_func_hud_render_power_meter(lua_State *L) {
+    (void)L;
+    return 0;
+}
+
+static int smlua_func_hud_render_power_meter_interpolated(lua_State *L) {
+    (void)L;
     return 0;
 }
 
@@ -3497,6 +3655,26 @@ static int smlua_func_log_to_console(lua_State *L) {
     return 0;
 }
 
+// Co-op DX exposes a local Discord user id. Wii U has no Discord integration;
+// return a stable placeholder so mods can keep their achievements logic alive.
+static int smlua_func_get_local_discord_id(lua_State *L) {
+    (void)L;
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
+static int smlua_func_camera_config_is_mouse_look_enabled(lua_State *L) {
+    (void)L;
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+static int smlua_func_init_single_mario(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    init_single_mario(m);
+    return 0;
+}
+
 // Popup compatibility shim routed to console/chat logging.
 static int smlua_func_djui_popup_create(lua_State *L) {
     const char *message = luaL_checkstring(L, 1);
@@ -3802,7 +3980,6 @@ static int smlua_func_set_volume_sfx(lua_State *L) {
 
 // Minimal warp helper used by Lua mods that request direct level transitions.
 static int smlua_func_warp_to_level(lua_State *L) {
-    extern void initiate_warp(s16 destLevel, s16 destArea, s16 destWarpNode, s32 arg3);
     s16 level;
     s16 area;
     s16 act;
@@ -3816,28 +3993,16 @@ static int smlua_func_warp_to_level(lua_State *L) {
     area = (s16)lua_tointeger(L, 2);
     act = (s16)lua_tointeger(L, 3);
 
-    if (area < 1) { area = 1; }
-    if (area > 8) { area = 8; }
-    if (act < 1) { act = 1; }
-    if (act > 6) { act = 6; }
-
 #ifndef TARGET_N64
-    if (dynos_warp_to_level(level, area, act)) {
-        lua_pushboolean(L, 1);
-        return 1;
-    }
-#endif
-
-    if (level < LEVEL_MIN || level > LEVEL_MAX) {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-
-    gCurrActNum = act;
-    initiate_warp(level, area, 0x0A, 0);
-    fade_into_special_warp(0, 0);
-    lua_pushboolean(L, 1);
+    // Co-op DX parity: DynOS drives all warps (vanilla + custom) for deterministic behavior.
+    bool ok = dynos_warp_to_level(level, area, act);
+    smlua_logf("lua: warp_to_level(level=%d area=%d act=%d) -> %d", (int)level, (int)area, (int)act, ok ? 1 : 0);
+    lua_pushboolean(L, ok);
     return 1;
+#else
+    lua_pushboolean(L, 0);
+    return 1;
+#endif
 }
 
 static int smlua_func_level_register(lua_State *L) {
@@ -4160,6 +4325,68 @@ static int smlua_func_vec3f_copy(lua_State *L) {
     return 0;
 }
 
+// Computes Euclidean distance between two vec-like userdata/tables.
+static int smlua_func_vec3f_dist(lua_State *L) {
+    f32 from[3];
+    f32 to[3];
+    f32 dist = 0.0f;
+    s16 pitch = 0;
+    s16 yaw = 0;
+
+    if (!smlua_read_vec3_like(L, 1, from) || !smlua_read_vec3_like(L, 2, to)) {
+        lua_pushnumber(L, 0.0f);
+        return 1;
+    }
+
+    vec3f_get_dist_and_angle(from, to, &dist, &pitch, &yaw);
+    lua_pushnumber(L, dist);
+    return 1;
+}
+
+// Computes Euclidean distance between two object cobjects.
+static int smlua_func_dist_between_objects(lua_State *L) {
+    struct Object *obj1 = smlua_to_object_arg(L, 1);
+    struct Object *obj2 = smlua_to_object_arg(L, 2);
+    lua_pushnumber(L, (obj1 != NULL && obj2 != NULL) ? dist_between_objects(obj1, obj2) : 0.0f);
+    return 1;
+}
+
+// Computes lateral (XZ) distance between two object cobjects.
+static int smlua_func_lateral_dist_between_objects(lua_State *L) {
+    struct Object *obj1 = smlua_to_object_arg(L, 1);
+    struct Object *obj2 = smlua_to_object_arg(L, 2);
+    lua_pushnumber(L, (obj1 != NULL && obj2 != NULL) ? lateral_dist_between_objects(obj1, obj2) : 0.0f);
+    return 1;
+}
+
+// Computes pitch angle from one vec-like userdata/table to another.
+static int smlua_func_calculate_pitch(lua_State *L) {
+    f32 from[3];
+    f32 to[3];
+
+    if (!smlua_read_vec3_like(L, 1, from) || !smlua_read_vec3_like(L, 2, to)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    lua_pushinteger(L, calculate_pitch(from, to));
+    return 1;
+}
+
+// Computes yaw angle from one vec-like userdata/table to another.
+static int smlua_func_calculate_yaw(lua_State *L) {
+    f32 from[3];
+    f32 to[3];
+
+    if (!smlua_read_vec3_like(L, 1, from) || !smlua_read_vec3_like(L, 2, to)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    lua_pushinteger(L, calculate_yaw(from, to));
+    return 1;
+}
+
 // Allocates a mutable Vec3f table initialized to zero.
 static int smlua_func_gvec3f_zero(lua_State *L) {
     (void)L;
@@ -4179,6 +4406,15 @@ static int smlua_func_is_player_active(lua_State *L) {
     bool active = m != NULL && m->marioObj != NULL && m->action != ACT_DISAPPEARED;
     lua_pushboolean(L, active ? 1 : 0);
     return 1;
+}
+
+// Drops any object currently held by the provided MarioState.
+static int smlua_func_mario_drop_held_object(lua_State *L) {
+    struct MarioState *m = smlua_to_mario_state_arg(L, 1);
+    if (m != NULL) {
+        mario_drop_held_object(m);
+    }
+    return 0;
 }
 
 static u8 sLuaPaletteDefault[8][3] = {
@@ -4311,16 +4547,23 @@ static int smlua_func_network_is_moderator(lua_State *L) {
     return 1;
 }
 
+// Returns the Co-op DX color prefix string for a player's name (used by Flood UI).
+static int smlua_func_network_get_player_text_color_string(lua_State *L) {
+    u8 localIndex = (u8)luaL_checkinteger(L, 1);
+    const char *color = network_get_player_text_color_string(localIndex);
+    lua_pushstring(L, color != NULL ? color : "\\#ffffff\\");
+    return 1;
+}
+
 // Single-player shim for custom packet sends.
 static int smlua_func_network_send(lua_State *L) {
     (void)L;
     return 0;
 }
 
-// Compatibility no-op for Co-op DX object custom-field declarations.
+// Registers Co-op DX object custom-field declarations (define_custom_obj_fields).
 static int smlua_func_define_custom_obj_fields(lua_State *L) {
-    (void)L;
-    return 0;
+    return smlua_define_custom_obj_fields(L);
 }
 
 // Single-player custom action allocator used by hook_mario_action mods.
@@ -4478,11 +4721,17 @@ static int smlua_func_obj_get_next(lua_State *L) {
         return 1;
     }
     target = (struct Object *)cobj->pointer;
+    enum ObjectList objList = get_object_list_from_behavior(target->behavior);
+    if (objList < 0 || objList >= NUM_OBJ_LISTS) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    struct Object *head = (struct Object *)&gObjectLists[objList];
     obj = (struct Object *)target->header.next;
 
-    // Walk the intrusive object-list ring directly to avoid O(n^2) scans in
-    // mod code that repeatedly calls obj_get_next() during startup/model sync.
-    while (obj != NULL && obj != target && depth++ < 20000) {
+    // Walk within this list only; stop at the list head so Lua loops terminate.
+    while (obj != NULL && obj != head && depth++ < 20000) {
         if (obj->activeFlags != ACTIVE_FLAG_DEACTIVATED) {
             smlua_push_object(L, obj);
             return 1;
@@ -4506,11 +4755,18 @@ static int smlua_func_obj_get_next_with_same_behavior_id(lua_State *L) {
         return 1;
     }
     target = (struct Object *)cobj->pointer;
+    enum ObjectList objList = get_object_list_from_behavior(target->behavior);
+    if (objList < 0 || objList >= NUM_OBJ_LISTS) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    struct Object *head = (struct Object *)&gObjectLists[objList];
     obj = (struct Object *)target->header.next;
 
     // Same ring walk as obj_get_next(), but filtered by behavior to match
     // Co-op DX Lua iteration semantics without repeated full-list scans.
-    while (obj != NULL && obj != target && depth++ < 20000) {
+    while (obj != NULL && obj != head && depth++ < 20000) {
         if (obj->activeFlags != ACTIVE_FLAG_DEACTIVATED && obj->behavior == target->behavior) {
             smlua_push_object(L, obj);
             return 1;
@@ -4519,6 +4775,52 @@ static int smlua_func_obj_get_next_with_same_behavior_id(lua_State *L) {
     }
 
     lua_pushnil(L);
+    return 1;
+}
+
+// Finds nearest active object with a given behavior ID (Flood HUD uses it for markers).
+static int smlua_func_obj_get_nearest_object_with_behavior_id(lua_State *L) {
+    SmluaCObject *cobj = luaL_testudata(L, 1, SMLUA_COBJECT_METATABLE);
+    s32 behavior_id = (s32)luaL_checkinteger(L, 2);
+    const BehaviorScript *behavior = smlua_behavior_from_id(behavior_id);
+    struct Object *closest = NULL;
+    f32 minDist = 0x20000;
+    u32 sanityDepth = 0;
+
+    if (cobj == NULL || cobj->type != SMLUA_COBJECT_OBJECT || cobj->pointer == NULL || gObjectLists == NULL || behavior == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    u32 obj_list = get_object_list_from_behavior(behavior);
+    if (obj_list >= NUM_OBJ_LISTS) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    struct Object *refObj = (struct Object *)cobj->pointer;
+    struct Object *head = (struct Object *)&gObjectLists[obj_list];
+    struct Object *obj = (struct Object *)head->header.next;
+    while (obj != head) {
+        if (++sanityDepth > 10000) {
+            break;
+        }
+        if (obj->activeFlags != ACTIVE_FLAG_DEACTIVATED && obj->behavior == behavior) {
+            f32 dist = dist_between_objects(refObj, obj);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = obj;
+            }
+        }
+        obj = (struct Object *)obj->header.next;
+    }
+
+    if (closest == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    smlua_push_object(L, closest);
     return 1;
 }
 
@@ -4720,6 +5022,28 @@ static int smlua_func_get_ttc_speed_setting(lua_State *L) {
 static int smlua_func_set_ttc_speed_setting(lua_State *L) {
     gTTCSpeedSetting = (s16)luaL_checkinteger(L, 1);
     return 0;
+}
+
+// Compatibility wrapper for Co-op DX `degrees_to_sm64(degrees)`.
+static int smlua_func_sm64_to_radians(lua_State *L) {
+    s16 sm64_angle = (s16)luaL_checkinteger(L, 1);
+    lua_pushnumber(L, (lua_Number)((f32)sm64_angle * (f32)M_PI / 32768.0f));
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `radians_to_sm64(radians)`.
+static int smlua_func_radians_to_sm64(lua_State *L) {
+    f32 radians = (f32)luaL_checknumber(L, 1);
+    s16 angle = (s16)(radians * 32768.0f / (f32)M_PI);
+    lua_pushinteger(L, (lua_Integer)angle);
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `sm64_to_degrees(sm64Angle)`.
+static int smlua_func_sm64_to_degrees(lua_State *L) {
+    s16 sm64_angle = (s16)luaL_checkinteger(L, 1);
+    lua_pushnumber(L, (lua_Number)((f32)sm64_angle * (180.0f / 32768.0f)));
+    return 1;
 }
 
 // Compatibility wrapper for Co-op DX `degrees_to_sm64(degrees)`.
@@ -5111,6 +5435,15 @@ static int smlua_func_atan2f(lua_State *L) {
     return 1;
 }
 
+// Co-op DX collision helper `find_floor_height(x, y, z)`.
+static int smlua_func_find_floor_height(lua_State *L) {
+    f32 x = (f32)luaL_checknumber(L, 1);
+    f32 y = (f32)luaL_checknumber(L, 2);
+    f32 z = (f32)luaL_checknumber(L, 3);
+    lua_pushnumber(L, find_floor_height(x, y, z));
+    return 1;
+}
+
 // Co-op DX helper `apply_slope_accel(m)`.
 static int smlua_func_apply_slope_accel(lua_State *L) {
     struct MarioState *m = smlua_to_mario_state_arg(L, 1);
@@ -5422,6 +5755,45 @@ static void smlua_ensure_table_bool_field(lua_State *L, int table_index,
     lua_pop(L, 1);
 }
 
+// Writes one integer field into a Lua table only when that field is currently nil.
+static void smlua_ensure_table_int_field(lua_State *L, int table_index,
+                                         const char *field, lua_Integer value) {
+    int abs_index = lua_absindex(L, table_index);
+    if (field == NULL) {
+        return;
+    }
+
+    lua_getfield(L, abs_index, field);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushinteger(L, value);
+        lua_setfield(L, abs_index, field);
+        return;
+    }
+    lua_pop(L, 1);
+}
+
+// Writes one string field into a Lua table only when that field is currently nil.
+static void smlua_ensure_table_string_field(lua_State *L, int table_index,
+                                            const char *field, const char *value) {
+    int abs_index = lua_absindex(L, table_index);
+    if (field == NULL) {
+        return;
+    }
+    if (value == NULL) {
+        value = "";
+    }
+
+    lua_getfield(L, abs_index, field);
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_pushstring(L, value);
+        lua_setfield(L, abs_index, field);
+        return;
+    }
+    lua_pop(L, 1);
+}
+
 // Ensures common Co-op DX globals exist before bundled companion scripts execute.
 static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L) {
     if (L == NULL) {
@@ -5471,6 +5843,7 @@ static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L) {
 // Builds/maintains Co-op DX-like single-player sync globals.
 static void smlua_ensure_singleplayer_tables(lua_State *L) {
     int max_players = smlua_get_lua_max_players(L);
+    const char *local_name = (configPlayerName[0] != '\0') ? configPlayerName : "Player";
 
     lua_getglobal(L, "gPlayerSyncTable");
     if (!lua_istable(L, -1)) {
@@ -5479,6 +5852,9 @@ static void smlua_ensure_singleplayer_tables(lua_State *L) {
     }
     for (int i = 0; i < max_players; i++) {
         smlua_ensure_table_entry(L, -1, (lua_Integer)i);
+        smlua_ensure_table_bool_field(L, -1, "spectator", false);
+        smlua_ensure_table_bool_field(L, -1, "finished", false);
+        smlua_ensure_table_int_field(L, -1, "time", 0);
         lua_pop(L, 1);
     }
     lua_setglobal(L, "gPlayerSyncTable");
@@ -5497,13 +5873,47 @@ static void smlua_ensure_singleplayer_tables(lua_State *L) {
     }
     for (int i = 0; i < max_players; i++) {
         smlua_ensure_table_entry(L, -1, (lua_Integer)i);
+        smlua_ensure_table_bool_field(L, -1, "connected", i == 0);
+        smlua_ensure_table_int_field(L, -1, "playerIndex", i);
+        smlua_ensure_table_int_field(L, -1, "localIndex", i);
+        smlua_ensure_table_int_field(L, -1, "globalIndex", i);
+        smlua_ensure_table_int_field(L, -1, "currCourseNum", gCurrCourseNum);
+        smlua_ensure_table_int_field(L, -1, "currActNum", gCurrActNum);
+        smlua_ensure_table_int_field(L, -1, "currLevelNum", gCurrLevelNum);
+        smlua_ensure_table_int_field(L, -1, "currAreaIndex", gCurrAreaIndex);
+        smlua_ensure_table_bool_field(L, -1, "currAreaSyncValid", i == 0);
+        smlua_ensure_table_int_field(L, -1, "modelIndex", MODEL_MARIO);
+        smlua_ensure_table_int_field(L, -1, "fadeOpacity", 255);
+        smlua_ensure_table_string_field(L, -1, "name", (i == 0) ? local_name : "");
+        smlua_ensure_table_string_field(L, -1, "description", (i == 0) ? "OFFLINE" : "");
         lua_pop(L, 1);
     }
     lua_setglobal(L, "gNetworkPlayers");
+
+    lua_getglobal(L, "gMarioStates");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+    }
+    int mario_states_table = lua_absindex(L, -1);
+    for (int i = 0; i < max_players; i++) {
+        lua_pushinteger(L, i);
+        lua_gettable(L, mario_states_table);
+        bool missing_entry = lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (missing_entry) {
+            lua_pushinteger(L, i);
+            smlua_push_mario_state(L, &gMarioStates[0]);
+            lua_settable(L, mario_states_table);
+        }
+    }
+    lua_setglobal(L, "gMarioStates");
 }
 
 // Refreshes values expected by local-only mods that read network player metadata.
 static void smlua_update_singleplayer_network_snapshot(lua_State *L) {
+    const char *local_name = (configPlayerName[0] != '\0') ? configPlayerName : "Player";
+
     lua_getglobal(L, "gNetworkPlayers");
     if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
@@ -5513,6 +5923,8 @@ static void smlua_update_singleplayer_network_snapshot(lua_State *L) {
     smlua_ensure_table_entry(L, -1, 0);
     lua_pushboolean(L, 1);
     lua_setfield(L, -2, "connected");
+    lua_pushinteger(L, 0);
+    lua_setfield(L, -2, "playerIndex");
     lua_pushinteger(L, gCurrCourseNum);
     lua_setfield(L, -2, "currCourseNum");
     lua_pushinteger(L, gCurrActNum);
@@ -5531,6 +5943,10 @@ static void smlua_update_singleplayer_network_snapshot(lua_State *L) {
     lua_setfield(L, -2, "modelIndex");
     lua_pushinteger(L, 255);
     lua_setfield(L, -2, "fadeOpacity");
+    lua_pushstring(L, local_name);
+    lua_setfield(L, -2, "name");
+    lua_pushstring(L, "OFFLINE");
+    lua_setfield(L, -2, "description");
 
     lua_pop(L, 2);
 }
@@ -5700,6 +6116,9 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "get_dialog_id", smlua_func_get_dialog_id);
     smlua_set_global_function(L, "get_ttc_speed_setting", smlua_func_get_ttc_speed_setting);
     smlua_set_global_function(L, "set_ttc_speed_setting", smlua_func_set_ttc_speed_setting);
+    smlua_set_global_function(L, "sm64_to_radians", smlua_func_sm64_to_radians);
+    smlua_set_global_function(L, "radians_to_sm64", smlua_func_radians_to_sm64);
+    smlua_set_global_function(L, "sm64_to_degrees", smlua_func_sm64_to_degrees);
     smlua_set_global_function(L, "degrees_to_sm64", smlua_func_degrees_to_sm64);
     smlua_set_global_function(L, "smlua_collision_util_get", smlua_func_smlua_collision_util_get);
     smlua_set_global_function(L, "smlua_collision_util_get_current_terrain_collision",
@@ -5744,6 +6163,10 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "coss", smlua_func_coss);
     smlua_set_global_function(L, "atan2s", smlua_func_atan2s);
     smlua_set_global_function(L, "atan2f", smlua_func_atan2f);
+    smlua_set_global_function(L, "find_floor_height", smlua_func_find_floor_height);
+    smlua_set_global_function(L, "calculate_pitch", smlua_func_calculate_pitch);
+    smlua_set_global_function(L, "calculate_yaw", smlua_func_calculate_yaw);
+    smlua_set_global_function(L, "set_camera_mode", smlua_func_set_camera_mode);
     smlua_set_global_function(L, "apply_slope_accel", smlua_func_apply_slope_accel);
     smlua_set_global_function(L, "apply_landing_accel", smlua_func_apply_landing_accel);
     smlua_set_global_function(L, "apply_slope_decel", smlua_func_apply_slope_decel);
@@ -5753,12 +6176,24 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "act_select_hud_is_hidden", smlua_func_act_select_hud_is_hidden);
     smlua_set_global_function(L, "check_common_idle_cancels", smlua_func_check_common_idle_cancels);
     smlua_set_global_function(L, "stationary_ground_step", smlua_func_stationary_ground_step);
+    // Co-op DX helper (Flood achievements expects it).
+    // Wii U has no Discord integration, so return 0 as a stable placeholder.
+    smlua_set_global_function(L, "get_local_discord_id", smlua_func_get_local_discord_id);
+    // Co-op DX camera config helper (spectator expects it).
+    smlua_set_global_function(L, "camera_config_is_mouse_look_enabled", smlua_func_camera_config_is_mouse_look_enabled);
+    // Co-op DX init helper used by Flood warp/level pipeline.
+    smlua_set_global_function(L, "init_single_mario", smlua_func_init_single_mario);
+    // Co-op DX screen transition helper (Flood uses it during warp pipeline).
+    smlua_set_global_function(L, "play_transition", smlua_func_play_transition);
+    // Co-op DX audio helper (Flood timer UI expects it).
+    smlua_set_global_function(L, "seq_player_fade_out", smlua_func_seq_player_fade_out);
     smlua_set_global_function(L, "hud_get_flash", smlua_func_hud_get_flash);
     smlua_set_global_function(L, "hud_set_flash", smlua_func_hud_set_flash);
     smlua_set_global_function(L, "game_unpause", smlua_func_game_unpause);
     smlua_set_global_function(L, "nearest_player_to_object", smlua_func_nearest_player_to_object);
     smlua_set_global_function(L, "set_character_animation", smlua_func_set_character_animation);
     smlua_set_global_function(L, "play_character_sound", smlua_func_play_character_sound);
+    smlua_set_global_function(L, "mario_drop_held_object", smlua_func_mario_drop_held_object);
     smlua_set_global_function(L, "get_network_area_timer", smlua_func_get_network_area_timer);
     smlua_set_global_function(L, "smlua_text_utils_get_language", smlua_func_text_utils_get_language);
     smlua_set_global_function(L, "mod_storage_load", smlua_func_mod_storage_load);
@@ -5828,11 +6263,15 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "djui_is_playerlist_open", smlua_func_djui_is_playerlist_open);
     smlua_set_global_function(L, "gVec3fZero", smlua_func_gvec3f_zero);
     smlua_set_global_function(L, "vec3f_copy", smlua_func_vec3f_copy);
+    smlua_set_global_function(L, "vec3f_dist", smlua_func_vec3f_dist);
+    smlua_set_global_function(L, "dist_between_objects", smlua_func_dist_between_objects);
+    smlua_set_global_function(L, "lateral_dist_between_objects", smlua_func_lateral_dist_between_objects);
     smlua_set_global_function(L, "is_player_active", smlua_func_is_player_active);
     smlua_set_global_function(L, "obj_get_first_with_behavior_id", smlua_func_obj_get_first_with_behavior_id);
     smlua_set_global_function(L, "obj_get_first", smlua_func_obj_get_first);
     smlua_set_global_function(L, "obj_get_next", smlua_func_obj_get_next);
     smlua_set_global_function(L, "obj_get_next_with_same_behavior_id", smlua_func_obj_get_next_with_same_behavior_id);
+    smlua_set_global_function(L, "obj_get_nearest_object_with_behavior_id", smlua_func_obj_get_nearest_object_with_behavior_id);
     smlua_set_global_function(L, "obj_has_behavior_id", smlua_func_obj_has_behavior_id);
     smlua_set_global_function(L, "obj_has_model_extended", smlua_func_obj_has_model_extended);
     smlua_set_global_function(L, "obj_get_model_id_extended", smlua_func_obj_get_model_id_extended);
@@ -5851,6 +6290,7 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "network_player_set_description", smlua_func_network_player_set_description);
     smlua_set_global_function(L, "network_is_server", smlua_func_network_is_server);
     smlua_set_global_function(L, "network_is_moderator", smlua_func_network_is_moderator);
+    smlua_set_global_function(L, "network_get_player_text_color_string", smlua_func_network_get_player_text_color_string);
     smlua_set_global_function(L, "network_player_connected_count", smlua_func_network_player_connected_count);
     smlua_set_global_function(L, "network_check_singleplayer_pause", smlua_func_network_check_singleplayer_pause);
     smlua_set_global_function(L, "is_game_paused", smlua_func_is_game_paused);
@@ -5900,7 +6340,15 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "set_fog_intensity", smlua_func_set_fog_intensity);
     smlua_set_global_function(L, "le_set_ambient_color", smlua_func_le_set_ambient_color);
     smlua_set_global_function(L, "set_override_far", smlua_func_set_override_far);
+    smlua_set_global_function(L, "set_override_near", smlua_func_set_override_near);
     smlua_set_global_function(L, "set_override_fov", smlua_func_set_override_fov);
+    smlua_set_global_function(L, "save_file_set_flags", smlua_func_save_file_set_flags);
+    smlua_set_global_function(L, "save_file_clear_flags", smlua_func_save_file_clear_flags);
+    smlua_set_global_function(L, "save_file_get_flags", smlua_func_save_file_get_flags);
+    smlua_set_global_function(L, "save_file_erase_current_backup_save", smlua_func_save_file_erase_current_backup_save);
+    smlua_set_global_function(L, "save_file_set_using_backup_slot", smlua_func_save_file_set_using_backup_slot);
+    smlua_set_global_function(L, "hud_render_power_meter", smlua_func_hud_render_power_meter);
+    smlua_set_global_function(L, "hud_render_power_meter_interpolated", smlua_func_hud_render_power_meter_interpolated);
     smlua_set_global_function(L, "set_override_skybox", smlua_func_set_override_skybox);
     smlua_set_global_function(L, "get_skybox_color", smlua_func_get_skybox_color);
     smlua_set_global_function(L, "set_skybox_color", smlua_func_set_skybox_color);
@@ -5930,8 +6378,11 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "update_mod_menu_element_name", smlua_func_update_mod_menu_element_name);
     smlua_set_global_function(L, "djui_open_pause_menu", smlua_func_djui_open_pause_menu);
     smlua_set_global_function(L, "djui_popup_create_global", smlua_func_djui_popup_create);
-    smlua_set_global_alias(L, "djui_screen_width", "djui_hud_get_screen_width");
-    smlua_set_global_alias(L, "djui_screen_height", "djui_hud_get_screen_height");
+    // Co-op DX mod compatibility: common numeric globals used for HUD coordinate math.
+    smlua_set_global_integer(L, "n64_screen_width", SCREEN_WIDTH);
+    smlua_set_global_integer(L, "n64_screen_height", SCREEN_HEIGHT);
+    smlua_set_global_integer(L, "djui_screen_width", (lua_Integer)djui_hud_get_screen_width());
+    smlua_set_global_integer(L, "djui_screen_height", (lua_Integer)djui_hud_get_screen_height());
     smlua_set_global_alias(L, "hook_event_modded", "hook_event");
 }
 
@@ -6548,6 +6999,137 @@ static bool smlua_path_is_within_root(const char *path, const char *root) {
            (path[root_len] == '\0' || path[root_len] == '/');
 }
 
+// --- Wii U Lua compat: LevelValues binding (minimal) ---
+
+// Minimal LevelValues surface so mods can read/write common fields.
+// This is intentionally small and expanded as mods require more.
+static const char *SMLUA_LEVELVALUES_METATABLE = "SM64.LevelValues";
+
+static int smlua_levelvalues_index(lua_State *L) {
+    const char *key = luaL_checkstring(L, 2);
+    if (key == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    if (strcmp(key, "fixCollisionBugs") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.fixCollisionBugs);
+        return 1;
+    }
+    if (strcmp(key, "fixCollisionBugsRoundedCorners") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.fixCollisionBugsRoundedCorners);
+        return 1;
+    }
+    if (strcmp(key, "entryLevel") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.entryLevel);
+        return 1;
+    }
+    if (strcmp(key, "pssSlideStarTime") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.pssSlideStarTime);
+        return 1;
+    }
+    if (strcmp(key, "metalCapDuration") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.metalCapDuration);
+        return 1;
+    }
+    if (strcmp(key, "metalCapDurationCotmc") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.metalCapDurationCotmc);
+        return 1;
+    }
+    if (strcmp(key, "vanishCapDurationVcutm") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.vanishCapDurationVcutm);
+        return 1;
+    }
+    if (strcmp(key, "floorLowerLimit") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.floorLowerLimit);
+        return 1;
+    }
+    if (strcmp(key, "floorLowerLimitMisc") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.floorLowerLimitMisc);
+        return 1;
+    }
+    if (strcmp(key, "floorLowerLimitShadow") == 0) {
+        lua_pushinteger(L, (lua_Integer)gLevelValues.floorLowerLimitShadow);
+        return 1;
+    }
+
+    lua_pushnil(L);
+    return 1;
+}
+
+static int smlua_levelvalues_newindex(lua_State *L) {
+    const char *key = luaL_checkstring(L, 2);
+    if (key == NULL) {
+        return 0;
+    }
+
+    if (strcmp(key, "fixCollisionBugs") == 0) {
+        gLevelValues.fixCollisionBugs = (u8)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "fixCollisionBugsRoundedCorners") == 0) {
+        gLevelValues.fixCollisionBugsRoundedCorners = (u8)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "entryLevel") == 0) {
+        gLevelValues.entryLevel = (enum LevelNum)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "pssSlideStarTime") == 0) {
+        gLevelValues.pssSlideStarTime = (u16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "metalCapDuration") == 0) {
+        gLevelValues.metalCapDuration = (u16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "metalCapDurationCotmc") == 0) {
+        gLevelValues.metalCapDurationCotmc = (u16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "vanishCapDurationVcutm") == 0) {
+        gLevelValues.vanishCapDurationVcutm = (u16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "floorLowerLimit") == 0) {
+        gLevelValues.floorLowerLimit = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "floorLowerLimitMisc") == 0) {
+        gLevelValues.floorLowerLimitMisc = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "floorLowerLimitShadow") == 0) {
+        gLevelValues.floorLowerLimitShadow = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+
+    // Ignore unknown keys for forward-compat (mods may probe extra fields).
+    return 0;
+}
+
+static void smlua_bind_levelvalues(lua_State *L) {
+    if (L == NULL) {
+        return;
+    }
+
+    if (luaL_newmetatable(L, SMLUA_LEVELVALUES_METATABLE)) {
+        lua_pushcfunction(L, smlua_levelvalues_index);
+        lua_setfield(L, -2, "__index");
+        lua_pushcfunction(L, smlua_levelvalues_newindex);
+        lua_setfield(L, -2, "__newindex");
+        lua_pushboolean(L, 0);
+        lua_setfield(L, -2, "__metatable");
+    }
+    lua_pop(L, 1);
+
+    // Represent as an empty userdata whose metatable proxies to the C global.
+    lua_newuserdata(L, 1);
+    luaL_getmetatable(L, SMLUA_LEVELVALUES_METATABLE);
+    lua_setmetatable(L, -2);
+    lua_setglobal(L, "gLevelValues");
+}
+
 // Derives mod root from script path (mods/<name>/...), or "mods" for single-file mods.
 static bool smlua_get_mod_root_from_script(char *out_root, size_t out_size, const char *script_path) {
     const char *after_prefix;
@@ -6653,6 +7235,7 @@ static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
     char module_expr[SYS_MAX_PATH];
     char script_dir[SYS_MAX_PATH];
     char mod_root[SYS_MAX_PATH];
+    char mods_root[SYS_MAX_PATH];
     char joined[SYS_MAX_PATH];
     char normalized[SYS_MAX_PATH];
     bool has_mod_root = false;
@@ -6704,44 +7287,85 @@ static bool smlua_resolve_require_module_path(char *out_path, size_t out_size,
     }
 
     has_mod_root = smlua_get_mod_root_from_script(mod_root, sizeof(mod_root), caller_script);
+
+    const char *base_roots[2];
+    size_t base_root_count = 0;
     if (root_relative) {
         if (!has_mod_root) {
             return false;
         }
-        written = snprintf(joined, sizeof(joined), "%s/%s", mod_root, module_expr);
+        // Co-op DX semantics: leading '/' resolves relative to mod root (e.g. `/lib/foo` => `mods/<mod>/lib/foo.lua`).
+        base_roots[base_root_count++] = mod_root;
+
+        // Compatibility fallback: if a mod expects shared libs under `mods/lib`, try that too.
+        if (smlua_get_script_directory(mods_root, sizeof(mods_root), mod_root)) {
+            base_roots[base_root_count++] = mods_root;
+        }
     } else {
-        written = snprintf(joined, sizeof(joined), "%s/%s", script_dir, module_expr);
-    }
-    if (written < 0 || (size_t)written >= sizeof(joined)) {
-        return false;
-    }
-    if (!smlua_normalize_virtual_path(normalized, sizeof(normalized), joined)) {
-        return false;
-    }
-    if (has_mod_root && !smlua_path_is_within_root(normalized, mod_root)) {
-        return false;
+        base_roots[base_root_count++] = script_dir;
     }
 
-    if (smlua_path_has_suffix(normalized, ".lua") || smlua_path_has_suffix(normalized, ".luac")) {
-        if (smlua_vfs_file_exists(normalized)) {
-            snprintf(out_path, out_size, "%s", normalized);
-            return true;
+    for (size_t base_index = 0; base_index < base_root_count; base_index++) {
+        const char *base_root = base_roots[base_index];
+        const char *enforce_root = NULL;
+        bool enforce_sandbox = false;
+
+        written = snprintf(joined, sizeof(joined), "%s/%s", base_root, module_expr);
+        if (written < 0 || (size_t)written >= sizeof(joined)) {
+            continue;
         }
-    } else {
-        char candidate[SYS_MAX_PATH];
-        written = snprintf(candidate, sizeof(candidate), "%s.lua", normalized);
-        if (written > 0 && (size_t)written < sizeof(candidate) &&
-            (!has_mod_root || smlua_path_is_within_root(candidate, mod_root)) &&
-            smlua_vfs_file_exists(candidate)) {
-            snprintf(out_path, out_size, "%s", candidate);
-            return true;
+        if (!smlua_normalize_virtual_path(normalized, sizeof(normalized), joined)) {
+            continue;
         }
-        written = snprintf(candidate, sizeof(candidate), "%s.luac", normalized);
-        if (written > 0 && (size_t)written < sizeof(candidate) &&
-            (!has_mod_root || smlua_path_is_within_root(candidate, mod_root)) &&
-            smlua_vfs_file_exists(candidate)) {
-            snprintf(out_path, out_size, "%s", candidate);
-            return true;
+
+        if (root_relative) {
+            enforce_root = base_root;
+            enforce_sandbox = true;
+        } else if (has_mod_root) {
+            enforce_root = mod_root;
+            enforce_sandbox = true;
+        }
+
+        if (enforce_sandbox && !smlua_path_is_within_root(normalized, enforce_root)) {
+            continue;
+        }
+
+        if (smlua_path_has_suffix(normalized, ".lua") || smlua_path_has_suffix(normalized, ".luac")) {
+            if (smlua_vfs_file_exists(normalized)) {
+                snprintf(out_path, out_size, "%s", normalized);
+                return true;
+            }
+        } else {
+            char candidate[SYS_MAX_PATH];
+            written = snprintf(candidate, sizeof(candidate), "%s.lua", normalized);
+            if (written > 0 && (size_t)written < sizeof(candidate) &&
+                (!enforce_sandbox || smlua_path_is_within_root(candidate, enforce_root)) &&
+                smlua_vfs_file_exists(candidate)) {
+                snprintf(out_path, out_size, "%s", candidate);
+                return true;
+            }
+            written = snprintf(candidate, sizeof(candidate), "%s.luac", normalized);
+            if (written > 0 && (size_t)written < sizeof(candidate) &&
+                (!enforce_sandbox || smlua_path_is_within_root(candidate, enforce_root)) &&
+                smlua_vfs_file_exists(candidate)) {
+                snprintf(out_path, out_size, "%s", candidate);
+                return true;
+            }
+            // Lua's package search semantics also try `<module>/init.lua`.
+            written = snprintf(candidate, sizeof(candidate), "%s/init.lua", normalized);
+            if (written > 0 && (size_t)written < sizeof(candidate) &&
+                (!enforce_sandbox || smlua_path_is_within_root(candidate, enforce_root)) &&
+                smlua_vfs_file_exists(candidate)) {
+                snprintf(out_path, out_size, "%s", candidate);
+                return true;
+            }
+            written = snprintf(candidate, sizeof(candidate), "%s/init.luac", normalized);
+            if (written > 0 && (size_t)written < sizeof(candidate) &&
+                (!enforce_sandbox || smlua_path_is_within_root(candidate, enforce_root)) &&
+                smlua_vfs_file_exists(candidate)) {
+                snprintf(out_path, out_size, "%s", candidate);
+                return true;
+            }
         }
     }
 
@@ -7106,10 +7730,6 @@ void smlua_init(void) {
     memset(sLuaAudioPool, 0, sizeof(sLuaAudioPool));
     memset(sLuaCustomActionNextIndex, 0, sizeof(sLuaCustomActionNextIndex));
 
-    // Load DynOSBIN assets for currently enabled mods before Lua executes, so
-    // level_register/warp helpers can resolve custom scripts immediately.
-    mods_activate_dynos_assets();
-
     sLuaState = luaL_newstate();
     if (sLuaState == NULL) {
         smlua_logf("lua: failed to allocate Lua state");
@@ -7144,14 +7764,22 @@ void smlua_init(void) {
     smlua_bind_minimal_globals(sLuaState);
     smlua_set_global_function(sLuaState, "gVec3fZero", smlua_func_gvec3f_zero);
     smlua_set_global_function(sLuaState, "vec3f_copy", smlua_func_vec3f_copy);
+    smlua_set_global_function(sLuaState, "vec3f_dist", smlua_func_vec3f_dist);
+    smlua_bind_levelvalues(sLuaState);
     smlua_bind_wiiu_mod_runtime_compat(sLuaState);
     smlua_ensure_singleplayer_tables(sLuaState);
     smlua_update_singleplayer_network_snapshot(sLuaState);
+
+    // Activate DynOS assets after hook tables are initialized so custom
+    // behavior IDs registered by DynOS remain available to Lua scripts.
+    mods_activate_dynos_assets();
 
     size_t script_count = mods_get_active_script_count();
     smlua_logf("lua: loading %u root scripts", (unsigned)script_count);
     for (size_t i = 0; i < script_count; i++) {
         const char *root_script = mods_get_active_script_path(i);
+        // Keep custom level mod indices aligned with DynOS activation order.
+        smlua_level_util_set_register_mod_index((s32)i + 1);
 #ifdef TARGET_WII_U
         // Keep startup visibility for single-file scripts that do not emit
         // main-script begin/completed markers.
@@ -7160,6 +7788,7 @@ void smlua_init(void) {
 #endif
         smlua_run_script_with_companions(root_script);
     }
+    smlua_level_util_set_register_mod_index(0);
 
 #ifdef TARGET_WII_U
     smlua_log_runtime_hook_snapshot(sLuaState, "pre_mods_loaded");
@@ -7173,6 +7802,18 @@ void smlua_init(void) {
     smlua_logf("lua: initialized (%u scripts)", (unsigned)script_count);
 }
 
+void smlua_request_reinit(void) {
+    sSmluaPendingReinit = true;
+}
+
+bool smlua_consume_reinit_request(void) {
+    if (!sSmluaPendingReinit) {
+        return false;
+    }
+    sSmluaPendingReinit = false;
+    return true;
+}
+
 // Executes optional global on_update() hook once per game frame.
 void smlua_update(void) {
     if (sLuaState == NULL) {
@@ -7184,28 +7825,80 @@ void smlua_update(void) {
     }
     sLuaUpdateCounter++;
 
+#ifdef TARGET_WII_U
+    f64 t_begin = clock_elapsed_f64();
+#endif
     smlua_cobject_update_globals(sLuaState);
     smlua_ensure_singleplayer_tables(sLuaState);
     smlua_update_singleplayer_network_snapshot(sLuaState);
+#ifdef TARGET_WII_U
+    f64 t_pre_hooks = clock_elapsed_f64();
+#endif
     smlua_call_event_hooks(HOOK_UPDATE);
+#ifdef TARGET_WII_U
+    f64 t_post_hooks = clock_elapsed_f64();
+#endif
 
     lua_getglobal(sLuaState, "on_update");
     if (lua_isfunction(sLuaState, -1)) {
         lua_sethook(sLuaState, smlua_update_budget_hook, LUA_MASKCOUNT,
                     SMLUA_UPDATE_INSTRUCTION_BUDGET);
-        if (lua_pcall(sLuaState, 0, 0, 0) != LUA_OK) {
+        // Insert traceback handler beneath the function.
+        int base = lua_gettop(sLuaState);
+        lua_pushcfunction(sLuaState, smlua_traceback);
+        lua_insert(sLuaState, base);
+
+        if (lua_pcall(sLuaState, 0, 0, base) != LUA_OK) {
             const char *error = lua_tostring(sLuaState, -1);
             smlua_logf("lua: on_update failed: %s", error != NULL ? error : "<unknown>");
             lua_pop(sLuaState, 1);
         }
+
+        // Remove traceback handler.
+        lua_remove(sLuaState, base);
         lua_sethook(sLuaState, NULL, 0, 0);
     } else {
         lua_pop(sLuaState, 1);
     }
+#ifdef TARGET_WII_U
+    f64 t_post_on_update = clock_elapsed_f64();
+#endif
 
     smlua_call_behavior_hooks();
+#ifdef TARGET_WII_U
+    f64 t_post_behavior = clock_elapsed_f64();
+#endif
     smlua_update_custom_dnc_objects(sLuaState);
+#ifdef TARGET_WII_U
+    f64 t_post_dnc = clock_elapsed_f64();
+#endif
     smlua_poll_sync_table_change_hooks();
+
+#ifdef TARGET_WII_U
+    f64 t_end = clock_elapsed_f64();
+    f64 total_ms = (t_end - t_begin) * 1000.0;
+    if (total_ms > 250.0) {
+        static u32 sSlowLogs = 0;
+        if (sSlowLogs < 10) {
+            u64 pre_ms = (u64)((t_pre_hooks - t_begin) * 1000.0);
+            u64 hooks_ms = (u64)((t_post_hooks - t_pre_hooks) * 1000.0);
+            u64 on_update_ms = (u64)((t_post_on_update - t_post_hooks) * 1000.0);
+            u64 behavior_ms = (u64)((t_post_behavior - t_post_on_update) * 1000.0);
+            u64 dnc_ms = (u64)((t_post_dnc - t_post_behavior) * 1000.0);
+            u64 sync_ms = (u64)((t_end - t_post_dnc) * 1000.0);
+            WHBLogPrintf("lua: update slow tick=%u total=%llums pre=%llums hooks=%llums on_update=%llums behavior=%llums dnc=%llums sync=%llums",
+                         (unsigned)sLuaUpdateCounter,
+                         (unsigned long long)(u64)total_ms,
+                         (unsigned long long)pre_ms,
+                         (unsigned long long)hooks_ms,
+                         (unsigned long long)on_update_ms,
+                         (unsigned long long)behavior_ms,
+                         (unsigned long long)dnc_ms,
+                         (unsigned long long)sync_ms);
+            sSlowLogs++;
+        }
+    }
+#endif
 }
 
 // Destroys the Lua VM and releases all script-managed resources.
@@ -7215,6 +7908,13 @@ void smlua_shutdown(void) {
         smlua_clear_hooks(sLuaState);
         lua_close(sLuaState);
         sLuaState = NULL;
+    }
+    for (int i = 0; i < SMLUA_MOD_STORAGE_CACHE_SLOTS; i++) {
+        (void)smlua_mod_storage_cache_flush(&sModStorageCache[i]);
+        sModStorageCache[i].loaded = false;
+        sModStorageCache[i].dirty = false;
+        sModStorageCache[i].count = 0;
+        sModStorageCache[i].filename[0] = '\0';
     }
     smlua_reset_lighting_state();
     smlua_reset_sequence_aliases();

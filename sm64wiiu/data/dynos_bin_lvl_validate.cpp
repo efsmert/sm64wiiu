@@ -51,8 +51,15 @@ static void LvlCmd_Add(LevelScript script[], size_t size) {
         }
     }
 
-    // extract the id and make sure it's unique
+    // Extract the command id in a platform-correct way.
+    // LevelScript words are authored via CMD_* macros which pack the command id
+    // into the most-significant byte on big-endian platforms and least-significant
+    // byte on little-endian platforms.
+#if IS_BIG_ENDIAN
+    u8 id = (u8)((script[0] >> 24) & 0xFF);
+#else
     u8 id = (u8)(script[0] & 0xFF);
+#endif
     if (sCommandMap.count(id) != 0) { return; }
 
     // add the command to the map
@@ -153,7 +160,11 @@ void DynOS_Lvl_Validate_Begin() {
 bool DynOS_Lvl_Validate_RequirePointer(u32 value) {
     // figure out which command we're inside
     if (sCurCommandId == 0xFF || sCurCommandOffset >= sCommandMap[sCurCommandId].size) {
+#if IS_BIG_ENDIAN
+        u8 id = (u8)((value >> 24) & 0xFF);
+#else
         u8 id = (u8)(value & 0xFF);
+#endif
         sCurCommandId = id;
         sCurCommandOffset = 0;
     }

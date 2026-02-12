@@ -131,12 +131,17 @@ extern struct WarpCheckpoint gWarpCheckpoint;
 
 extern s8 gMainMenuDataModified;
 extern s8 gSaveFileModified;
+extern u8 gSaveFileUsingBackupSlot;
 
 void save_file_do_save(s32 fileIndex);
 void save_file_erase(s32 fileIndex);
 BAD_RETURN(s32) save_file_copy(s32 srcFileIndex, s32 destFileIndex);
 void save_file_load_all(void);
 void save_file_reload(void);
+// Co-op DX compatibility: Flood and other mods use the backup slot as a separate save.
+void save_file_erase_current_backup_save(void);
+u8 save_file_get_using_backup_slot(void);
+void save_file_set_using_backup_slot(u8 usingBackupSlot);
 void save_file_collect_star_or_key(s16 coinScore, s16 starIndex);
 s32 save_file_exists(s32 fileIndex);
 u32 save_file_get_max_coin_score(s32 courseIndex);

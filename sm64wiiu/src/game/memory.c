@@ -122,16 +122,33 @@ void *get_segment_base_addr(s32 segment) {
 
 #ifndef NO_SEGMENTED_MEMORY
 void *segmented_to_virtual(const void *addr) {
-    size_t segment = (uintptr_t) addr >> 24;
-    size_t offset = (uintptr_t) addr & 0x00FFFFFF;
+    uintptr_t a = (uintptr_t)addr;
+    size_t segment = a >> 24;
+    size_t offset = a & 0x00FFFFFF;
 
-    return (void *) ((sSegmentTable[segment] + offset) | 0x80000000);
+    // DynOS/mod assets (and some CoopDX subsystems) may pass raw pointers through
+    // geo/level script loaders. Treat anything outside the classic 0x00-0x0F
+    // segment range as already-virtual.
+    if (segment >= 0x10) {
+        return (void *)addr;
+    }
+
+    // If the segment base was never initialized, fall back to raw pointer.
+    if (sSegmentTable[segment] == 0) {
+        return (void *)addr;
+    }
+
+    return (void *)((sSegmentTable[segment] + offset) | 0x80000000);
 }
 
 void *virtual_to_segmented(u32 segment, const void *addr) {
-    size_t offset = ((uintptr_t) addr & 0x1FFFFFFF) - sSegmentTable[segment];
+    // When we are already dealing with raw pointers (e.g. DynOS assets), keep them.
+    if (segment >= 0x10 || sSegmentTable[segment] == 0) {
+        return (void *)addr;
+    }
 
-    return (void *) ((segment << 24) + offset);
+    size_t offset = ((uintptr_t)addr & 0x1FFFFFFF) - sSegmentTable[segment];
+    return (void *)((segment << 24) + offset);
 }
 
 void move_segment_table_to_dmem(void) {

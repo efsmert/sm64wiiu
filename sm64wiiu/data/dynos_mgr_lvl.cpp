@@ -16,6 +16,102 @@ static std::vector<OverrideLevelScript> &DynosOverrideLevelScripts() {
     return sDynosOverrideLevelScripts;
 }
 
+static std::string DynOS_Lvl_NormalizeScriptName(const char *name) {
+    if (name == NULL) {
+        return std::string();
+    }
+    std::string normalized = name;
+    size_t slashPos = normalized.find_last_of("/\\");
+    if (slashPos != std::string::npos) {
+        normalized.erase(0, slashPos + 1);
+    }
+    size_t dotPos = normalized.rfind('.');
+    if (dotPos != std::string::npos) {
+        normalized.erase(dotPos);
+    }
+    return normalized;
+}
+
+static bool DynOS_Lvl_ScriptNamesMatch(const char *lhs, const char *rhs) {
+    if (lhs == NULL || rhs == NULL) {
+        return false;
+    }
+    if (!strcmp(lhs, rhs)) {
+        return true;
+    }
+    return DynOS_Lvl_NormalizeScriptName(lhs) == DynOS_Lvl_NormalizeScriptName(rhs);
+}
+
+struct DynOSLvlScriptScoreCtx {
+    s32 areaCount;
+    s32 warpNodeCount;
+    s32 marioPosCount;
+};
+
+static DynOSLvlScriptScoreCtx *sDynOSLvlScriptScoreCtx = NULL;
+
+static s32 DynOS_Lvl_ScorePreprocess(u8 aType, void *aCmd) {
+    (void) aCmd;
+    if (sDynOSLvlScriptScoreCtx == NULL) {
+        return 0;
+    }
+
+    switch (aType) {
+        case 0x1F: sDynOSLvlScriptScoreCtx->areaCount++; break;      // AREA
+        case 0x26:                                                  // WARP_NODE
+        case 0x27: sDynOSLvlScriptScoreCtx->warpNodeCount++; break; // PAINTING_WARP_NODE
+        case 0x2B: sDynOSLvlScriptScoreCtx->marioPosCount++; break; // MARIO_POS
+        case 0x03:                                                  // SLEEP
+        case 0x04: return 3;                                        // SLEEP_BEFORE_EXIT
+    }
+    return 0;
+}
+
+static s32 DynOS_Lvl_ScoreScript(const void *script) {
+    if (script == NULL) {
+        return -1;
+    }
+
+    DynOSLvlScriptScoreCtx ctx = { 0, 0, 0 };
+    sDynOSLvlScriptScoreCtx = &ctx;
+    DynOS_Level_ParseScript(script, DynOS_Lvl_ScorePreprocess);
+    sDynOSLvlScriptScoreCtx = NULL;
+
+    // Favor scripts that can actually spawn Mario and define warp graph.
+    return (ctx.marioPosCount * 100) + (ctx.warpNodeCount * 20) + (ctx.areaCount * 4);
+}
+
+template <typename TNodes>
+static DataNode<LevelScript> *DynOS_Lvl_SelectEntryScriptNode(TNodes &scripts, const char *requestedName) {
+    if (scripts.Count() <= 0) {
+        return NULL;
+    }
+
+    // First try direct/normalized name match.
+    for (auto &scriptNode : scripts) {
+        if (requestedName != NULL && scriptNode->mName.begin() != NULL && !strcmp(scriptNode->mName.begin(), requestedName)) {
+            return scriptNode;
+        }
+    }
+    for (auto &scriptNode : scripts) {
+        if (DynOS_Lvl_ScriptNamesMatch(scriptNode->mName.begin(), requestedName)) {
+            return scriptNode;
+        }
+    }
+
+    // If names don't match, pick the script that looks like a playable entry script.
+    DataNode<LevelScript> *bestNode = scripts[scripts.Count() - 1];
+    s32 bestScore = DynOS_Lvl_ScoreScript(bestNode->mData);
+    for (auto &scriptNode : scripts) {
+        s32 score = DynOS_Lvl_ScoreScript(scriptNode->mData);
+        if (score > bestScore) {
+            bestScore = score;
+            bestNode = scriptNode;
+        }
+    }
+    return bestNode;
+}
+
 std::vector<std::pair<std::string, GfxData *>> &DynOS_Lvl_GetArray() {
     static std::vector<std::pair<std::string, GfxData *>> sDynosCustomLevelScripts;
     return sDynosCustomLevelScripts;
@@ -25,9 +121,23 @@ LevelScript* DynOS_Lvl_GetScript(const char* aScriptEntryName) {
     auto& _CustomLevelScripts = DynOS_Lvl_GetArray();
     for (size_t i = 0; i < _CustomLevelScripts.size(); ++i) {
         auto& pair = _CustomLevelScripts[i];
-        if (pair.first == aScriptEntryName) {
+        if (DynOS_Lvl_ScriptNamesMatch(pair.first.c_str(), aScriptEntryName)) {
             auto& newScripts = pair.second->mLevelScripts;
-            auto& newScriptNode = newScripts[newScripts.Count() - 1];
+            DataNode<LevelScript> *newScriptNode = DynOS_Lvl_SelectEntryScriptNode(newScripts, aScriptEntryName);
+            if (newScriptNode == NULL) {
+                return NULL;
+            }
+#ifdef TARGET_WII_U
+            static u32 sDynosGetScriptLogCount = 0;
+            if (sDynosGetScriptLogCount < 32) {
+                s32 score = DynOS_Lvl_ScoreScript(newScriptNode->mData);
+                WHBLogPrintf("dynos: get_level_script req='%s' chosen='%s' score=%d scripts=%d ptr=%p",
+                             aScriptEntryName != NULL ? aScriptEntryName : "(null)",
+                             newScriptNode->mName.begin() != NULL ? newScriptNode->mName.begin() : "(null)",
+                             (int) score, (int) newScripts.Count(), newScriptNode->mData);
+                sDynosGetScriptLogCount++;
+            }
+#endif
             return newScriptNode->mData;
         }
     }
@@ -85,7 +195,12 @@ void DynOS_Lvl_Activate(s32 modIndex, const SysPath &aFilename, const char *aLev
         return;
     }
 
-    auto& newScriptNode = newScripts[newScripts.Count() - 1];
+    DataNode<LevelScript> *newScriptNode = DynOS_Lvl_SelectEntryScriptNode(newScripts, aLevelName);
+    if (newScriptNode == NULL) {
+        PrintError("Could not select level script: '%s'", aLevelName);
+        return;
+    }
+
     const void* originalScript = DynOS_Builtin_ScriptPtr_GetFromName(newScriptNode->mName.begin());
     if (originalScript == NULL) {
         return;

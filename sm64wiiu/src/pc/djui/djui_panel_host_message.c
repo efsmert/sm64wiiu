@@ -32,7 +32,7 @@ void djui_panel_do_host(bool reconnecting, bool playSound) {
 
     network_init(NT_SERVER, reconnecting);
     // Apply currently-selected host mods in-session when hosting starts.
-    smlua_init();
+    smlua_request_reinit();
     djui_panel_modlist_create(NULL);
     fake_lvl_init_from_save_file();
 

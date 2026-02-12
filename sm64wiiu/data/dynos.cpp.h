@@ -12,6 +12,9 @@ extern "C" {
 #include "game/moving_texture.h"
 #include "pc/djui/djui_console.h"
 #include "pc/fs/fmem.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 }
 
 #define FUNCTION_CODE   (u32) 0x434E5546
@@ -201,6 +204,7 @@ public:
             if (aBinFile->mFilename) free((void *) aBinFile->mFilename);
             if (aBinFile->mData) free(aBinFile->mData);
             free(aBinFile);
+            aBinFile = NULL;
         }
     }
 
@@ -409,7 +413,7 @@ public:
         if (aString) {
             u64 _Length = strlen(aString);
             mCount = MIN(_Length, STRING_SIZE - 1);
-            memcpy(mBuffer, aString, _Length);
+            memcpy(mBuffer, aString, mCount);
         }
         mBuffer[mCount] = 0;
     }
@@ -521,8 +525,23 @@ public:
 
 public:
     void Read(BinFile *aFile) {
-        mCount = aFile->Read<u8>();
-        aFile->Read<char>(mBuffer, mCount);
+        u8 len = aFile->Read<u8>();
+        u8 copyLen = (len >= STRING_SIZE) ? (STRING_SIZE - 1) : len;
+
+        // Copy what fits, then skip the rest to keep the stream aligned.
+        aFile->Read<char>(mBuffer, copyLen);
+        if (len > copyLen) {
+            s32 remaining = aFile->Size() - aFile->Offset();
+            s32 toSkip = (s32)(len - copyLen);
+            if (toSkip > remaining) {
+                toSkip = remaining;
+            }
+            if (toSkip > 0) {
+                aFile->Skip(toSkip);
+            }
+        }
+
+        mCount = copyLen;
         mBuffer[mCount] = 0;
     }
 

@@ -2,6 +2,7 @@
 #define GEO_LAYOUT_H
 
 #include <PR/ultratypes.h>
+#include <string.h>
 
 #include "game/memory.h"
 #include "macros.h"
@@ -13,21 +14,6 @@
 
 #define CMD_SIZE_SHIFT (sizeof(void *) >> 3)
 #define CMD_PROCESS_OFFSET(offset) (((offset) & 3) | (((offset) & ~3) << CMD_SIZE_SHIFT))
-
-#define cur_geo_cmd_u8(offset) \
-    (gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)])
-
-#define cur_geo_cmd_s16(offset) \
-    (*(s16 *) &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)])
-
-#define cur_geo_cmd_s32(offset) \
-    (*(s32 *) &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)])
-
-#define cur_geo_cmd_u32(offset) \
-    (*(u32 *) &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)])
-
-#define cur_geo_cmd_ptr(offset) \
-    (*(void **) &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)])
 
 extern struct AllocOnlyPool *gGraphNodePool;
 extern struct GraphNode *gCurRootGraphNode;
@@ -42,6 +28,40 @@ extern UNUSED s16 D_8038BD7C;
 extern s16 gGeoLayoutReturnIndex;
 extern u8 *gGeoLayoutCommand;
 extern struct GraphNode gObjParentGraphNode;
+
+static inline u8 cur_geo_cmd_read_u8(u32 offset) {
+    return gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)];
+}
+
+static inline s16 cur_geo_cmd_read_s16(u32 offset) {
+    s16 value;
+    memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    return value;
+}
+
+static inline s32 cur_geo_cmd_read_s32(u32 offset) {
+    s32 value;
+    memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    return value;
+}
+
+static inline u32 cur_geo_cmd_read_u32(u32 offset) {
+    u32 value;
+    memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    return value;
+}
+
+static inline void *cur_geo_cmd_read_ptr(u32 offset) {
+    void *value;
+    memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    return value;
+}
+
+#define cur_geo_cmd_u8(offset) cur_geo_cmd_read_u8((offset))
+#define cur_geo_cmd_s16(offset) cur_geo_cmd_read_s16((offset))
+#define cur_geo_cmd_s32(offset) cur_geo_cmd_read_s32((offset))
+#define cur_geo_cmd_u32(offset) cur_geo_cmd_read_u32((offset))
+#define cur_geo_cmd_ptr(offset) cur_geo_cmd_read_ptr((offset))
 
 extern struct AllocOnlyPool *D_8038BCA0;
 extern struct GraphNode *D_8038BCA4;
@@ -81,6 +101,10 @@ void geo_layout_cmd_nop(void);
 void geo_layout_cmd_copy_view(void);
 void geo_layout_cmd_node_held_obj(void);
 void geo_layout_cmd_node_culling_radius(void);
+void geo_layout_cmd_node_background_ext(void);
+void geo_layout_cmd_node_switch_case_ext(void);
+void geo_layout_cmd_node_generated_ext(void);
+void geo_layout_cmd_bone(void);
 
 struct GraphNode *process_geo_layout(struct AllocOnlyPool *a0, void *segptr);
 

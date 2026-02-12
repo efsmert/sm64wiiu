@@ -4,11 +4,15 @@
 #include <lauxlib.h>
 
 #include "sm64.h"
+#include "behavior_data.h"
+#include "engine/graph_node.h"
 #include "game/area.h"
 #include "game/camera.h"
+#include "game/ingame_menu.h"
 #include "game/level_update.h"
 #include "game/object_list_processor.h"
 #include "smlua_cobject.h"
+#include "smlua_hooks.h"
 
 static const char *SMLUA_COBJECT_METATABLE = "SM64.CObject";
 static const char *SMLUA_VEC3F_METATABLE = "SM64.Vec3fRef";
@@ -18,7 +22,9 @@ static const char *SMLUA_OBJECT_HEADER_METATABLE = "SM64.ObjectHeaderRef";
 static const char *SMLUA_OBJECT_GFX_METATABLE = "SM64.ObjectGfxRef";
 static const char *SMLUA_OBJECT_ANIMINFO_METATABLE = "SM64.ObjectAnimInfoRef";
 static const char *SMLUA_OBJECT_SHAREDCHILD_METATABLE = "SM64.ObjectSharedChildRef";
+static const char *SMLUA_GRAPH_NODE_METATABLE = "SM64.GraphNodeRef";
 static const char *SMLUA_CUSTOM_OBJECT_FIELD_REGISTRY = "SM64.CustomObjectFields";
+static const char *SMLUA_CUSTOM_OBJECT_FIELD_TYPE_REGISTRY = "SM64.CustomObjectFieldTypes";
 
 typedef struct SmluaVec3fRef {
     f32 *pointer;
@@ -48,6 +54,10 @@ typedef struct SmluaObjectSharedChildRef {
     struct Object *object;
 } SmluaObjectSharedChildRef;
 
+typedef struct SmluaGraphNodeRef {
+    struct GraphNode *node;
+} SmluaGraphNodeRef;
+
 #define SMLUA_SHARED_CHILD_HOOK_PROCESS_MAX 1024
 struct SmluaSharedChildHookProcess {
     struct Object *object;
@@ -56,11 +66,58 @@ struct SmluaSharedChildHookProcess {
 
 static struct SmluaSharedChildHookProcess sSharedChildHookProcess[SMLUA_SHARED_CHILD_HOOK_PROCESS_MAX];
 
+// Counts active objects matching a behavior pointer with list-walk sanity bounds.
+static s32 smlua_count_active_behavior_objects(const BehaviorScript *behavior) {
+    u32 obj_list;
+
+    if (behavior == NULL || gObjectLists == NULL) {
+        return 0;
+    }
+
+    s32 count = 0;
+    for (obj_list = 0; obj_list < NUM_OBJ_LISTS; obj_list++) {
+        u32 sanity_depth = 0;
+        struct Object *head = (struct Object *)&gObjectLists[obj_list];
+        struct Object *obj = (struct Object *)head->header.next;
+        while (obj != head) {
+            if (++sanity_depth > 20000) {
+                return count;
+            }
+            if (obj->activeFlags != ACTIVE_FLAG_DEACTIVATED && obj->behavior == behavior) {
+                count++;
+            }
+            obj = (struct Object *)obj->header.next;
+        }
+    }
+
+    return count;
+}
+
+// Compatibility value for mods expecting `Area.numRedCoins` (not present in Wii U Area struct).
+static s32 smlua_area_num_red_coins_compat(void) {
+    s32 total = (s32)gRedCoinsCollected + smlua_count_active_behavior_objects(bhvRedCoin);
+    if (total < 0) {
+        total = 0;
+    } else if (total > 255) {
+        total = 255;
+    }
+    return total;
+}
+
+enum SmluaCustomObjectFieldType {
+    SMLUA_CUSTOM_OBJECT_FIELD_NONE = 0,
+    SMLUA_CUSTOM_OBJECT_FIELD_U32 = 1,
+    SMLUA_CUSTOM_OBJECT_FIELD_S32 = 2,
+    SMLUA_CUSTOM_OBJECT_FIELD_F32 = 3,
+};
+
 // Returns a stable human-readable type name used in Lua-facing diagnostics.
 static const char *smlua_cobject_type_name(uint16_t type) {
     switch (type) {
         case SMLUA_COBJECT_MARIO_STATE:
             return "MarioState";
+        case SMLUA_COBJECT_MARIO_BODY_STATE:
+            return "MarioBodyState";
         case SMLUA_COBJECT_OBJECT:
             return "Object";
         case SMLUA_COBJECT_AREA:
@@ -72,6 +129,136 @@ static const char *smlua_cobject_type_name(uint16_t type) {
         default:
             return "Unknown";
     }
+}
+
+// Forward declarations for helpers used by early compatibility shims.
+static void smlua_push_vec3f(lua_State *L, f32 *pointer);
+static void smlua_push_vec3s(lua_State *L, s16 *pointer);
+static bool smlua_read_vec3f_table(lua_State *L, int index, f32 out[3]);
+static bool smlua_read_vec3s_table(lua_State *L, int index, s16 out[3]);
+
+// Pushes a known MarioBodyState field into Lua and returns true on handled key.
+static bool smlua_push_mario_body_state_field(lua_State *L, struct MarioBodyState *b, const char *key) {
+    if (strcmp(key, "type") == 0) {
+        lua_pushstring(L, "MarioBodyState");
+        return true;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, b);
+        return true;
+    }
+    if (strcmp(key, "is_null") == 0) {
+        lua_pushboolean(L, b == NULL ? 1 : 0);
+        return true;
+    }
+    if (strcmp(key, "action") == 0) {
+        lua_pushinteger(L, b->action);
+        return true;
+    }
+    if (strcmp(key, "capState") == 0) {
+        lua_pushinteger(L, b->capState);
+        return true;
+    }
+    if (strcmp(key, "eyeState") == 0) {
+        lua_pushinteger(L, b->eyeState);
+        return true;
+    }
+    if (strcmp(key, "handState") == 0) {
+        lua_pushinteger(L, b->handState);
+        return true;
+    }
+    if (strcmp(key, "wingFlutter") == 0) {
+        lua_pushinteger(L, b->wingFlutter);
+        return true;
+    }
+    if (strcmp(key, "modelState") == 0) {
+        lua_pushinteger(L, b->modelState);
+        return true;
+    }
+    if (strcmp(key, "grabPos") == 0) {
+        lua_pushinteger(L, b->grabPos);
+        return true;
+    }
+    if (strcmp(key, "punchState") == 0) {
+        lua_pushinteger(L, b->punchState);
+        return true;
+    }
+    if (strcmp(key, "torsoAngle") == 0) {
+        smlua_push_vec3s(L, b->torsoAngle);
+        return true;
+    }
+    if (strcmp(key, "headAngle") == 0) {
+        smlua_push_vec3s(L, b->headAngle);
+        return true;
+    }
+    if (strcmp(key, "heldObjLastPosition") == 0) {
+        smlua_push_vec3f(L, b->heldObjLastPosition);
+        return true;
+    }
+    return false;
+}
+
+// Writes a known MarioBodyState field from Lua and returns true on handled key.
+static bool smlua_set_mario_body_state_field(lua_State *L, struct MarioBodyState *b, const char *key) {
+    if (strcmp(key, "capState") == 0) {
+        b->capState = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "eyeState") == 0) {
+        b->eyeState = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "handState") == 0) {
+        b->handState = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "wingFlutter") == 0) {
+        b->wingFlutter = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "modelState") == 0) {
+        b->modelState = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "grabPos") == 0) {
+        b->grabPos = (s8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "punchState") == 0) {
+        b->punchState = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "torsoAngle") == 0) {
+        s16 temp[3];
+        if (!smlua_read_vec3s_table(L, 3, temp)) {
+            return false;
+        }
+        b->torsoAngle[0] = temp[0];
+        b->torsoAngle[1] = temp[1];
+        b->torsoAngle[2] = temp[2];
+        return true;
+    }
+    if (strcmp(key, "headAngle") == 0) {
+        s16 temp[3];
+        if (!smlua_read_vec3s_table(L, 3, temp)) {
+            return false;
+        }
+        b->headAngle[0] = temp[0];
+        b->headAngle[1] = temp[1];
+        b->headAngle[2] = temp[2];
+        return true;
+    }
+    if (strcmp(key, "heldObjLastPosition") == 0) {
+        f32 temp[3];
+        if (!smlua_read_vec3f_table(L, 3, temp)) {
+            return false;
+        }
+        b->heldObjLastPosition[0] = temp[0];
+        b->heldObjLastPosition[1] = temp[1];
+        b->heldObjLastPosition[2] = temp[2];
+        return true;
+    }
+    return false;
 }
 
 // Resolves vector component key into component index (supports x/y/z, 0-2, 1-3).
@@ -232,6 +419,14 @@ static int smlua_controller_index(lua_State *L) {
         lua_pushnumber(L, ref->pointer->stickMag);
         return 1;
     }
+    if (strcmp(key, "extStickX") == 0) {
+        lua_pushinteger(L, ref->pointer->extStickX);
+        return 1;
+    }
+    if (strcmp(key, "extStickY") == 0) {
+        lua_pushinteger(L, ref->pointer->extStickY);
+        return 1;
+    }
     if (strcmp(key, "buttonDown") == 0) {
         lua_pushinteger(L, ref->pointer->buttonDown);
         return 1;
@@ -268,6 +463,14 @@ static int smlua_controller_newindex(lua_State *L) {
     }
     if (strcmp(key, "stickMag") == 0) {
         ref->pointer->stickMag = (f32)luaL_checknumber(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "extStickX") == 0) {
+        ref->pointer->extStickX = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "extStickY") == 0) {
+        ref->pointer->extStickY = (s16)luaL_checkinteger(L, 3);
         return 0;
     }
     if (strcmp(key, "buttonDown") == 0) {
@@ -373,6 +576,62 @@ static void smlua_push_object_shared_child(lua_State *L, struct Object *object) 
     lua_setmetatable(L, -2);
 }
 
+// Pushes a GraphNode proxy userdata for direct Lua read/write access.
+static void smlua_push_graph_node(lua_State *L, struct GraphNode *node) {
+    if (node == NULL) {
+        lua_pushnil(L);
+        return;
+    }
+    SmluaGraphNodeRef *ref = lua_newuserdata(L, sizeof(SmluaGraphNodeRef));
+    ref->node = node;
+    luaL_getmetatable(L, SMLUA_GRAPH_NODE_METATABLE);
+    lua_setmetatable(L, -2);
+}
+
+// Lua metamethod for GraphNode proxy reads.
+static int smlua_graph_node_index(lua_State *L) {
+    const SmluaGraphNodeRef *ref = luaL_checkudata(L, 1, SMLUA_GRAPH_NODE_METATABLE);
+    const char *key = luaL_checkstring(L, 2);
+
+    if (ref->node == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    if (strcmp(key, "type") == 0) {
+        lua_pushstring(L, "GraphNode");
+        return 1;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, ref->node);
+        return 1;
+    }
+    if (strcmp(key, "flags") == 0) {
+        lua_pushinteger(L, ref->node->flags);
+        return 1;
+    }
+
+    lua_pushnil(L);
+    return 1;
+}
+
+// Lua metamethod for GraphNode proxy writes.
+static int smlua_graph_node_newindex(lua_State *L) {
+    SmluaGraphNodeRef *ref = luaL_checkudata(L, 1, SMLUA_GRAPH_NODE_METATABLE);
+    const char *key = luaL_checkstring(L, 2);
+
+    if (ref->node == NULL) {
+        return 0;
+    }
+
+    if (strcmp(key, "flags") == 0) {
+        ref->node->flags = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+
+    return luaL_error(L, "unknown GraphNode field '%s'", key);
+}
+
 // Lua metamethod for object header proxy reads.
 static int smlua_object_header_index(lua_State *L) {
     const SmluaObjectHeaderRef *ref = luaL_checkudata(L, 1, SMLUA_OBJECT_HEADER_METATABLE);
@@ -380,6 +639,10 @@ static int smlua_object_header_index(lua_State *L) {
 
     if (strcmp(key, "gfx") == 0) {
         smlua_push_object_gfx(L, ref->object);
+        return 1;
+    }
+    if (strcmp(key, "node") == 0) {
+        smlua_push_graph_node(L, &ref->object->header.gfx.node);
         return 1;
     }
     if (strcmp(key, "type") == 0) {
@@ -400,6 +663,14 @@ static int smlua_object_gfx_index(lua_State *L) {
     const SmluaObjectGfxRef *ref = luaL_checkudata(L, 1, SMLUA_OBJECT_GFX_METATABLE);
     const char *key = luaL_checkstring(L, 2);
 
+    if (strcmp(key, "gfx") == 0) {
+        smlua_push_object_gfx(L, ref->object);
+        return 1;
+    }
+    if (strcmp(key, "node") == 0) {
+        smlua_push_graph_node(L, &ref->object->header.gfx.node);
+        return 1;
+    }
     if (strcmp(key, "cameraToObject") == 0) {
         smlua_push_vec3f(L, ref->object->header.gfx.cameraToObject);
         return 1;
@@ -427,6 +698,27 @@ static int smlua_object_gfx_index(lua_State *L) {
 
     lua_pushnil(L);
     return 1;
+}
+
+// Lua metamethod for object gfx proxy writes.
+static int smlua_object_gfx_newindex(lua_State *L) {
+    SmluaObjectGfxRef *ref = luaL_checkudata(L, 1, SMLUA_OBJECT_GFX_METATABLE);
+    const char *key = luaL_checkstring(L, 2);
+
+    if (ref->object == NULL) {
+        return 0;
+    }
+
+    if (strcmp(key, "shadowInvisible") == 0) {
+        ref->object->header.gfx.shadowInvisible = lua_toboolean(L, 3) != 0;
+        return 0;
+    }
+    if (strcmp(key, "disableAutomaticShadowPos") == 0) {
+        ref->object->header.gfx.disableAutomaticShadowPos = lua_toboolean(L, 3) != 0;
+        return 0;
+    }
+
+    return luaL_error(L, "unknown ObjectGfx field '%s'", key);
 }
 
 // Lua metamethod for object animInfo proxy reads.
@@ -587,6 +879,10 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
         lua_pushinteger(L, (lua_Integer)(m - gMarioStates));
         return true;
     }
+    if (strcmp(key, "freeze") == 0) {
+        lua_pushinteger(L, smlua_get_mario_freeze_timer(m));
+        return true;
+    }
     if (strcmp(key, "action") == 0) {
         lua_pushinteger(L, m->action);
         return true;
@@ -645,6 +941,14 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
     }
     if (strcmp(key, "healCounter") == 0) {
         lua_pushinteger(L, m->healCounter);
+        return true;
+    }
+    if (strcmp(key, "capTimer") == 0) {
+        lua_pushinteger(L, m->capTimer);
+        return true;
+    }
+    if (strcmp(key, "squishTimer") == 0) {
+        lua_pushinteger(L, m->squishTimer);
         return true;
     }
     if (strcmp(key, "numLives") == 0) {
@@ -715,6 +1019,10 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
         smlua_push_object(L, m->riddenObj);
         return true;
     }
+    if (strcmp(key, "marioBodyState") == 0) {
+        smlua_push_mario_body_state(L, m->marioBodyState);
+        return true;
+    }
 
     return false;
 }
@@ -751,6 +1059,10 @@ static bool smlua_push_area_field(lua_State *L, struct Area *a, const char *key)
     }
     if (strcmp(key, "musicParam2") == 0) {
         lua_pushinteger(L, a->musicParam2);
+        return true;
+    }
+    if (strcmp(key, "numRedCoins") == 0) {
+        lua_pushinteger(L, smlua_area_num_red_coins_compat());
         return true;
     }
     if (strcmp(key, "camera") == 0) {
@@ -875,6 +1187,34 @@ static bool smlua_push_lakitu_state_field(lua_State *L, struct LakituState *s, c
     }
     if (strcmp(key, "pos") == 0) {
         smlua_push_vec3f(L, s->pos);
+        return true;
+    }
+    if (strcmp(key, "focHSpeed") == 0) {
+        lua_pushnumber(L, s->focHSpeed);
+        return true;
+    }
+    if (strcmp(key, "focVSpeed") == 0) {
+        lua_pushnumber(L, s->focVSpeed);
+        return true;
+    }
+    if (strcmp(key, "posHSpeed") == 0) {
+        lua_pushnumber(L, s->posHSpeed);
+        return true;
+    }
+    if (strcmp(key, "posVSpeed") == 0) {
+        lua_pushnumber(L, s->posVSpeed);
+        return true;
+    }
+    if (strcmp(key, "keyDanceRoll") == 0) {
+        lua_pushinteger(L, s->keyDanceRoll);
+        return true;
+    }
+    if (strcmp(key, "lastFrameAction") == 0) {
+        lua_pushinteger(L, (lua_Integer)s->lastFrameAction);
+        return true;
+    }
+    if (strcmp(key, "unused") == 0) {
+        lua_pushinteger(L, s->unused);
         return true;
     }
 
@@ -1053,6 +1393,22 @@ static bool smlua_set_mario_field(lua_State *L, struct MarioState *m, const char
         m->action = (u32)luaL_checkinteger(L, 3);
         return true;
     }
+    if (strcmp(key, "freeze") == 0) {
+        lua_Integer value = 0;
+        if (lua_isboolean(L, 3)) {
+            value = lua_toboolean(L, 3) ? 1 : 0;
+        } else {
+            value = luaL_checkinteger(L, 3);
+        }
+        if (value < 0) {
+            value = 0;
+        }
+        if (value > 255) {
+            value = 255;
+        }
+        smlua_set_mario_freeze_timer(m, (u8)value);
+        return true;
+    }
     if (strcmp(key, "actionArg") == 0) {
         m->actionArg = (u32)luaL_checkinteger(L, 3);
         return true;
@@ -1103,6 +1459,28 @@ static bool smlua_set_mario_field(lua_State *L, struct MarioState *m, const char
     }
     if (strcmp(key, "healCounter") == 0) {
         m->healCounter = (u8)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "capTimer") == 0) {
+        lua_Integer value = luaL_checkinteger(L, 3);
+        if (value < 0) {
+            value = 0;
+        }
+        if (value > 0xFFFF) {
+            value = 0xFFFF;
+        }
+        m->capTimer = (u16)value;
+        return true;
+    }
+    if (strcmp(key, "squishTimer") == 0) {
+        lua_Integer value = luaL_checkinteger(L, 3);
+        if (value < 0) {
+            value = 0;
+        }
+        if (value > 0xFF) {
+            value = 0xFF;
+        }
+        m->squishTimer = (u8)value;
         return true;
     }
     if (strcmp(key, "numLives") == 0) {
@@ -1213,6 +1591,9 @@ static bool smlua_set_area_field(lua_State *L, struct Area *a, const char *key) 
     }
     if (strcmp(key, "musicParam2") == 0) {
         a->musicParam2 = (u16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "numRedCoins") == 0) {
         return true;
     }
 
@@ -1357,6 +1738,34 @@ static bool smlua_set_lakitu_state_field(lua_State *L, struct LakituState *s, co
         s->focus[0] = vec[0];
         s->focus[1] = vec[1];
         s->focus[2] = vec[2];
+        return true;
+    }
+    if (strcmp(key, "focHSpeed") == 0) {
+        s->focHSpeed = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "focVSpeed") == 0) {
+        s->focVSpeed = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "posHSpeed") == 0) {
+        s->posHSpeed = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "posVSpeed") == 0) {
+        s->posVSpeed = (f32)luaL_checknumber(L, 3);
+        return true;
+    }
+    if (strcmp(key, "keyDanceRoll") == 0) {
+        s->keyDanceRoll = (s16)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "lastFrameAction") == 0) {
+        s->lastFrameAction = (u32)luaL_checkinteger(L, 3);
+        return true;
+    }
+    if (strcmp(key, "unused") == 0) {
+        s->unused = (s16)luaL_checkinteger(L, 3);
         return true;
     }
 
@@ -1525,24 +1934,115 @@ static void smlua_get_custom_object_field_store(lua_State *L) {
     lua_setfield(L, LUA_REGISTRYINDEX, SMLUA_CUSTOM_OBJECT_FIELD_REGISTRY);
 }
 
+// Gets (or creates) registry-side table that stores declared custom field types.
+static void smlua_get_custom_object_field_type_store(lua_State *L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, SMLUA_CUSTOM_OBJECT_FIELD_TYPE_REGISTRY);
+    if (lua_istable(L, -1)) {
+        return;
+    }
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, SMLUA_CUSTOM_OBJECT_FIELD_TYPE_REGISTRY);
+}
+
+// Resolves custom-field type string to a compact internal enum.
+static int smlua_custom_object_field_type_from_name(const char *type_name) {
+    if (type_name == NULL) {
+        return SMLUA_CUSTOM_OBJECT_FIELD_NONE;
+    }
+    if (strcmp(type_name, "u32") == 0) {
+        return SMLUA_CUSTOM_OBJECT_FIELD_U32;
+    }
+    if (strcmp(type_name, "s32") == 0) {
+        return SMLUA_CUSTOM_OBJECT_FIELD_S32;
+    }
+    if (strcmp(type_name, "f32") == 0) {
+        return SMLUA_CUSTOM_OBJECT_FIELD_F32;
+    }
+    return SMLUA_CUSTOM_OBJECT_FIELD_NONE;
+}
+
+// Returns declared custom-field type for key (or NONE when not declared).
+static int smlua_get_custom_object_field_type(lua_State *L, const char *key) {
+    int type = SMLUA_CUSTOM_OBJECT_FIELD_NONE;
+    if (key == NULL) {
+        return type;
+    }
+
+    smlua_get_custom_object_field_type_store(L);                 // [types]
+    lua_getfield(L, -1, key);                                    // [types][type]
+    if (lua_isinteger(L, -1)) {
+        type = (int)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 2);                                               // []
+    return type;
+}
+
+// Registers one declared custom object field and its type.
+static void smlua_set_custom_object_field_type(lua_State *L, const char *key, int type) {
+    if (key == NULL || type == SMLUA_CUSTOM_OBJECT_FIELD_NONE) {
+        return;
+    }
+
+    smlua_get_custom_object_field_type_store(L);                 // [types]
+    lua_pushinteger(L, type);
+    lua_setfield(L, -2, key);
+    lua_pop(L, 1);                                               // []
+}
+
+// Co-op DX-compatible define_custom_obj_fields(table) registration for object fields.
+int smlua_define_custom_obj_fields(lua_State *L) {
+    if (!lua_istable(L, 1)) {
+        return 0;
+    }
+
+    lua_pushnil(L);
+    while (lua_next(L, 1) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_type(L, -1) == LUA_TSTRING) {
+            const char *key = lua_tostring(L, -2);
+            const char *type_name = lua_tostring(L, -1);
+            int type = smlua_custom_object_field_type_from_name(type_name);
+            if (key != NULL && key[0] == 'o' && type != SMLUA_CUSTOM_OBJECT_FIELD_NONE) {
+                smlua_set_custom_object_field_type(L, key, type);
+            }
+        }
+        lua_pop(L, 1);
+    }
+
+    return 0;
+}
+
 // Looks up custom object field and leaves value on stack when present.
 static bool smlua_get_custom_object_field(lua_State *L, struct Object *o, const char *key) {
-    bool found = false;
-
     smlua_get_custom_object_field_store(L);                     // [store]
     lua_pushlightuserdata(L, o);
     lua_gettable(L, -2);                                        // [store][objFields?]
     if (lua_istable(L, -1)) {
         lua_pushstring(L, key);
         lua_gettable(L, -2);                                    // [store][objFields][value]
-        found = !lua_isnil(L, -1);
-        lua_remove(L, -2);                                      // [store][value]
-        lua_remove(L, -2);                                      // [value]
-        return found;
+        if (!lua_isnil(L, -1)) {
+            lua_remove(L, -2);                                  // [store][value]
+            lua_remove(L, -2);                                  // [value]
+            return true;
+        }
+        lua_pop(L, 1);                                          // [store][objFields]
     }
 
     lua_pop(L, 2);                                              // []
-    return false;
+
+    // Declared custom fields default to zero so arithmetic hooks do not fail.
+    switch (smlua_get_custom_object_field_type(L, key)) {
+        case SMLUA_CUSTOM_OBJECT_FIELD_U32:
+        case SMLUA_CUSTOM_OBJECT_FIELD_S32:
+            lua_pushinteger(L, 0);
+            return true;
+        case SMLUA_CUSTOM_OBJECT_FIELD_F32:
+            lua_pushnumber(L, 0.0f);
+            return true;
+        default:
+            return false;
+    }
 }
 
 // Writes custom object field in registry-side storage.
@@ -1578,6 +2078,11 @@ static int smlua_cobject_index(lua_State *L) {
 
     if (cobj->type == SMLUA_COBJECT_MARIO_STATE
         && smlua_push_mario_field(L, (struct MarioState *)cobj->pointer, key)) {
+        return 1;
+    }
+
+    if (cobj->type == SMLUA_COBJECT_MARIO_BODY_STATE
+        && smlua_push_mario_body_state_field(L, (struct MarioBodyState *)cobj->pointer, key)) {
         return 1;
     }
 
@@ -1624,6 +2129,11 @@ static int smlua_cobject_newindex(lua_State *L) {
         return 0;
     }
 
+    if (cobj->type == SMLUA_COBJECT_MARIO_BODY_STATE
+        && smlua_set_mario_body_state_field(L, (struct MarioBodyState *)cobj->pointer, key)) {
+        return 0;
+    }
+
     if (cobj->type == SMLUA_COBJECT_AREA
         && smlua_set_area_field(L, (struct Area *)cobj->pointer, key)) {
         return 0;
@@ -1650,7 +2160,8 @@ static int smlua_cobject_newindex(lua_State *L) {
         return 0;
     }
 
-    return luaL_error(L, "unknown or read-only cobject field '%s'", key);
+    return luaL_error(L, "unknown or read-only cobject field '%s' on %s",
+                      key, smlua_cobject_type_name(cobj->type));
 }
 
 // Lua metamethod: compares two wrappers by both type and underlying pointer.
@@ -1733,6 +2244,16 @@ void smlua_bind_cobject(lua_State *L) {
     }
     lua_pop(L, 1);
 
+    if (luaL_newmetatable(L, SMLUA_GRAPH_NODE_METATABLE)) {
+        lua_pushcfunction(L, smlua_graph_node_index);
+        lua_setfield(L, -2, "__index");
+        lua_pushcfunction(L, smlua_graph_node_newindex);
+        lua_setfield(L, -2, "__newindex");
+        lua_pushboolean(L, 0);
+        lua_setfield(L, -2, "__metatable");
+    }
+    lua_pop(L, 1);
+
     if (luaL_newmetatable(L, SMLUA_OBJECT_HEADER_METATABLE)) {
         lua_pushcfunction(L, smlua_object_header_index);
         lua_setfield(L, -2, "__index");
@@ -1744,6 +2265,8 @@ void smlua_bind_cobject(lua_State *L) {
     if (luaL_newmetatable(L, SMLUA_OBJECT_GFX_METATABLE)) {
         lua_pushcfunction(L, smlua_object_gfx_index);
         lua_setfield(L, -2, "__index");
+        lua_pushcfunction(L, smlua_object_gfx_newindex);
+        lua_setfield(L, -2, "__newindex");
         lua_pushboolean(L, 0);
         lua_setfield(L, -2, "__metatable");
     }
@@ -1811,6 +2334,10 @@ void smlua_cobject_update_globals(lua_State *L) {
 // Wraps a MarioState pointer as a typed cobject for Lua hook callbacks.
 void smlua_push_mario_state(lua_State *L, const void *mario_state) {
     smlua_push_cobject(L, SMLUA_COBJECT_MARIO_STATE, mario_state);
+}
+
+void smlua_push_mario_body_state(lua_State *L, const void *body_state) {
+    smlua_push_cobject(L, SMLUA_COBJECT_MARIO_BODY_STATE, body_state);
 }
 
 // Wraps an Object pointer as a typed cobject for Lua hook callbacks.

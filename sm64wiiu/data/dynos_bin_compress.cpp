@@ -310,7 +310,7 @@ BinFile *DynOS_Bin_Decompress(const SysPath &aFilename) {
 
     // Uncompress data
     uLongf _LengthUncompressed = (uLongf)sLengthUncompressed;
-    int uncompressRc = uncompress(sBufferUncompressed, &_LengthUncompressed, sBufferCompressed, sLengthCompressed);
+    int uncompressRc = uncompress(sBufferUncompressed, &_LengthUncompressed, sBufferCompressed, sLengthCompressed - _LengthHeader);
     sLengthUncompressed = _LengthUncompressed;
     if (!DynOS_Bin_Compress_Check(
         uncompressRc == Z_OK,

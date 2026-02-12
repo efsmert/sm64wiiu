@@ -53,12 +53,18 @@ struct SmluaLightingState {
 };
 
 void smlua_init(void);
+// Schedules a full Lua runtime re-init at the start of the next frame.
+// This avoids re-entrancy issues when UI actions occur mid-render.
+void smlua_request_reinit(void);
+// Returns true once per requested re-init, and clears the pending flag.
+bool smlua_consume_reinit_request(void);
 void smlua_update(void);
 void smlua_shutdown(void);
 struct lua_State *smlua_get_state(void);
 void smlua_render_mod_overlay(void);
 void smlua_get_lighting_state(struct SmluaLightingState *out_state);
 int16_t smlua_get_override_far(int16_t default_far);
+float smlua_get_override_near(float default_near);
 float smlua_get_override_fov(float default_fov);
 int8_t smlua_get_override_skybox(int8_t default_background);
 void smlua_get_skybox_color(uint8_t out_color[3]);

@@ -25,6 +25,13 @@ void smlua_level_util_reset(void) {
     sCustomLevelRegisterModIndex = 0;
 }
 
+void smlua_level_util_set_register_mod_index(s32 modIndex) {
+    if (modIndex < 0) {
+        modIndex = 0;
+    }
+    sCustomLevelRegisterModIndex = modIndex;
+}
+
 void smlua_level_util_change_area(s32 areaIndex) {
     if (areaIndex >= MIN_AREA_INDEX && areaIndex < MAX_AREAS && gAreas[areaIndex].unk04 != NULL) {
         change_area(areaIndex);

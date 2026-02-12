@@ -59,7 +59,15 @@ bool DynOS_Warp_ToWarpNode(s32 aLevel, s32 aArea, s32 aAct, s32 aWarpId) {
 //
 
 bool DynOS_Warp_ToLevel(s32 aLevel, s32 aArea, s32 aAct) {
-    if (!DynOS_Level_GetWarpEntry(aLevel, aArea)) {
+    s16 *warp = DynOS_Level_GetWarpEntry(aLevel, aArea);
+#ifdef TARGET_WII_U
+    static u32 sWarpToLevelLogCount = 0;
+    if (sWarpToLevelLogCount < 32) {
+        WHBLogPrintf("dynos: warp_to_level request level=%d area=%d act=%d warpEntry=%p", (int)aLevel, (int)aArea, (int)aAct, warp);
+        sWarpToLevelLogCount++;
+    }
+#endif
+    if (!warp) {
         return false;
     }
 

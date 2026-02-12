@@ -216,6 +216,9 @@ static bool dropped_frame;
 static bool sGfxDlAbortFrame = false;
 static uint32_t sGfxDlCommandCount = 0;
 static uint32_t sGfxDlAbortLogCount = 0;
+static bool sGfxDlLastWordsValid = false;
+static uint32_t sGfxDlLastW0 = 0;
+static uint32_t sGfxDlLastW1 = 0;
 static bool sLoggedFrame1GfxRunEnter = false;
 static bool sLoggedFrame1GfxRunAfterStart = false;
 static bool sLoggedFrame1GfxRunAfterDl = false;
@@ -2437,19 +2440,41 @@ static void gfx_run_dl_abort(const char *reason, const Gfx *cmd, uint32_t opcode
     sGfxDlAbortLogCount++;
 
 #ifdef TARGET_WII_U
-    GFX_WIIU_LOGF("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u",
-                 reason != NULL ? reason : "?",
-                 (const void *)cmd,
-                 (unsigned)opcode,
-                 (unsigned)depth,
-                 (unsigned)sGfxDlCommandCount);
+    if (sGfxDlLastWordsValid) {
+        GFX_WIIU_LOGF("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u w0=0x%08x w1=0x%08x",
+                     reason != NULL ? reason : "?",
+                     (const void *)cmd,
+                     (unsigned)opcode,
+                     (unsigned)depth,
+                     (unsigned)sGfxDlCommandCount,
+                     (unsigned)sGfxDlLastW0,
+                     (unsigned)sGfxDlLastW1);
+    } else {
+        GFX_WIIU_LOGF("gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u",
+                     reason != NULL ? reason : "?",
+                     (const void *)cmd,
+                     (unsigned)opcode,
+                     (unsigned)depth,
+                     (unsigned)sGfxDlCommandCount);
+    }
 #else
-    fprintf(stderr, "gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u\n",
-            reason != NULL ? reason : "?",
-            (const void *)cmd,
-            (unsigned)opcode,
-            (unsigned)depth,
-            (unsigned)sGfxDlCommandCount);
+    if (sGfxDlLastWordsValid) {
+        fprintf(stderr, "gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u w0=0x%08x w1=0x%08x\n",
+                reason != NULL ? reason : "?",
+                (const void *)cmd,
+                (unsigned)opcode,
+                (unsigned)depth,
+                (unsigned)sGfxDlCommandCount,
+                (unsigned)sGfxDlLastW0,
+                (unsigned)sGfxDlLastW1);
+    } else {
+        fprintf(stderr, "gfx: abort run_dl reason=%s cmd=%p opcode=0x%02x depth=%u count=%u\n",
+                reason != NULL ? reason : "?",
+                (const void *)cmd,
+                (unsigned)opcode,
+                (unsigned)depth,
+                (unsigned)sGfxDlCommandCount);
+    }
 #endif
 }
 
@@ -2470,17 +2495,30 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
         if (sGfxDlAbortFrame) { return; }
 
         if (cmd == NULL) {
+            sGfxDlLastWordsValid = false;
             gfx_run_dl_abort("null_command_pointer", cmd, 0xFF, depth);
+            return;
+        }
+
+        // Display lists are 8-byte commands. Misalignment can fault on PPC (SIGBUS).
+        if ((((uintptr_t)cmd) & 0x7) != 0) {
+            sGfxDlLastWordsValid = false;
+            gfx_run_dl_abort("cmd_unaligned", cmd, 0xFF, depth);
             return;
         }
 
         sGfxDlCommandCount++;
         if (sGfxDlCommandCount > GFX_DL_MAX_COMMANDS) {
+            sGfxDlLastWordsValid = false;
             gfx_run_dl_abort("max_command_budget_exceeded", cmd, 0xFF, depth);
             return;
         }
 
-        uint32_t opcode = cmd->words.w0 >> 24;
+        sGfxDlLastW0 = cmd->words.w0;
+        sGfxDlLastW1 = cmd->words.w1;
+        sGfxDlLastWordsValid = true;
+
+        uint32_t opcode = sGfxDlLastW0 >> 24;
 #ifdef TARGET_WII_U
         if (sGfxDlProgressLogCount < 96
             && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
@@ -2552,11 +2590,62 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                 break;
             case G_VTX_EXT:
 #ifdef F3DEX_GBI_2
-                gfx_sp_vertex(C0(12, 8), C0(1, 7) - C0(12, 8), seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)C0(12, 8);
+                size_t dest_index = (size_t)C0(1, 7) - (size_t)C0(12, 8);
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #elif defined(F3DEX_GBI) || defined(F3DLP_GBI)
-                gfx_sp_vertex(C0(10, 6), C0(16, 8) / 2, seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)C0(10, 6);
+                size_t dest_index = (size_t)C0(16, 8) / 2;
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #else
-                gfx_sp_vertex((C0(0, 16)) / sizeof(Vtx), C0(16, 4), seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)((C0(0, 16)) / sizeof(Vtx));
+                size_t dest_index = (size_t)C0(16, 4);
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #endif
                 break;
             case G_TRI2_EXT:
@@ -2565,24 +2654,82 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                 break;
             case G_VTX:
 #ifdef F3DEX_GBI_2
-                gfx_sp_vertex(C0(12, 8), C0(1, 7) - C0(12, 8), seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)C0(12, 8);
+                size_t dest_index = (size_t)C0(1, 7) - (size_t)C0(12, 8);
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #elif defined(F3DEX_GBI) || defined(F3DLP_GBI)
-                gfx_sp_vertex(C0(10, 6), C0(16, 8) / 2, seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)C0(10, 6);
+                size_t dest_index = (size_t)C0(16, 8) / 2;
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #else
-                gfx_sp_vertex((C0(0, 16)) / sizeof(Vtx), C0(16, 4), seg_addr(cmd->words.w1));
+            {
+                size_t n_vertices = (size_t)((C0(0, 16)) / sizeof(Vtx));
+                size_t dest_index = (size_t)C0(16, 4);
+                const Vtx *vertices = (const Vtx *)seg_addr(cmd->words.w1);
+                if (vertices == NULL) {
+                    gfx_run_dl_abort("vtx_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)vertices) & 0x1) != 0 || (uintptr_t)vertices < 0x10000) {
+                    gfx_run_dl_abort("vtx_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+                if (n_vertices > MAX_VERTICES || dest_index >= MAX_VERTICES || dest_index + n_vertices > MAX_VERTICES) {
+                    gfx_run_dl_abort("vtx_oob", cmd, opcode, depth);
+                    return;
+                }
+                gfx_sp_vertex(n_vertices, dest_index, vertices);
+            }
 #endif
                 break;
             case G_DL:
+            {
+                Gfx *dl = (Gfx *)seg_addr(cmd->words.w1);
+                if (dl == NULL) {
+                    gfx_run_dl_abort("dl_null", cmd, opcode, depth);
+                    return;
+                }
+                if ((((uintptr_t)dl) & 0x7) != 0 || (uintptr_t)dl < 0x10000) {
+                    gfx_run_dl_abort("dl_bad_ptr", cmd, opcode, depth);
+                    return;
+                }
+
                 if (C0(16, 1) == 0) {
                     // Push return address
-                    gfx_run_dl((Gfx *)seg_addr(cmd->words.w1), depth + 1);
+                    gfx_run_dl(dl, depth + 1);
                     if (sGfxDlAbortFrame) { return; }
                 } else {
-                    Gfx *branch = (Gfx *)seg_addr(cmd->words.w1);
-                    if (branch == NULL) {
-                        gfx_run_dl_abort("branch_to_null", cmd, opcode, depth);
-                        return;
-                    }
+                    Gfx *branch = dl;
                     if (branch == cmd) {
                         gfx_run_dl_abort("branch_to_self", cmd, opcode, depth);
                         return;
@@ -2590,6 +2737,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                     cmd = branch;
                     --cmd; // increase after break
                 }
+            }
                 break;
             case (uint8_t)G_ENDDL:
                 return;

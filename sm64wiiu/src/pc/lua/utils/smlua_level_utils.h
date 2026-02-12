@@ -22,6 +22,7 @@ struct CustomLevelInfo {
 #define CUSTOM_LEVEL_NUM_START 50
 
 void smlua_level_util_reset(void);
+void smlua_level_util_set_register_mod_index(s32 modIndex);
 void smlua_level_util_change_area(s32 areaIndex);
 struct CustomLevelInfo* smlua_level_util_get_info(s16 levelNum);
 struct CustomLevelInfo* smlua_level_util_get_info_from_short_name(const char* shortName);
@@ -36,4 +37,3 @@ bool warp_exit_level(s32 aDelay);
 bool warp_to_castle(s32 aLevel);
 
 #endif
-

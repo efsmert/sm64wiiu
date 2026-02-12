@@ -79,6 +79,7 @@ enum LuaHookedEventType {
 
 // DynOS: register a custom behavior script for Lua mods.
 int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName);
+const BehaviorScript *smlua_get_hooked_behavior_from_id(s32 id, bool returnOriginal);
 
 #define ACTION_HOOK_CONTINUE_EXECUTION -1
 #define MAX_HOOKED_MOD_MENU_ELEMENTS 256
@@ -140,5 +141,11 @@ char **smlua_get_chat_subcommands_list(const char *maincommand);
 bool smlua_maincommand_exists(const char *maincommand);
 bool smlua_subcommand_exists(const char *maincommand, const char *subcommand);
 void smlua_call_mod_menu_element_hook(struct LuaHookedModMenuElement *hooked, int index);
+
+// Co-op DX compat: MarioState has a `freeze` timer to suppress inputs while paused/menus.
+// Wii U stores this as a Lua-controlled side channel because the vanilla MarioState struct
+// does not include the field.
+u8 smlua_get_mario_freeze_timer(const struct MarioState *m);
+void smlua_set_mario_freeze_timer(const struct MarioState *m, u8 value);
 
 #endif

@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include <vector>
+#include <unordered_set>
 
 #ifndef _LANGUAGE_C
 #define _LANGUAGE_C
@@ -67,6 +68,8 @@ static uint32_t sTexturePoolOverflowCount = 0;
 static struct ShaderProgram* current_shader_program = nullptr;
 static std::vector<float*> vbo_array;
 static std::vector<float*> vbo_array_prev;
+static std::unordered_set<float*> sTrackedVboPtrs;
+static uint32_t sSkippedUntrackedVboFreeCount = 0;
 
 #define GX2_MAX_TEXTURES 2048
 static Texture gx2_textures[GX2_MAX_TEXTURES];
@@ -85,12 +88,40 @@ static BOOL current_depth_write = FALSE;
 static GX2CompareFunction current_depth_compare = GX2_COMPARE_FUNC_LEQUAL;
 
 // Releases all CPU-side VBO allocations tracked in a frame list.
+static void gfx_gx2_release_vbo_ptr(float *ptr)
+{
+    if (ptr == nullptr) {
+        return;
+    }
+    auto it = sTrackedVboPtrs.find(ptr);
+    if (it == sTrackedVboPtrs.end()) {
+        if (sSkippedUntrackedVboFreeCount < 20) {
+            WHBLogPrintf("gfx: skipping untracked vbo free ptr=%p", ptr);
+            sSkippedUntrackedVboFreeCount++;
+        }
+        return;
+    }
+    sTrackedVboPtrs.erase(it);
+    free(ptr);
+}
+
 static void gfx_gx2_release_vbo_list(std::vector<float*>& buffers)
 {
-    for (uint32_t i = 0; i < buffers.size(); i++) {
-        free(buffers[i]);
+    while (!buffers.empty()) {
+        float *ptr = buffers.back();
+        buffers.pop_back();
+        gfx_gx2_release_vbo_ptr(ptr);
     }
-    buffers.clear();
+}
+
+static void gfx_gx2_release_vbo_budget(std::vector<float*>& buffers, size_t budget)
+{
+    while (budget > 0 && !buffers.empty()) {
+        float *ptr = buffers.back();
+        buffers.pop_back();
+        gfx_gx2_release_vbo_ptr(ptr);
+        budget--;
+    }
 }
 
 // Validates tile index used by N64 combiner samplers.
@@ -659,13 +690,20 @@ static void gfx_gx2_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t b
     size_t idx = vbo_array.size();
     vbo_array.resize(idx + 1);
 
+    if (buf_vbo_len == 0 || buf_vbo_len > (1u << 20)) {
+        vbo_array.pop_back();
+        return;
+    }
+
     size_t vbo_len = sizeof(float) * buf_vbo_len;
     vbo_array[idx] = static_cast<float*>(memalign(0x40, vbo_len));
 
     float* new_vbo = vbo_array[idx];
     if (new_vbo == nullptr) {
+        vbo_array.pop_back();
         return;
     }
+    sTrackedVboPtrs.insert(new_vbo);
     memcpy(new_vbo, buf_vbo, vbo_len);
 
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, new_vbo, vbo_len);
@@ -693,10 +731,17 @@ static void gfx_gx2_on_resize(void)
 static void gfx_gx2_start_frame(void)
 {
     frame_count++;
-    // Keep one-frame latency before freeing transient VBO uploads so we avoid
-    // hard stalls from per-frame GX2DrawDone() on Cemu full-sync paths.
-    gfx_gx2_release_vbo_list(vbo_array_prev);
-    vbo_array_prev.swap(vbo_array);
+    // Keep one-frame latency before freeing transient VBO uploads.
+    // Use a per-frame free budget to avoid multi-second stalls when overlays
+    // temporarily generate very large VBO backlogs (e.g. stacked pause UIs).
+    const size_t free_budget = 2048;
+    gfx_gx2_release_vbo_budget(vbo_array_prev, free_budget);
+    if (vbo_array_prev.empty()) {
+        vbo_array_prev.swap(vbo_array);
+    } else if (!vbo_array.empty()) {
+        vbo_array_prev.insert(vbo_array_prev.end(), vbo_array.begin(), vbo_array.end());
+        vbo_array.clear();
+    }
 }
 
 static void gfx_gx2_end_frame(void)
@@ -712,6 +757,7 @@ extern "C" void gfx_gx2_free_vbo(void)
 {
     gfx_gx2_release_vbo_list(vbo_array);
     gfx_gx2_release_vbo_list(vbo_array_prev);
+    sTrackedVboPtrs.clear();
 }
 
 extern "C" void gfx_gx2_free(void)
