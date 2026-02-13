@@ -139,6 +139,25 @@ struct RenderModeContainer {
     u32 modes[8];
 };
 
+// Co-op DX parity: reset object render state before drawing shared object display lists.
+// This prevents leaked custom-material geometry modes from hiding vanilla actors/billboards.
+static Gfx obj_sanitize_gfx[] = {
+    gsSPClearGeometryMode(G_CULL_BOTH | G_FOG | G_TEXTURE_GEN
+                        | G_TEXTURE_GEN_LINEAR | G_LOD | G_PACKED_NORMALS_EXT
+                        | G_LIGHT_MAP_EXT | G_LIGHTING_ENGINE_EXT | G_CULL_INVERT_EXT
+                        | G_FRESNEL_COLOR_EXT | G_FRESNEL_ALPHA_EXT),
+    gsSPSetGeometryMode(G_SHADE | G_SHADING_SMOOTH | G_CULL_BACK | G_LIGHTING),
+    gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),
+    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF),
+    gsDPSetEnvColor(0xFF, 0xFF, 0xFF, 0xFF),
+    gsDPSetPrimColor(0, 0, 0xFF, 0xFF, 0xFF, 0xFF),
+    gsDPSetFogColor(0x00, 0x00, 0x00, 0x00),
+    gsDPSetAlphaCompare(G_AC_NONE),
+    gsDPSetCycleType(G_CYC_1CYCLE),
+    gsSPNumLights(NUMLIGHTS_1),
+    gsSPEndDisplayList(),
+};
+
 /* Rendermode settings for cycle 1 for all 8 layers. */
 struct RenderModeContainer renderModeTable_1Cycle[2] = { { {
     G_RM_OPA_SURF,
@@ -1105,6 +1124,12 @@ static s32 obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     return TRUE;
 }
 
+static void geo_sanitize_object_gfx(void) {
+    geo_append_display_list(obj_sanitize_gfx, LAYER_OPAQUE);
+    geo_append_display_list(obj_sanitize_gfx, LAYER_ALPHA);
+    geo_append_display_list(obj_sanitize_gfx, LAYER_TRANSPARENT);
+}
+
 /**
  * Process an object node.
  */
@@ -1220,6 +1245,7 @@ static void geo_process_object(struct Object *node) {
             if (node->header.gfx.sharedChild != NULL) {
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
+                geo_sanitize_object_gfx();
                 geo_process_node_and_siblings(node->header.gfx.sharedChild);
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
@@ -1326,6 +1352,7 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
             geo_set_animation_globals(&node->objNode->header.gfx.animInfo, hasAnimation);
         }
 
+        geo_sanitize_object_gfx();
         geo_process_node_and_siblings(node->objNode->header.gfx.sharedChild);
         gCurGraphNodeHeldObject = NULL;
         gCurAnimType = gGeoTempState.type;

@@ -24,6 +24,10 @@ TARGET_WII_U ?= 1
 # Strip debug symbols from the Wii U ELF before converting to RPX.
 # Default off for easier debugging; set WIIU_STRIP=1 for smaller release builds.
 WIIU_STRIP ?= 0
+# Enable extra Wii U crash-debug symbols/flags and link map output.
+# Set WIIU_CRASH_DEBUG=1 for crash investigation builds.
+WIIU_CRASH_DEBUG ?= 0
+$(eval $(call validate-option,WIIU_CRASH_DEBUG,0 1))
 # Disable no drawing distance by default
 NODRAWINGDISTANCE ?= 0
 # Compiler to use (ido or gcc)
@@ -256,6 +260,13 @@ ifeq ($(filter clean distclean,$(MAKECMDGOALS)),)
     $(info Compare ROM:    yes)
   else
     $(info Compare ROM:    no)
+  endif
+  ifeq ($(TARGET_WII_U),1)
+    ifeq ($(WIIU_CRASH_DEBUG),1)
+      $(info Crash Debug:    yes)
+    else
+      $(info Crash Debug:    no)
+    endif
   endif
   ifeq ($(NON_MATCHING),1)
     $(info Build Matching: no)
@@ -551,6 +562,12 @@ endif
 ifeq ($(TARGET_WII_U),1)
   PLATFORM_CFLAGS  := -DTARGET_WII_U -ffunction-sections $(MACHDEP) -ffast-math -D__WIIU__ -D__WUT__ $(INCLUDE)
   PLATFORM_LDFLAGS := -lm -lz -no-pie -g $(MACHDEP) $(RPXSPECS) $(LIBPATHS)
+  ifeq ($(WIIU_CRASH_DEBUG),1)
+    # Favor accurate backtraces and line mapping over runtime performance.
+    OPT_FLAGS := -O0 -g3
+    PLATFORM_CFLAGS += -fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-inline -fno-inline-small-functions -DWIIU_CRASH_DEBUG=1
+    PLATFORM_LDFLAGS += -Wl,-Map,$(BUILD_DIR)/$(TARGET).wiiu.map
+  endif
 endif
 ifeq ($(TARGET_WEB),1)
   PLATFORM_CFLAGS  := -DTARGET_WEB

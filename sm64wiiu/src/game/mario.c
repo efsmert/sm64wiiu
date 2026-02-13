@@ -1829,6 +1829,9 @@ void init_mario(void) {
     if (gMarioState->marioBodyState == NULL) {
         gMarioState->marioBodyState = &gBodyStates[0];
     }
+    if (gMarioState->statusForCamera == NULL) {
+        gMarioState->statusForCamera = &gPlayerCameraState[0];
+    }
 
     gMarioState->actionTimer = 0;
     gMarioState->framesSinceA = 0xFF;
@@ -1914,6 +1917,11 @@ void init_single_mario(struct MarioState *m) {
         return;
     }
     if (m != gMarioState) {
+        return;
+    }
+    // Lua mods can call this during transition windows where spawn/object globals
+    // are temporarily unavailable.
+    if (gMarioObject == NULL || gMarioSpawnInfo == NULL) {
         return;
     }
 

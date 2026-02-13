@@ -80,6 +80,8 @@ enum LuaHookedEventType {
 // DynOS: register a custom behavior script for Lua mods.
 int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName);
 const BehaviorScript *smlua_get_hooked_behavior_from_id(s32 id, bool returnOriginal);
+const BehaviorScript *smlua_override_behavior(const BehaviorScript *behavior);
+bool smlua_is_behavior_hooked(const BehaviorScript *behavior);
 
 #define ACTION_HOOK_CONTINUE_EXECUTION -1
 #define MAX_HOOKED_MOD_MENU_ELEMENTS 256

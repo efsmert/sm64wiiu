@@ -24,6 +24,9 @@
 #include "save_file.h"
 #include "skybox.h"
 #include "sound_init.h"
+#ifndef TARGET_N64
+#include "data/dynos.c.h"
+#endif
 
 #define TOAD_STAR_1_REQUIREMENT 12
 #define TOAD_STAR_2_REQUIREMENT 25
@@ -635,6 +638,9 @@ Gfx *geo_render_mirror_mario(s32 callContext, struct GraphNode *node, UNUSED Mat
             if (mario->header.gfx.pos[0] > 1700.0f) {
                 // TODO: Is this a geo layout copy or a graph node copy?
                 gMirrorMario.sharedChild = mario->header.gfx.sharedChild;
+#ifndef TARGET_N64
+                dynos_actor_override(mario, (void *) &gMirrorMario.sharedChild);
+#endif
                 gMirrorMario.areaIndex = mario->header.gfx.areaIndex;
                 vec3s_copy(gMirrorMario.angle, mario->header.gfx.angle);
                 vec3f_copy(gMirrorMario.pos, mario->header.gfx.pos);

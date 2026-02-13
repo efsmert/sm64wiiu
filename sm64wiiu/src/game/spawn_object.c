@@ -7,6 +7,7 @@
 #endif
 #endif
 #include <PR/ultratypes.h>
+#include <stdio.h>
 
 #include "audio/external.h"
 #include "engine/geo_layout.h"
@@ -20,6 +21,9 @@
 #include "object_list_processor.h"
 #include "spawn_object.h"
 #include "types.h"
+#ifndef TARGET_N64
+#include "pc/lua/smlua_hooks.h"
+#endif
 
 /**
  * An unused linked list struct that seems to have been replaced by ObjectNode.
@@ -354,23 +358,49 @@ static void snap_object_to_floor(struct Object *obj) {
  * Spawn an object at the origin with the behavior script at virtual address bhvScript.
  */
 struct Object *create_object(const BehaviorScript *bhvScript) {
-    s32 objListIndex;
-    struct Object *obj;
-    struct ObjectNode *objList;
+    s32 objListIndex = OBJ_LIST_DEFAULT;
+    struct Object *obj = NULL;
+    struct ObjectNode *objList = NULL;
     const BehaviorScript *behavior = bhvScript;
+    bool luaBehavior = false;
+
+    if (bhvScript == NULL) {
+        return NULL;
+    }
+
+#ifndef TARGET_N64
+    luaBehavior = smlua_is_behavior_hooked(bhvScript);
+    behavior = smlua_override_behavior(bhvScript);
+#endif
+    if (behavior == NULL) {
+        return NULL;
+    }
 
     // If the first behavior script command is "begin <object list>", then
     // extract the object list from it
-    if ((bhvScript[0] >> 24) == 0) {
-        objListIndex = (bhvScript[0] >> 16) & 0xFFFF;
-    } else {
-        objListIndex = OBJ_LIST_DEFAULT;
+    if ((behavior[0] >> 24) == 0) {
+        objListIndex = (behavior[0] >> 16) & 0xFFFF;
+    }
+
+    if (objListIndex < 0 || objListIndex >= NUM_OBJ_LISTS) {
+#ifdef TARGET_WII_U
+        static s32 sInvalidObjListLogs = 0;
+        if (sInvalidObjListLogs < 64) {
+            printf("spawn_object: reject invalid obj list=%d behavior=%p original=%p\n",
+                   objListIndex, (void *) behavior, (void *) bhvScript);
+            sInvalidObjListLogs++;
+        }
+#endif
+        return NULL;
     }
 
     objList = &gObjectLists[objListIndex];
     obj = allocate_object(objList);
+    if (obj == NULL) {
+        return NULL;
+    }
 
-    obj->curBhvCommand = bhvScript;
+    obj->curBhvCommand = luaBehavior ? bhvScript : behavior;
     obj->behavior = behavior;
 
     if (objListIndex == OBJ_LIST_UNIMPORTANT) {

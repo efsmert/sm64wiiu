@@ -32,12 +32,14 @@
 #include "game/rendering_graph_node.h"
 #include "game/segment2.h"
 #include "game/interaction.h"
+#include "game/behavior_actions.h"
 #include "game/level_update.h"
 #include "game/mario.h"
 #include "game/save_file.h"
 #include "engine/graph_node.h"
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
+#include "engine/surface_load.h"
 #include "game/sound_init.h"
 #include "audio/external.h"
 #include "audio/load.h"
@@ -5024,6 +5026,95 @@ static int smlua_func_set_ttc_speed_setting(lua_State *L) {
     return 0;
 }
 
+// Co-op DX helper for reading water-box heights by environment-region index.
+static s16 smlua_get_water_level_internal(u8 index) {
+    u8 id = (u8)(6 * (index + 1));
+    if (gEnvironmentRegions != NULL && index < gEnvironmentRegions[0] && gEnvironmentRegionsLength > id) {
+        return gEnvironmentRegions[id];
+    }
+    return gLevelValues.floorLowerLimit;
+}
+
+// Co-op DX helper for writing water-box heights by environment-region index.
+static void smlua_set_water_level_internal(u8 index, s16 height, bool sync) {
+    (void)sync;
+    u8 id = (u8)(6 * (index + 1));
+    if (gEnvironmentRegions != NULL && index < gEnvironmentRegions[0] && gEnvironmentRegionsLength > id) {
+        gEnvironmentRegions[id] = height;
+    }
+}
+
+// Co-op DX helper for hitbox-vs-hitbox overlap checks.
+static bool smlua_obj_check_hitbox_overlap_internal(struct Object *o1, struct Object *o2) {
+    if (o1 == NULL || o2 == NULL) {
+        return false;
+    }
+
+    f32 o1_h = fmaxf(o1->hitboxHeight, o1->hurtboxHeight);
+    f32 o1_r = fmaxf(o1->hitboxRadius, o1->hurtboxRadius);
+    f32 o2_h = fmaxf(o2->hitboxHeight, o2->hurtboxHeight);
+    f32 o2_r = fmaxf(o2->hitboxRadius, o2->hurtboxRadius);
+
+    f32 sum_r = o1_r + o2_r;
+    f32 dx = o1->oPosX - o2->oPosX;
+    f32 dz = o1->oPosZ - o2->oPosZ;
+    if ((dx * dx + dz * dz) > (sum_r * sum_r)) {
+        return false;
+    }
+
+    f32 hb1_lb = o1->oPosY - o1->hitboxDownOffset;
+    f32 hb1_ub = hb1_lb + o1_h;
+    f32 hb2_lb = o2->oPosY - o2->hitboxDownOffset;
+    f32 hb2_ub = hb2_lb + o2_h;
+    f32 sum_h = o1_h + o2_h;
+    if ((hb2_ub - hb1_lb) > sum_h || (hb1_ub - hb2_lb) > sum_h) {
+        return false;
+    }
+
+    return true;
+}
+
+// Compatibility wrapper for Co-op DX `get_water_level(index)`.
+static int smlua_func_get_water_level(lua_State *L) {
+    u8 index = (u8)luaL_checkinteger(L, 1);
+    lua_pushinteger(L, (lua_Integer)smlua_get_water_level_internal(index));
+    return 1;
+}
+
+// Compatibility wrapper for Co-op DX `set_water_level(index, height, sync)`.
+static int smlua_func_set_water_level(lua_State *L) {
+    u8 index = (u8)luaL_checkinteger(L, 1);
+    s16 height = (s16)luaL_checkinteger(L, 2);
+    bool sync = false;
+    if (!lua_isnoneornil(L, 3)) {
+        sync = lua_toboolean(L, 3) != 0;
+    }
+    smlua_set_water_level_internal(index, height, sync);
+    return 0;
+}
+
+// Compatibility wrapper for Co-op DX `load_object_collision_model()`.
+static int smlua_func_load_object_collision_model(lua_State *L) {
+    (void)L;
+    load_object_collision_model();
+    return 0;
+}
+
+// Compatibility wrapper for Co-op DX `bhv_pole_base_loop()`.
+static int smlua_func_bhv_pole_base_loop(lua_State *L) {
+    (void)L;
+    bhv_pole_base_loop();
+    return 0;
+}
+
+// Compatibility wrapper for Co-op DX `obj_check_hitbox_overlap(o1, o2)`.
+static int smlua_func_obj_check_hitbox_overlap(lua_State *L) {
+    struct Object *o1 = smlua_to_object_arg(L, 1);
+    struct Object *o2 = smlua_to_object_arg(L, 2);
+    lua_pushboolean(L, smlua_obj_check_hitbox_overlap_internal(o1, o2) ? 1 : 0);
+    return 1;
+}
+
 // Compatibility wrapper for Co-op DX `degrees_to_sm64(degrees)`.
 static int smlua_func_sm64_to_radians(lua_State *L) {
     s16 sm64_angle = (s16)luaL_checkinteger(L, 1);
@@ -6116,6 +6207,11 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "get_dialog_id", smlua_func_get_dialog_id);
     smlua_set_global_function(L, "get_ttc_speed_setting", smlua_func_get_ttc_speed_setting);
     smlua_set_global_function(L, "set_ttc_speed_setting", smlua_func_set_ttc_speed_setting);
+    smlua_set_global_function(L, "get_water_level", smlua_func_get_water_level);
+    smlua_set_global_function(L, "set_water_level", smlua_func_set_water_level);
+    smlua_set_global_function(L, "load_object_collision_model", smlua_func_load_object_collision_model);
+    smlua_set_global_function(L, "bhv_pole_base_loop", smlua_func_bhv_pole_base_loop);
+    smlua_set_global_function(L, "obj_check_hitbox_overlap", smlua_func_obj_check_hitbox_overlap);
     smlua_set_global_function(L, "sm64_to_radians", smlua_func_sm64_to_radians);
     smlua_set_global_function(L, "radians_to_sm64", smlua_func_radians_to_sm64);
     smlua_set_global_function(L, "sm64_to_degrees", smlua_func_sm64_to_degrees);

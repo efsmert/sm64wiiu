@@ -65,6 +65,11 @@ static uint32_t sInvalidSamplerStateCount = 0;
 static uint32_t sNullShaderSamplerSetCount = 0;
 static uint32_t sTexturePoolOverflowCount = 0;
 
+// Texture cache entries can reuse texture IDs; we must not free backing memory until the GPU
+// is done with it. Retire old images and free them at the start of a later frame.
+static std::vector<void*> sRetiredTextureImages;
+static uint32_t sRetiredTextureFreeLogCount = 0;
+
 static struct ShaderProgram* current_shader_program = nullptr;
 static std::vector<float*> vbo_array;
 static std::vector<float*> vbo_array_prev;
@@ -505,6 +510,17 @@ static void gfx_gx2_upload_texture(const uint8_t* rgba32_buf, int width, int hei
     }
     GX2Texture& texture = gx2_textures[current_texture_ids[tile]].texture;
 
+    // Re-uploading into an existing texture_id must release the previous image to avoid
+    // unbounded leaks when the PC texture cache wraps/reuses nodes. This must be deferred
+    // because the GPU may still be sampling from the old image in the current frame.
+    Texture& texture_entry = gx2_textures[current_texture_ids[tile]];
+    if (texture.surface.image != nullptr) {
+        sRetiredTextureImages.push_back(texture.surface.image);
+        texture.surface.image = nullptr;
+        texture.surface.imageSize = 0;
+        texture_entry.texture_uploaded = false;
+    }
+
     texture.surface.use       = GX2_SURFACE_USE_TEXTURE;
     texture.surface.dim       = GX2_SURFACE_DIM_TEXTURE_2D;
     texture.surface.width     = width;
@@ -546,8 +562,9 @@ static void gfx_gx2_upload_texture(const uint8_t* rgba32_buf, int width, int hei
     }
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture.surface.image, texture.surface.imageSize);
 
-    GX2Surface surf;
-    surf = texture.surface;
+    // Use a linear-special surface as the copy source. This mirrors the original GX2 backend
+    // behavior and avoids rendering regressions for alpha-tested assets (trees, Mario).
+    GX2Surface surf = texture.surface;
     surf.tileMode = GX2_TILE_MODE_LINEAR_SPECIAL;
     surf.image = (void*)rgba32_buf;
     GX2CalcSurfaceSizeAndAlignment(&surf);
@@ -731,6 +748,26 @@ static void gfx_gx2_on_resize(void)
 static void gfx_gx2_start_frame(void)
 {
     frame_count++;
+    if (!sRetiredTextureImages.empty()) {
+        // Only block when we have something to reclaim. This avoids the old leak while
+        // staying safe with respect to GPU use of previous-frame textures.
+        GX2DrawDone();
+
+        const size_t free_budget = 64;
+        size_t freed = 0;
+        while (!sRetiredTextureImages.empty() && freed < free_budget) {
+            void* ptr = sRetiredTextureImages.back();
+            sRetiredTextureImages.pop_back();
+            free(ptr);
+            freed++;
+        }
+        if (sRetiredTextureFreeLogCount < 8) {
+            WHBLogPrintf("gfx: retired frees=%u remaining=%u",
+                         (unsigned)freed,
+                         (unsigned)sRetiredTextureImages.size());
+            sRetiredTextureFreeLogCount++;
+        }
+    }
     // Keep one-frame latency before freeing transient VBO uploads.
     // Use a per-frame free budget to avoid multi-second stalls when overlays
     // temporarily generate very large VBO backlogs (e.g. stacked pause UIs).
@@ -781,6 +818,11 @@ extern "C" void gfx_gx2_free(void)
 
     gx2_texture_count = 0;
     shader_program_pool_size = 0;
+
+    while (!sRetiredTextureImages.empty()) {
+        free(sRetiredTextureImages.back());
+        sRetiredTextureImages.pop_back();
+    }
 }
 
 struct GfxRenderingAPI gfx_gx2_api = {

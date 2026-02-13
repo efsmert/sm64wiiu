@@ -2,6 +2,9 @@
 #include <string.h>
 
 #include "behavior_table.h"
+#ifndef TARGET_N64
+#include "pc/lua/smlua_hooks.h"
+#endif
 
 // Some Co-op DX behavior IDs exist in `behavior_table.h` for mod compatibility,
 // but their corresponding scripts are not present in the Wii U codebase yet.
@@ -587,6 +590,12 @@ enum BehaviorId get_id_from_vanilla_behavior(const BehaviorScript* behavior) {
 }
 
 const BehaviorScript* get_behavior_from_id(enum BehaviorId id) {
+#ifndef TARGET_N64
+    const BehaviorScript* hooked = smlua_get_hooked_behavior_from_id((s32)id, true);
+    if (hooked != NULL) {
+        return hooked;
+    }
+#endif
     if ((s32)id < 0 || id >= id_bhv_max_count) {
         return NULL;
     }

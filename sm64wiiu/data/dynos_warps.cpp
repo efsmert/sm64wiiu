@@ -5,6 +5,7 @@ extern "C" {
 #include "course_table.h"
 #include "audio/external.h"
 #include "engine/surface_collision.h"
+#include "game/area.h"
 #include "game/mario.h"
 #include "game/hardcoded.h"
 #include "game/ingame_menu.h"
@@ -62,14 +63,23 @@ bool DynOS_Warp_ToLevel(s32 aLevel, s32 aArea, s32 aAct) {
     s16 *warp = DynOS_Level_GetWarpEntry(aLevel, aArea);
 #ifdef TARGET_WII_U
     static u32 sWarpToLevelLogCount = 0;
-    if (sWarpToLevelLogCount < 32) {
-        WHBLogPrintf("dynos: warp_to_level request level=%d area=%d act=%d warpEntry=%p", (int)aLevel, (int)aArea, (int)aAct, warp);
+#endif
+    if (!warp) {
+#ifdef TARGET_WII_U
+        if (sWarpToLevelLogCount < 64) {
+            WHBLogPrintf("dynos: warp_to_level FAIL level=%d area=%d act=%d warpEntry=%p", (int)aLevel, (int)aArea, (int)aAct, warp);
+            sWarpToLevelLogCount++;
+        }
+#endif
+        return false;
+    }
+
+#ifdef TARGET_WII_U
+    if (sWarpToLevelLogCount < 64) {
+        WHBLogPrintf("dynos: warp_to_level OK level=%d area=%d act=%d warpEntry=%p", (int)aLevel, (int)aArea, (int)aAct, warp);
         sWarpToLevelLogCount++;
     }
 #endif
-    if (!warp) {
-        return false;
-    }
 
     // stop music
     play_music(SEQ_PLAYER_LEVEL, 0, 0);
@@ -158,6 +168,13 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
 
     // Phase 1 - Clear the previous level and set up the new level
     if (sDynosWarpTargetArea == -1) {
+#ifdef TARGET_WII_U
+        static u32 sWarpPhase1LogCount = 0;
+        if (sWarpPhase1LogCount < 32) {
+            WHBLogPrintf("dynos: warp phase1 start level=%d area=%d act=%d", (int)sDynosWarpLevelNum, (int)sDynosWarpAreaNum, (int)sDynosWarpActNum);
+            sWarpPhase1LogCount++;
+        }
+#endif
 
         // Close the pause menu if it was open
         level_set_transition(0, NULL);
@@ -196,6 +213,12 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
         gCurrActNum = MAX(0, sDynosWarpActNum * (gCurrCourseNum <= COURSE_STAGES_MAX));
         gDialogCourseActNum = gCurrActNum;
         gCurrAreaIndex = sDynosWarpAreaNum;
+        if (gMarioSpawnInfo != NULL) {
+            // Some custom scripts may not hit MARIO_POS before init-level completes.
+            // Seed the spawn area so init_level() can load/spawn Mario in the target area.
+            gMarioSpawnInfo->areaIndex = gCurrAreaIndex;
+            gMarioSpawnInfo->activeAreaIndex = gCurrAreaIndex;
+        }
         sDynosWarpTargetArea = gCurrAreaIndex;
 
         // Set up new level script
@@ -205,14 +228,48 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
         sWarpDest.areaIdx = gCurrAreaIndex;
         sWarpDest.nodeId = 0;
         sWarpDest.arg = 0;
+#ifdef TARGET_WII_U
+        static u32 sWarpPhase1ScriptLogCount = 0;
+        if (sWarpPhase1ScriptLogCount < 32) {
+            WHBLogPrintf("dynos: warp phase1 script level=%d ptr=%p", (int)gCurrLevelNum, DynOS_Level_GetScript(gCurrLevelNum));
+            sWarpPhase1ScriptLogCount++;
+        }
+#endif
         return (void *) DynOS_Level_GetScript(gCurrLevelNum);
 
     } else {
 
-        // Phase 2 - Set Mario spawn info after the MARIO_POS command
+        // Phase 2 - Set Mario spawn info after the MARIO_POS command.
+        // Some custom scripts expose a different area index than the warp request
+        // (or define only area 0). Pick a defined area to avoid null-area crashes.
         if (*((u8 *) aCmd) == 0x2B) {
-            gMarioSpawnInfo->areaIndex = sDynosWarpTargetArea;
-            gCurrAreaIndex = sDynosWarpTargetArea;
+            s32 selectedArea = sDynosWarpTargetArea;
+            if (selectedArea < 0 || selectedArea >= 8 || gAreas[selectedArea].unk04 == NULL) {
+                const s32 scriptArea = gMarioSpawnInfo->areaIndex;
+                if (scriptArea >= 0 && scriptArea < 8 && gAreas[scriptArea].unk04 != NULL) {
+                    selectedArea = scriptArea;
+                } else {
+                    selectedArea = -1;
+                    for (s32 i = 0; i < 8; ++i) {
+                        if (gAreas[i].unk04 != NULL) {
+                            selectedArea = i;
+                            break;
+                        }
+                    }
+                }
+#ifdef TARGET_WII_U
+                static u32 sWarpAreaFallbackLogCount = 0;
+                if (sWarpAreaFallbackLogCount < 32) {
+                    WHBLogPrintf("dynos: warp phase2 area fallback target=%d script=%d selected=%d",
+                                 (int)sDynosWarpTargetArea, (int)scriptArea, (int)selectedArea);
+                    sWarpAreaFallbackLogCount++;
+                }
+#endif
+            }
+            if (selectedArea >= 0 && selectedArea < 8) {
+                gMarioSpawnInfo->areaIndex = selectedArea;
+                gCurrAreaIndex = selectedArea;
+            }
         }
 
         // Phase 3 - End level initialization
@@ -284,6 +341,26 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
             sDynosWarpAreaNum    = -1;
             sDynosWarpActNum     = -1;
             sDynosWarpNodeNum    = -1;
+#ifdef TARGET_WII_U
+            static u32 sWarpPhase3DoneLogCount = 0;
+            if (sWarpPhase3DoneLogCount < 32) {
+                WHBLogPrintf("dynos: warp phase3 complete level=%d area=%d mario=%p currentArea=%p",
+                             (int)gCurrLevelNum, (int)gCurrAreaIndex, gMarioObject, gCurrentArea);
+                sWarpPhase3DoneLogCount++;
+            }
+#endif
+        } else {
+#ifdef TARGET_WII_U
+            static u32 sWarpPhase3WaitLogCount = 0;
+            if (sWarpPhase3WaitLogCount < 64) {
+                const s32 spawnArea = (gMarioSpawnInfo != NULL) ? gMarioSpawnInfo->areaIndex : -999;
+                const u8 cmdType = (aCmd != NULL) ? *((u8 *)aCmd) : 0xFF;
+                WHBLogPrintf("dynos: warp phase3 waiting level=%d area=%d spawnArea=%d initDone=%d mario=%p currentArea=%p cmd=%p type=0x%02X",
+                             (int)gCurrLevelNum, (int)gCurrAreaIndex, (int)spawnArea, (int)aIsLevelInitDone,
+                             gMarioObject, gCurrentArea, aCmd, (unsigned)cmdType);
+                sWarpPhase3WaitLogCount++;
+            }
+#endif
         }
     }
 

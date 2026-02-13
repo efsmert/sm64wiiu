@@ -13,7 +13,13 @@
 #include "game/object_list_processor.h"
 #include "graph_node.h"
 #include "surface_collision.h"
+#include "behavior_table.h"
 #include "pc/configfile.h"
+#ifndef TARGET_N64
+#include "data/dynos.c.h"
+#include "pc/lua/smlua.h"
+#include "pc/lua/smlua_cobject.h"
+#endif
 
 static f32 draw_distance_scalar(void) {
     switch (configDrawDistance) {
@@ -119,6 +125,123 @@ static uintptr_t cur_obj_bhv_stack_pop(void) {
     return bhvAddr;
 }
 
+#ifndef TARGET_N64
+static bool bhv_read_lua_integer(const char *varName, uintptr_t *outValue) {
+    lua_State *L = smlua_get_state();
+    int top;
+
+    if (L == NULL || varName == NULL || varName[0] == '\0' || outValue == NULL) {
+        return false;
+    }
+
+    top = lua_gettop(L);
+    lua_getglobal(L, varName);
+
+    if (lua_isinteger(L, -1) || lua_isnumber(L, -1)) {
+        *outValue = (uintptr_t) lua_tointeger(L, -1);
+        lua_settop(L, top);
+        return true;
+    }
+
+    if (lua_islightuserdata(L, -1)) {
+        *outValue = (uintptr_t) lua_touserdata(L, -1);
+        lua_settop(L, top);
+        return true;
+    }
+
+    lua_settop(L, top);
+    return false;
+}
+
+static bool bhv_get_token(u32 tokenIndex, const char **outToken) {
+    const char *token;
+    if (outToken == NULL || gCurrentObject == NULL) {
+        return false;
+    }
+
+    token = dynos_behavior_get_token((BehaviorScript *) gCurrentObject->behavior, tokenIndex);
+    if (token == NULL || token[0] == '\0') {
+        return false;
+    }
+
+    *outToken = token;
+    return true;
+}
+
+static bool bhv_resolve_behavior_from_token(u32 tokenIndex, const BehaviorScript **outBehavior) {
+    const char *token = NULL;
+    uintptr_t value = 0;
+    const BehaviorScript *behavior = NULL;
+
+    if (outBehavior == NULL) {
+        return false;
+    }
+
+    if (!bhv_get_token(tokenIndex, &token) || !bhv_read_lua_integer(token, &value) || value == 0) {
+        return false;
+    }
+
+    behavior = get_behavior_from_id((enum BehaviorId) value);
+    if (behavior != NULL) {
+        *outBehavior = behavior;
+        return true;
+    }
+
+    if (value < 0x10000) {
+        return false;
+    }
+
+    *outBehavior = (const BehaviorScript *) value;
+    return true;
+}
+
+static bool bhv_call_lua_function_token(u32 tokenIndex) {
+    const char *token = NULL;
+    lua_State *L = smlua_get_state();
+    int top;
+
+    if (L == NULL || !bhv_get_token(tokenIndex, &token)) {
+        return false;
+    }
+
+    top = lua_gettop(L);
+    lua_getglobal(L, token);
+    if (!lua_isfunction(L, -1)) {
+        lua_settop(L, top);
+        return false;
+    }
+
+    smlua_push_object(L, gCurrentObject);
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_settop(L, top);
+        return false;
+    }
+
+    lua_settop(L, top);
+    return true;
+}
+#else
+static bool bhv_read_lua_integer(const char *varName, uintptr_t *outValue) {
+    (void) varName;
+    (void) outValue;
+    return false;
+}
+static bool bhv_get_token(u32 tokenIndex, const char **outToken) {
+    (void) tokenIndex;
+    (void) outToken;
+    return false;
+}
+static bool bhv_resolve_behavior_from_token(u32 tokenIndex, const BehaviorScript **outBehavior) {
+    (void) tokenIndex;
+    (void) outBehavior;
+    return false;
+}
+static bool bhv_call_lua_function_token(u32 tokenIndex) {
+    (void) tokenIndex;
+    return false;
+}
+#endif
+
 UNUSED static void stub_behavior_script_1(void) {
     for (;;) {
         ;
@@ -166,7 +289,7 @@ static s32 bhv_cmd_cylboard(void) {
 static s32 bhv_cmd_set_model(void) {
     s32 modelID = BHV_CMD_GET_2ND_S16(0);
 
-    gCurrentObject->header.gfx.sharedChild = gLoadedGraphNodes[modelID];
+    obj_set_model(gCurrentObject, modelID);
 
     gCurBhvCommand++;
     return BHV_PROC_CONTINUE;
@@ -860,11 +983,163 @@ static s32 bhv_cmd_animate_texture(void) {
     return BHV_PROC_CONTINUE;
 }
 
+// Command 0x39: Defines behavior id metadata for synchronization/mod compatibility.
+// Usage: ID(index)
+static s32 bhv_cmd_id(void) {
+    gCurBhvCommand++;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3A: Jumps to a new behavior command and stores the return address in stack.
+// Usage: CALL_EXT(addrOrToken)
+static s32 bhv_cmd_call_ext(void) {
+    const BehaviorScript *jumpAddress = NULL;
+
+    // Match CALL() addressing behavior: increment once so index 0 becomes the payload word.
+    gCurBhvCommand++;
+
+    if (!bhv_resolve_behavior_from_token(BHV_CMD_GET_U32(0), &jumpAddress) || jumpAddress == NULL) {
+        // Skip unresolved payload and continue safely.
+        gCurBhvCommand++;
+        return BHV_PROC_CONTINUE;
+    }
+
+    cur_obj_bhv_stack_push(BHV_CMD_GET_ADDR_OF_CMD(1));
+    gCurBhvCommand = jumpAddress;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3B: Jumps to a new behavior script without saving stack.
+// Usage: GOTO_EXT(addrOrToken)
+static s32 bhv_cmd_goto_ext(void) {
+    const BehaviorScript *jumpAddress = NULL;
+
+    if (!bhv_resolve_behavior_from_token(BHV_CMD_GET_U32(1), &jumpAddress) || jumpAddress == NULL) {
+        gCurBhvCommand += 2;
+        return BHV_PROC_CONTINUE;
+    }
+
+    gCurBhvCommand = jumpAddress;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3C: Executes a custom native/Lua callback.
+// Usage: CALL_NATIVE_EXT(funcToken)
+static s32 bhv_cmd_call_native_ext(void) {
+    const char *token = NULL;
+    uintptr_t ptrValue = 0;
+
+    // Preferred path: token refers to a Lua function global.
+    if (!bhv_call_lua_function_token(BHV_CMD_GET_U32(1))
+        && bhv_get_token(BHV_CMD_GET_U32(1), &token)
+        && bhv_read_lua_integer(token, &ptrValue)
+        && ptrValue >= 0x10000) {
+        NativeBhvFunc behaviorFunc = (NativeBhvFunc) ptrValue;
+        behaviorFunc();
+    }
+
+    gCurBhvCommand += 2;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3D: Spawns a child object with model+behavior from extended payload.
+// Usage: SPAWN_CHILD_EXT(modelID, behaviorToken)
+static s32 bhv_cmd_spawn_child_ext(void) {
+    u32 model = BHV_CMD_GET_U32(1);
+    const BehaviorScript *behavior = NULL;
+    struct Object *child;
+
+    if (!bhv_resolve_behavior_from_token(BHV_CMD_GET_U32(2), &behavior) || behavior == NULL) {
+        gCurBhvCommand += 3;
+        return BHV_PROC_CONTINUE;
+    }
+
+    child = spawn_object_at_origin(gCurrentObject, 0, model, behavior);
+    if (child != NULL) {
+        obj_copy_pos_and_angle(child, gCurrentObject);
+    }
+
+    gCurBhvCommand += 3;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3E: Spawns child object with behavior param from extended payload.
+// Usage: SPAWN_CHILD_WITH_PARAM_EXT(bhvParam, modelID, behaviorToken)
+static s32 bhv_cmd_spawn_child_with_param_ext(void) {
+    u32 bhvParam = BHV_CMD_GET_2ND_S16(0);
+    u32 modelID = BHV_CMD_GET_U32(1);
+    const BehaviorScript *behavior = NULL;
+    struct Object *child;
+
+    if (!bhv_resolve_behavior_from_token(BHV_CMD_GET_U32(2), &behavior) || behavior == NULL) {
+        gCurBhvCommand += 3;
+        return BHV_PROC_CONTINUE;
+    }
+
+    child = spawn_object_at_origin(gCurrentObject, 0, modelID, behavior);
+    if (child != NULL) {
+        obj_copy_pos_and_angle(child, gCurrentObject);
+        child->oBehParams2ndByte = bhvParam;
+    }
+
+    gCurBhvCommand += 3;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x3F: Spawns object with model+behavior from extended payload.
+// Usage: SPAWN_OBJ_EXT(modelID, behaviorToken)
+static s32 bhv_cmd_spawn_obj_ext(void) {
+    u32 modelID = BHV_CMD_GET_U32(1);
+    const BehaviorScript *behavior = NULL;
+    struct Object *object;
+
+    if (!bhv_resolve_behavior_from_token(BHV_CMD_GET_U32(2), &behavior) || behavior == NULL) {
+        gCurBhvCommand += 3;
+        return BHV_PROC_CONTINUE;
+    }
+
+    object = spawn_object_at_origin(gCurrentObject, 0, modelID, behavior);
+    if (object != NULL) {
+        obj_copy_pos_and_angle(object, gCurrentObject);
+        gCurrentObject->prevObj = object;
+    }
+
+    gCurBhvCommand += 3;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x40: Loads animations from extended payload.
+// Current Wii U parity behavior: skip safely if not directly resolvable.
+// Usage: LOAD_ANIMATIONS_EXT(field, anims)
+static s32 bhv_cmd_load_animations_ext(void) {
+    gCurBhvCommand += 2;
+    return BHV_PROC_CONTINUE;
+}
+
+// Command 0x41: Loads collision data from DynOS token.
+// Usage: LOAD_COLLISION_DATA_EXT(collisionDataToken)
+static s32 bhv_cmd_load_collision_data_ext(void) {
+#ifndef TARGET_N64
+    const char *collisionDataName = NULL;
+
+    if (bhv_get_token(BHV_CMD_GET_U32(1), &collisionDataName)) {
+        Collision *collisionData = dynos_collision_get(collisionDataName);
+        if (collisionData != NULL) {
+            gCurrentObject->collisionData = collisionData;
+        }
+    }
+#endif
+    gCurBhvCommand += 2;
+    return BHV_PROC_CONTINUE;
+}
+
 void stub_behavior_script_2(void) {
 }
 
+#define BEHAVIOR_CMD_TABLE_MAX 66
+
 typedef s32 (*BhvCommandProc)(void);
-static BhvCommandProc BehaviorCmdTable[] = {
+static BhvCommandProc BehaviorCmdTable[BEHAVIOR_CMD_TABLE_MAX] = {
     bhv_cmd_begin,
     bhv_cmd_delay,
     bhv_cmd_call,
@@ -922,6 +1197,15 @@ static BhvCommandProc BehaviorCmdTable[] = {
     bhv_cmd_set_int_unused,
     bhv_cmd_spawn_water_droplet,
     bhv_cmd_cylboard,
+    bhv_cmd_id,
+    bhv_cmd_call_ext,
+    bhv_cmd_goto_ext,
+    bhv_cmd_call_native_ext,
+    bhv_cmd_spawn_child_ext,
+    bhv_cmd_spawn_child_with_param_ext,
+    bhv_cmd_spawn_obj_ext,
+    bhv_cmd_load_animations_ext,
+    bhv_cmd_load_collision_data_ext,
 };
 
 // Execute the behavior script of the current object, process the object flags, and other miscellaneous code for updating objects.
@@ -956,7 +1240,18 @@ void cur_obj_update(void) {
     gCurBhvCommand = gCurrentObject->curBhvCommand;
 
     do {
-        bhvCmdProc = BehaviorCmdTable[*gCurBhvCommand >> 24];
+        u32 cmdIndex;
+        if (gCurBhvCommand == NULL) {
+            break;
+        }
+        cmdIndex = *gCurBhvCommand >> 24;
+        if (cmdIndex >= BEHAVIOR_CMD_TABLE_MAX) {
+            break;
+        }
+        bhvCmdProc = BehaviorCmdTable[cmdIndex];
+        if (bhvCmdProc == NULL) {
+            break;
+        }
         bhvProcResult = bhvCmdProc();
     } while (bhvProcResult == BHV_PROC_CONTINUE);
 

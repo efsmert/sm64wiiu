@@ -30,6 +30,7 @@ From repo root, run:
 ### A) Build system and baseline
 - Added GNU Make 3.81 compatibility fixes (`Makefile`, `Makefile.split`) and generation-order fixes.
 - Baseline Wii U compile is stable with valid baserom.
+- Added optional Wii U crash-debug build mode (`WIIU_CRASH_DEBUG=1`) with `-O0 -g3`, frame-pointer-preserving flags, and linker map output, plus `tools/wiiu_decode_cemu_crash.sh` to decode Cemu crash addresses to source lines.
 
 ### B) FS + platform substrate
 - Imported Co-op DX FS stack into `src/pc/fs` (`fs`, `fs_packtype_dir`, `dirtree`, `fmem`).
@@ -92,6 +93,8 @@ From repo root, run:
 - Added Flood follow-up parity for spectator/runtime hooks: exposed `calculate_yaw` to Lua and made `MarioState.squishTimer` writable/readable in Wii U cobject reflection to stop per-frame hook faults during active rounds.
 - Reordered DynOS asset activation to occur after Lua hook table init and re-enabled custom behavior global export (`dynos_behavior_hook_all_custom_behaviors`) so `.bhv` IDs remain registered through startup.
 - Added custom-level registration mod-index wiring (`smlua_level_util_set_register_mod_index`) aligned with enabled root-script order so `level_register()` records the same DynOS mod index used during asset activation.
+- Restored donor-style `level_cmd_begin_area` geo loading on Wii U by removing the raw-geo bypass and always routing through `dynos_model_load_geo`, avoiding direct geo parser entry on unresolved `0x1xxxxxxx` custom-level addresses.
+- Fixed DynOS geo binary load endianness handling for Wii U by preserving raw geo command-word bytes while decoding pointer tokens from swapped values, so custom geo command streams and pointer substitutions both remain valid on big-endian.
 
 ### K) HUD/dialog/interaction slices
 - Dialog override conversion/render integration for common charset.
@@ -133,6 +136,7 @@ From repo root, run:
 - Added root-script startup markers for all active scripts (including single-file mods) and targeted HOOK_BEFORE_PHYS_STEP water-step velocity diagnostics for runtime parity triage.
 - Added GX2 window start-frame diagnostics and a first-frame clear skip mitigation in `gfx_gx2_window_start_frame()` to avoid intermittent black-screen hangs before `start_frame()` returns on Cemu full-sync paths.
 - Added Wii U watchdog diagnostics thread + cross-module stage markers (`pc_main`/`gfx_run`) so hangs without crashes still emit periodic `diag: stall ... stage=...` logs showing where frame progress stopped.
+- Hardened Mario re-init against transition-time null globals (`gMarioObject`, `gMarioSpawnInfo`) and ensured `statusForCamera` fallback initialization so Lua-triggered `init_single_mario()` calls during host/countdown transitions cannot null-deref in `init_mario()`.
 
 ### O) DJUI bootstrap (phase slice 1)
 - Added initial `src/pc/djui` scaffold (`djui.[ch]`) and wired lifecycle hooks into Wii U startup/shutdown (`djui_init`, `djui_init_late`, `djui_shutdown`).
@@ -220,6 +224,8 @@ From repo root, run:
 - Donor DJUI clip commands are encoded as 0..255 percentages; on Wii U float-space drift can push values slightly out of range and wrap on `u8` conversion, causing blocky/missing glyphs near panel bounds unless values are clamped before emit/consume.
 - Donor menu-level changes should only force warps while play mode is normal and area data is loaded; issuing repeated level/area warps during transition phases can cause visible respawn loops and unstable camera settle in Cemu.
 - DynOS custom behavior IDs must be exported after `smlua_bind_hooks()`/`smlua_clear_hooks()` has run; exporting `.bhv` globals before hook-state init can silently clear the custom behavior registry and surface nil behavior IDs later.
+- For Cemu crash triage, use `sm64wiiu/tools/wiiu_decode_cemu_crash.sh` after reproducing; it parses the latest `Error: signal` block and resolves IP/LR/ReturnAddr against the current Wii U ELF.
+- In `level_cmd_begin_area`, custom-level geo pointers that look like `0x1xxxxxxx` still need DynOS resolution; direct `process_geo_layout` on that value can fault in early geo commands (`geo_layout_cmd_node_ortho_projection`/`_perspective`) during host/start transitions.
 
 ## 8) Remaining Work / Next Focus
 - Continue non-network gameplay/mod parity with stability-first validation.
@@ -291,6 +297,24 @@ Notes:
   - validation: `./build_wiiu_then_wuhb.sh`
   - outcome: build and WUHB packaging succeeded; next Cemu run should show whether Flood custom-stage requests still miss warps and, if so, with direct slot/script visibility in log.
   - gotcha: selecting the first `_entry` script inside a multi-script DynOS level bundle can bind `level_register()` to a script that executes but does not expose expected spawn/warp metadata, causing repeated black-screen warp attempts.
+- Wii U crash diagnostics workflow uplift: added `WIIU_CRASH_DEBUG=1` Makefile mode for symbol-rich/debug-friendly Wii U builds and linker map emission, and added `tools/wiiu_decode_cemu_crash.sh` to decode latest Cemu crash addresses into function/file:line output.
+  - files: `sm64wiiu/Makefile`, `sm64wiiu/tools/wiiu_decode_cemu_crash.sh`
+  - validation: `PATH="/opt/devkitpro/devkitPPC/bin:$PATH" WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh`, `sm64wiiu/tools/wiiu_decode_cemu_crash.sh | sed -n '1,80p'`
+  - outcome: debug build completed with Crash Debug enabled; decoder script resolved latest Cemu crash block to concrete source locations and reported map-file availability.
+- Flood host crash root-cause alignment (begin-area geo load path): removed Wii U-only raw geo bypass for `geoLayoutAddr >= 0x10000000` in `level_cmd_begin_area` and restored donor DynOS geo-load path so custom-level geo tokens resolve before graph-node parsing.
+  - files: `sm64wiiu/src/engine/level_script.c`
+  - validation: `PATH="/opt/devkitpro/devkitPPC/bin:$PATH" WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next host-button repro should confirm whether the geo-layout signal-10 crash is eliminated.
+  - gotcha: decoded crash IP/LR in `geo_layout_cmd_node_ortho_projection`/`geo_layout_cmd_node_perspective` with register state showing `0x10000000` strongly indicates unresolved custom-level geo addresses reaching the parser directly.
+- Flood custom-geo load endian fix (DynOS): changed `DynOS_Geo_Load` to keep raw geo command bytes in memory and use swapped values only for pointer-token decoding, preventing malformed geo streams and unresolved token words from entering `process_geo_layout` on Wii U.
+  - files: `sm64wiiu/data/dynos_bin_geo.cpp`
+  - validation: `PATH="/opt/devkitpro/devkitPPC/bin:$PATH" WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next Flood host repro should confirm whether the `dynos_model_load_geo`/`process_geo_layout` crash path is resolved.
+  - gotcha: DynOS binary pointer tokens are authored in little-endian token order, while script/geo command streams must remain byte-faithful in memory; using one representation for both breaks big-endian runtime parsing.
+- Flood host countdown crash guard (Lua -> init_single_mario path): added null guards in `init_mario()`/`init_single_mario()` for transition windows where `gMarioObject` is temporarily unavailable, plus camera-state fallback init, to avoid `signal 10` crashes in Mario init during custom behavior callbacks.
+  - files: `sm64wiiu/src/game/mario.c`
+  - validation: `PATH="/opt/devkitpro/devkitPPC/bin:$PATH" WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next host/countdown repro should show whether crash is replaced by stable recovery or a new deeper fault.
 
 ## 10) Required Format For Future Summary Updates
 

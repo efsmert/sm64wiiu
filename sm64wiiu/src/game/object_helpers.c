@@ -27,6 +27,7 @@
 #include "spawn_object.h"
 #include "spawn_sound.h"
 #ifndef TARGET_N64
+#include "data/dynos.c.h"
 #include "pc/lua/smlua_hooks.h"
 #endif
 
@@ -1138,9 +1139,23 @@ void cur_obj_get_dropped(void) {
 }
 
 void cur_obj_set_model(s32 modelID) {
-    o->header.gfx.sharedChild = gLoadedGraphNodes[modelID];
+    obj_set_model(o, modelID);
+}
+
+void obj_set_model(struct Object *obj, s32 modelID) {
+    if (obj == NULL) {
+        return;
+    }
+
 #ifndef TARGET_N64
-    smlua_call_event_hooks_object_set_model(o, modelID);
+    obj->header.gfx.sharedChild = dynos_model_get_geo((u32) modelID);
+    if (obj->header.gfx.sharedChild == NULL && modelID >= 0 && modelID < 256) {
+        obj->header.gfx.sharedChild = gLoadedGraphNodes[modelID];
+    }
+    dynos_actor_override(obj, (void *) &obj->header.gfx.sharedChild);
+    smlua_call_event_hooks_object_set_model(obj, modelID);
+#else
+    obj->header.gfx.sharedChild = gLoadedGraphNodes[modelID];
 #endif
 }
 

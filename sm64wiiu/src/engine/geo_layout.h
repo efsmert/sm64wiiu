@@ -28,6 +28,7 @@ extern UNUSED s16 D_8038BD7C;
 extern s16 gGeoLayoutReturnIndex;
 extern u8 *gGeoLayoutCommand;
 extern struct GraphNode gObjParentGraphNode;
+extern u8 gGeoCmdSwapEndianFields;
 
 static inline u8 cur_geo_cmd_read_u8(u32 offset) {
     return gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)];
@@ -36,18 +37,27 @@ static inline u8 cur_geo_cmd_read_u8(u32 offset) {
 static inline s16 cur_geo_cmd_read_s16(u32 offset) {
     s16 value;
     memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    if (gGeoCmdSwapEndianFields) {
+        value = (s16) __builtin_bswap16((u16) value);
+    }
     return value;
 }
 
 static inline s32 cur_geo_cmd_read_s32(u32 offset) {
     s32 value;
     memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    if (gGeoCmdSwapEndianFields) {
+        value = (s32) __builtin_bswap32((u32) value);
+    }
     return value;
 }
 
 static inline u32 cur_geo_cmd_read_u32(u32 offset) {
     u32 value;
     memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
+    if (gGeoCmdSwapEndianFields) {
+        value = __builtin_bswap32(value);
+    }
     return value;
 }
 

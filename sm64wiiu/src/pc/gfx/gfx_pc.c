@@ -21,9 +21,18 @@
 #include "../pc_diag.h"
 #include "../configfile.h"
 #include "../lua/smlua.h"
+#include "data/dynos.c.h"
 #ifdef TARGET_WII_U
 #include <whb/log.h>
+// Enable verbose display-list diagnostics in crash-debug builds.
+// This helps diagnose custom-level hangs (bad pointers, cycles, huge DLs).
+#ifndef GFX_WIIU_VERBOSE_LOGS
+#if defined(WIIU_CRASH_DEBUG)
+#define GFX_WIIU_VERBOSE_LOGS 1
+#else
 #define GFX_WIIU_VERBOSE_LOGS 0
+#endif
+#endif
 #if GFX_WIIU_VERBOSE_LOGS
 #define GFX_WIIU_LOGF(...) WHBLogPrintf(__VA_ARGS__)
 #else
@@ -93,6 +102,7 @@ static uint32_t sTextureTileRemapLogCount = 0;
 static uint32_t sTextureImportRejectLogCount = 0;
 static uint32_t sTextureImportBeginLogCount = 0;
 static uint32_t sTextureImportEndLogCount = 0;
+static uint32_t sTextureMissingDrawLogCount = 0;
 
 #define GFX_TEXTURE_SLOTS 2
 
@@ -650,6 +660,20 @@ static void import_texture_ci8(int tile) {
 
 static void import_texture(int tile) {
     tile &= 1;
+    s32 dynos_pool_pos = (s32)gfx_texture_cache.pool_pos;
+    if (dynos_tex_import((void **)&rendering_state.textures[tile],
+                         (void *)rdp.loaded_texture[tile].addr,
+                         tile,
+                         gfx_rapi,
+                         (void **)gfx_texture_cache.hashmap,
+                         (void *)gfx_texture_cache.pool,
+                         &dynos_pool_pos,
+                         (s32)(sizeof(gfx_texture_cache.pool) / sizeof(gfx_texture_cache.pool[0])))) {
+        gfx_texture_cache.pool_pos = (u32)MAX(0, dynos_pool_pos);
+        return;
+    }
+    gfx_texture_cache.pool_pos = (u32)MAX(0, dynos_pool_pos);
+
     if (rdp.texture_tile.line_size_bytes == 0 ||
         rdp.loaded_texture[tile].addr == NULL ||
         rdp.loaded_texture[tile].size_bytes == 0) {
@@ -1764,6 +1788,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
             // If all vertices lie behind the eye, the triangle will be rejected anyway.
             cross = -cross;
         }
+        if (rsp.geometry_mode & G_CULL_INVERT_EXT) {
+            cross = -cross;
+        }
 
         switch (rsp.geometry_mode & G_CULL_BOTH) {
             case G_CULL_FRONT:
@@ -1773,8 +1800,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
                 if (cross >= 0) return;
                 break;
             case G_CULL_BOTH:
-                // Why is this even an option?
-                return;
+                // Co-op DX compatibility: avoid dropping all geometry if cull state is invalid.
+                break;
         }
     }
 
@@ -1856,21 +1883,34 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
 
     for (int i = 0; i < 2; i++) {
         if (used_textures[i]) {
-            if (rdp.textures_changed[i] || rendering_state.textures[i] == NULL) {
+            if (rdp.textures_changed[i]) {
                 gfx_flush();
                 import_texture(i);
                 rdp.textures_changed[i] = false;
             }
-            if (rendering_state.textures[i] == NULL) {
-                return;
-            }
             bool linear_filter = configFiltering && ((rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT);
-            if (linear_filter != rendering_state.textures[i]->linear_filter || rdp.texture_tile.cms != rendering_state.textures[i]->cms || rdp.texture_tile.cmt != rendering_state.textures[i]->cmt) {
-                gfx_flush();
-                gfx_rapi->set_sampler_parameters(i, linear_filter, rdp.texture_tile.cms, rdp.texture_tile.cmt);
-                rendering_state.textures[i]->linear_filter = linear_filter;
-                rendering_state.textures[i]->cms = rdp.texture_tile.cms;
-                rendering_state.textures[i]->cmt = rdp.texture_tile.cmt;
+            if (rendering_state.textures[i] != NULL) {
+                if (linear_filter != rendering_state.textures[i]->linear_filter || rdp.texture_tile.cms != rendering_state.textures[i]->cms || rdp.texture_tile.cmt != rendering_state.textures[i]->cmt) {
+                    gfx_flush();
+                    gfx_rapi->set_sampler_parameters(i, linear_filter, rdp.texture_tile.cms, rdp.texture_tile.cmt);
+                    rendering_state.textures[i]->linear_filter = linear_filter;
+                    rendering_state.textures[i]->cms = rdp.texture_tile.cms;
+                    rendering_state.textures[i]->cmt = rdp.texture_tile.cmt;
+                }
+            } else {
+#ifdef TARGET_WII_U
+                if (sTextureMissingDrawLogCount < 24) {
+                    WHBLogPrintf("gfx: textured draw without texture slot=%d fmt=%u siz=%u line=%u addr=%p bytes=%u changed=%d",
+                                 i,
+                                 (unsigned)rdp.texture_tile.fmt,
+                                 (unsigned)rdp.texture_tile.siz,
+                                 (unsigned)rdp.texture_tile.line_size_bytes,
+                                 (void *)rdp.loaded_texture[i].addr,
+                                 (unsigned)rdp.loaded_texture[i].size_bytes,
+                                 (int)rdp.textures_changed[i]);
+                    sTextureMissingDrawLogCount++;
+                }
+#endif
             }
         }
     }
@@ -2083,8 +2123,10 @@ static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t t
         rdp.texture_tile.cms = cms;
         rdp.texture_tile.cmt = cmt;
         rdp.texture_tile.line_size_bytes = line * 8;
-        rdp.textures_changed[0] = true;
-        rdp.textures_changed[1] = true;
+        if (!sOnlyTextureChangeOnAddrChange) {
+            rdp.textures_changed[0] = true;
+            rdp.textures_changed[1] = true;
+        }
     }
 
     if (tile == G_TX_LOADTILE || tile == G_TX_LOADTILE_6_UNKNOWN) {
@@ -2098,20 +2140,27 @@ static void gfx_dp_set_tile_size(uint8_t tile, uint16_t uls, uint16_t ult, uint1
         rdp.texture_tile.ult = ult;
         rdp.texture_tile.lrs = lrs;
         rdp.texture_tile.lrt = lrt;
-        rdp.textures_changed[0] = true;
-        rdp.textures_changed[1] = true;
+        if (!sOnlyTextureChangeOnAddrChange) {
+            rdp.textures_changed[0] = true;
+            rdp.textures_changed[1] = true;
+        }
     }
 }
 
 static void gfx_dp_load_tlut(uint8_t tile, uint32_t high_index) {
-    SUPPORT_CHECK(tile == G_TX_LOADTILE);
+    // Co-op DX ignores the tile parameter here. Some display lists use nonstandard values
+    // (e.g. tile==1) and skipping/aborting the load can lead to "invisible but shadowed"
+    // geometry due to missing textures/palettes.
+    (void)tile;
+    (void)high_index;
     SUPPORT_CHECK(rdp.texture_to_load.siz == G_IM_SIZ_16b);
     rdp.palette = rdp.texture_to_load.addr;
 }
 
 static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
-    if (tile == 1) return;
-    SUPPORT_CHECK(tile == G_TX_LOADTILE);
+    // Ignore the tile parameter (Co-op DX behavior). Some content uses tile==1 for loads.
+    (void)tile;
+    (void)dxt;
     SUPPORT_CHECK(uls == 0);
     SUPPORT_CHECK(ult == 0);
 
@@ -2147,8 +2196,8 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
-    if (tile == 1) return;
-    SUPPORT_CHECK(tile == G_TX_LOADTILE);
+    // Ignore the tile parameter (Co-op DX behavior). Some content uses tile==1 for loads.
+    (void)tile;
     SUPPORT_CHECK(uls == 0);
     SUPPORT_CHECK(ult == 0);
 
@@ -2520,6 +2569,20 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
 
         uint32_t opcode = sGfxDlLastW0 >> 24;
 #ifdef TARGET_WII_U
+        // Per-frame progress logging. The counter is reset in gfx_run().
+#if defined(WIIU_CRASH_DEBUG)
+        if (sGfxDlProgressLogCount < 512
+            && (sGfxDlCommandCount <= 512 || (sGfxDlCommandCount % 500) == 0)) {
+            GFX_WIIU_LOGF("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p w0=0x%08x w1=0x%08x",
+                         (unsigned)sGfxDlCommandCount,
+                         (unsigned)depth,
+                         (unsigned)opcode,
+                         (void *)cmd,
+                         (unsigned)sGfxDlLastW0,
+                         (unsigned)sGfxDlLastW1);
+            sGfxDlProgressLogCount++;
+        }
+#else
         if (sGfxDlProgressLogCount < 96
             && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
             GFX_WIIU_LOGF("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p",
@@ -2529,6 +2592,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                          (void *)cmd);
             sGfxDlProgressLogCount++;
         }
+#endif
 #endif
 
         switch (opcode) {
@@ -2913,6 +2977,19 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                 break;
         }
 #ifdef TARGET_WII_U
+#if defined(WIIU_CRASH_DEBUG)
+        if (sGfxDlCommandExitLogCount < 512
+            && (sGfxDlCommandCount <= 512 || (sGfxDlCommandCount % 500) == 0)) {
+            GFX_WIIU_LOGF("gfx: dl_exit count=%u depth=%u opcode=0x%02x cmd=%p w0=0x%08x w1=0x%08x",
+                         (unsigned)sGfxDlCommandCount,
+                         (unsigned)depth,
+                         (unsigned)opcode,
+                         (void *)cmd,
+                         (unsigned)sGfxDlLastW0,
+                         (unsigned)sGfxDlLastW1);
+            sGfxDlCommandExitLogCount++;
+        }
+#else
         if (sGfxDlCommandExitLogCount < 96
             && (sGfxDlCommandCount <= 32 || (sGfxDlCommandCount % 5000) == 0)) {
             GFX_WIIU_LOGF("gfx: dl_command_exit count=%u depth=%u opcode=0x%02x cmd=%p",
@@ -2922,6 +2999,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                          (void *)cmd);
             sGfxDlCommandExitLogCount++;
         }
+#endif
 #endif
         ++cmd;
     }
@@ -3046,6 +3124,10 @@ void gfx_run(Gfx *commands) {
     pc_diag_mark_stage("gfx_run:post_rapi_start_frame");
     sGfxDlAbortFrame = false;
     sGfxDlCommandCount = 0;
+    // Reset per-frame DL diagnostics so late-session hangs still produce useful logs.
+    sGfxDlProgressLogCount = 0;
+    sGfxDlAbortLogCount = 0;
+    sGfxDlCommandExitLogCount = 0;
     sInterpMatrixCmdIndex = 0;
     sInterpCurrMatrixCount = 0;
     sInterpCurrCameraValid = false;

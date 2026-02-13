@@ -169,7 +169,11 @@ struct CreditsEntry sCreditsSequence[] = {
     { LEVEL_NONE, 0, 1, 0, { 0, 0, 0 }, NULL },
 };
 
-struct MarioState gMarioStates[1];
+// Co-op DX parity / safety:
+// Some PC/DJUI/Lua code uses NetworkPlayer.localIndex (0..MAX_PLAYERS) to
+// reference gMarioStates. Keep the full array to avoid OOB corruption even if
+// only index 0 is "active" on Wii U for now.
+struct MarioState gMarioStates[MAX_PLAYERS] = { 0 };
 struct HudDisplay gHudDisplay;
 s16 sCurrPlayMode;
 u16 D_80339ECA;
@@ -1264,7 +1268,19 @@ s32 init_level(void) {
     } else {
         if (gPlayerSpawnInfos[0].areaIndex >= 0) {
             load_mario_area();
-            init_mario();
+            if (gCurrentArea != NULL) {
+                init_mario();
+            }
+#ifdef TARGET_WII_U
+            else {
+                static u32 sInitMarioSkippedNoAreaLogs = 0;
+                if (sInitMarioSkippedNoAreaLogs < 32) {
+                    WHBLogPrintf("level_update: init_mario skipped (no current area) spawnArea=%d currArea=%d",
+                                 (int) gMarioSpawnInfo->areaIndex, (int) gCurrAreaIndex);
+                    sInitMarioSkippedNoAreaLogs++;
+                }
+            }
+#endif
         }
 
         if (gCurrentArea != NULL) {
@@ -1298,7 +1314,7 @@ s32 init_level(void) {
             play_transition(WARP_TRANSITION_FADE_FROM_STAR, 0x10, 0xFF, 0xFF, 0xFF);
         }
 
-        if (gCurrDemoInput == NULL) {
+        if (gCurrDemoInput == NULL && gCurrentArea != NULL) {
             set_background_music(gCurrentArea->musicParam, gCurrentArea->musicParam2, 0);
         }
     }

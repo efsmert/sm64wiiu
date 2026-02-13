@@ -92,6 +92,8 @@ extern struct ObjectNode *gObjectLists;
 extern struct ObjectNode gFreeObjectList;
 
 extern struct Object *gMarioObject;
+// Co-op DX parity: per-player mario object pointers.
+extern struct Object *gMarioObjects[];
 extern struct Object *gLuigiObject;
 extern struct Object *gCurrentObject;
 

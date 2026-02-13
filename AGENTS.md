@@ -27,11 +27,41 @@ From repo root, run:
 
 This script runs `make -C sm64wiiu -j4` first and runs `make -C sm64wiiu wuhb` only if the first command succeeds.
 
+Run a clean build first in these cases:
+1. First compile of a new session (to avoid stale artifacts from prior agent work).
+2. Switching between debug and non-debug build configs.
+
+Clean + rebuild commands:
+```bash
+make -C sm64wiiu clean
+./build_wiiu_then_wuhb.sh
+```
+
+Clean + debug rebuild:
+```bash
+make -C sm64wiiu clean
+WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh
+```
+
 If the build fails, do not hide output. Show the terminal error output in full (or enough contiguous lines around the first error) so debugging can continue from the real root cause.
 
 Expected outputs:
 - `sm64wiiu/build/us_wiiu/sm64.us.rpx`
 - `sm64wiiu/build/us_wiiu/sm64.us.wuhb`
+
+### Crash-debug build mode (Wii U)
+
+For crash investigation sessions, enable the Wii U crash-debug build profile:
+
+```bash
+WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh
+```
+
+This enables debug-friendly Wii U compile/link flags (including map output) and prints `Crash Debug: yes` in the build options banner.
+
+Additional debug artifacts generated in this mode:
+- `sm64wiiu/build/us_wiiu/sm64.us.elf` (symbol-rich ELF for address resolution)
+- `sm64wiiu/build/us_wiiu/sm64.us.wiiu.map` (linker map)
 
 ## 4) Wii U gotchas (only what matters here)
 
@@ -51,6 +81,15 @@ Expected outputs:
    ```bash
    tail -n 300 "$HOME/Library/Application Support/Cemu/log.txt"
    ```
+   For symbolized crash triage, run:
+   ```bash
+   sm64wiiu/tools/wiiu_decode_cemu_crash.sh
+   ```
+   Optional arguments:
+   ```bash
+   sm64wiiu/tools/wiiu_decode_cemu_crash.sh [cemu_log_path] [elf_path]
+   ```
+   This script parses the latest `Error: signal` block (IP/LR/ReturnAddr) and resolves addresses to function/file:line using `powerpc-eabi-addr2line`.
 
 ## 5) Current porting priorities
 1. Keep startup and gameplay stable on Wii U.

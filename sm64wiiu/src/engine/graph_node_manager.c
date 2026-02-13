@@ -3,6 +3,9 @@
 #include "types.h"
 
 #include "graph_node.h"
+#ifndef TARGET_N64
+#include "data/dynos.c.h"
+#endif
 
 #if IS_64_BIT
 static s16 next_s16_in_geo_script(s16 **src) {
@@ -69,11 +72,18 @@ void register_scene_graph_node(struct GraphNode *graphNode) {
                 gCurRootGraphNode = graphNode;
             }
         } else {
-            if (gCurGraphNodeList[gCurGraphNodeIndex - 1]->type == GRAPH_NODE_TYPE_OBJECT_PARENT) {
-                ((struct GraphNodeObjectParent *) gCurGraphNodeList[gCurGraphNodeIndex - 1])
-                    ->sharedChild = graphNode;
+            struct GraphNode *parent = gCurGraphNodeList[gCurGraphNodeIndex - 1];
+            if (parent == NULL) {
+                return;
+            }
+            if (parent->type == GRAPH_NODE_TYPE_OBJECT_PARENT) {
+                struct GraphNodeObjectParent *objParent = (struct GraphNodeObjectParent *) parent;
+                objParent->sharedChild = graphNode;
+#ifndef TARGET_N64
+                dynos_actor_override(NULL, (void *) &objParent->sharedChild);
+#endif
             } else {
-                geo_add_child(gCurGraphNodeList[gCurGraphNodeIndex - 1], graphNode);
+                geo_add_child(parent, graphNode);
             }
         }
     }

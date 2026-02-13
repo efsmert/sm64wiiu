@@ -1,4 +1,5 @@
 #include <PR/ultratypes.h>
+#include <stdio.h>
 
 #include "sm64.h"
 #include "area.h"
@@ -70,6 +71,9 @@ u32 gTimeStopState;
  */
 struct Object gObjectPool[OBJECT_POOL_CAPACITY];
 #endif
+
+// Co-op DX parity: store mario object pointers by player index.
+struct Object *gMarioObjects[MAX_PLAYERS];
 
 /**
  * A special object whose purpose is to act as a parent for macro objects.
@@ -487,39 +491,54 @@ void spawn_objects_from_info(UNUSED s32 unused, struct SpawnInfo *spawnInfo) {
         if ((spawnInfo->behaviorArg & (RESPAWN_INFO_DONT_RESPAWN << 8))
             != (RESPAWN_INFO_DONT_RESPAWN << 8)) {
             object = create_object(script);
+            if (object != NULL) {
 
-            // Behavior parameters are often treated as four separate bytes, but
-            // are stored as an s32.
-            object->oBehParams = spawnInfo->behaviorArg;
-            // The second byte of the behavior parameters is copied over to a special field
-            // as it is the most frequently used by objects.
-            object->oBehParams2ndByte = ((spawnInfo->behaviorArg) >> 16) & 0xFF;
+                // Behavior parameters are often treated as four separate bytes, but
+                // are stored as an s32.
+                object->oBehParams = spawnInfo->behaviorArg;
+                // The second byte of the behavior parameters is copied over to a special field
+                // as it is the most frequently used by objects.
+                object->oBehParams2ndByte = (spawnInfo->behaviorArg >> 16) & 0xFF;
 
-            object->behavior = script;
-            object->unused1 = 0;
+                object->behavior = smlua_override_behavior(script);
+                object->unused1 = 0;
 
-            // Record death/collection in the SpawnInfo
-            object->respawnInfoType = RESPAWN_INFO_TYPE_32;
-            object->respawnInfo = &spawnInfo->behaviorArg;
+                // set the sync id (Wii U doesn't have full sync-object registry yet)
+                if (spawnInfo->syncID) {
+                    object->oSyncID = spawnInfo->syncID;
+                }
 
-            if (spawnInfo->behaviorArg & 0x01) {
-                gMarioObject = object;
-                geo_make_first_child(&object->header.gfx.node);
+                // Record death/collection in the SpawnInfo
+                object->respawnInfoType = RESPAWN_INFO_TYPE_32;
+                object->respawnInfo = &spawnInfo->behaviorArg;
+
+                // found a player
+                if (spawnInfo->behaviorArg & ((u32)1 << 31) && object->behavior == bhvMario) {
+                    u16 playerIndex = (spawnInfo->behaviorArg & ~((u32)1 << 31));
+                    object->oBehParams = playerIndex + 1;
+                    if (playerIndex < MAX_PLAYERS) {
+                        gMarioObjects[playerIndex] = object;
+                    }
+                    if (playerIndex == 0) {
+                        gMarioObject = object;
+                    }
+                    geo_make_first_child(&object->header.gfx.node);
+                }
+
+                geo_obj_init_spawninfo(&object->header.gfx, spawnInfo);
+
+                object->oPosX = spawnInfo->startPos[0];
+                object->oPosY = spawnInfo->startPos[1];
+                object->oPosZ = spawnInfo->startPos[2];
+
+                object->oFaceAnglePitch = spawnInfo->startAngle[0];
+                object->oFaceAngleYaw = spawnInfo->startAngle[1];
+                object->oFaceAngleRoll = spawnInfo->startAngle[2];
+
+                object->oMoveAnglePitch = spawnInfo->startAngle[0];
+                object->oMoveAngleYaw = spawnInfo->startAngle[1];
+                object->oMoveAngleRoll = spawnInfo->startAngle[2];
             }
-
-            geo_obj_init_spawninfo(&object->header.gfx, spawnInfo);
-
-            object->oPosX = spawnInfo->startPos[0];
-            object->oPosY = spawnInfo->startPos[1];
-            object->oPosZ = spawnInfo->startPos[2];
-
-            object->oFaceAnglePitch = spawnInfo->startAngle[0];
-            object->oFaceAngleYaw = spawnInfo->startAngle[1];
-            object->oFaceAngleRoll = spawnInfo->startAngle[2];
-
-            object->oMoveAnglePitch = spawnInfo->startAngle[0];
-            object->oMoveAngleYaw = spawnInfo->startAngle[1];
-            object->oMoveAngleRoll = spawnInfo->startAngle[2];
         }
 
         spawnInfo = spawnInfo->next;
@@ -538,6 +557,9 @@ void clear_objects(void) {
     gTHIWaterDrained = 0;
     gTimeStopState = 0;
     gMarioObject = NULL;
+    for (i = 0; i < MAX_PLAYERS; i++) {
+        gMarioObjects[i] = NULL;
+    }
     gMarioCurrentRoom = 0;
 
     for (i = 0; i < 60; i++) {

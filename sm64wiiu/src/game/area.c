@@ -25,11 +25,18 @@
 #ifndef TARGET_N64
 #include "pc/djui/djui.h"
 #include "data/dynos.c.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 #endif
 
-struct SpawnInfo gPlayerSpawnInfos[1];
+// Co-op DX parity / safety:
+// Many UI/Lua/network paths index Mario/spawn arrays by [0..MAX_PLAYERS).
+// Even if Wii U gameplay currently only uses player 0, allocating the full
+// arrays prevents out-of-bounds memory corruption when hosting/joining.
+struct SpawnInfo gPlayerSpawnInfos[MAX_PLAYERS];
 struct GraphNode *D_8033A160[0x100];
-struct Area gAreaData[8];
+struct Area gAreaData[MAX_AREAS];
 
 struct WarpTransition gWarpTransition;
 
@@ -190,7 +197,7 @@ void clear_areas(void) {
     gWarpTransition.pauseRendering = FALSE;
     gMarioSpawnInfo->areaIndex = -1;
 
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < MAX_AREAS; i++) {
         gAreaData[i].index = i;
         gAreaData[i].flags = 0;
         gAreaData[i].terrainType = 0;
@@ -210,6 +217,7 @@ void clear_areas(void) {
         gAreaData[i].dialog[1] = DIALOG_NONE;
         gAreaData[i].musicParam = 0;
         gAreaData[i].musicParam2 = 0;
+        gAreaData[i].nextSyncID = 10;
     }
 }
 
@@ -222,7 +230,7 @@ void clear_area_graph_nodes(void) {
         gWarpTransition.isActive = FALSE;
     }
 
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < MAX_AREAS; i++) {
         if (gAreaData[i].unk04 != NULL) {
             geo_call_global_function_nodes(&gAreaData[i].unk04->node, GEO_CONTEXT_AREA_INIT);
             gAreaData[i].unk04 = NULL;
@@ -231,6 +239,17 @@ void clear_area_graph_nodes(void) {
 }
 
 void load_area(s32 index) {
+    if (index < 0 || index >= MAX_AREAS) {
+#ifdef TARGET_WII_U
+        static u32 sLoadAreaInvalidIndexLogCount = 0;
+        if (sLoadAreaInvalidIndexLogCount < 32) {
+            WHBLogPrintf("area: load_area invalid index=%d", (int) index);
+            sLoadAreaInvalidIndexLogCount++;
+        }
+#endif
+        return;
+    }
+
     if (gCurrentArea == NULL && gAreaData[index].unk04 != NULL) {
         gCurrentArea = &gAreaData[index];
         gCurrAreaIndex = gCurrentArea->index;
@@ -246,6 +265,21 @@ void load_area(s32 index) {
 
         load_obj_warp_nodes();
         geo_call_global_function_nodes(&gCurrentArea->unk04->node, GEO_CONTEXT_AREA_LOAD);
+    } else if (gCurrentArea == NULL) {
+#ifdef TARGET_WII_U
+        static u32 sLoadAreaMissingRootLogCount = 0;
+        if (sLoadAreaMissingRootLogCount < 32) {
+            u32 areaMask = 0;
+            for (s32 i = 0; i < MAX_AREAS; ++i) {
+                if (gAreaData[i].unk04 != NULL) {
+                    areaMask |= (1u << i);
+                }
+            }
+            WHBLogPrintf("area: load_area missing root index=%d areaMask=0x%02X",
+                         (int) index, (unsigned int) areaMask);
+            sLoadAreaMissingRootLogCount++;
+        }
+#endif
     }
 }
 
@@ -263,6 +297,18 @@ void unload_area(void) {
 void load_mario_area(void) {
     stop_sounds_in_continuous_banks();
     load_area(gMarioSpawnInfo->areaIndex);
+
+    if (gCurrentArea == NULL) {
+#ifdef TARGET_WII_U
+        static u32 sLoadMarioAreaFailLogCount = 0;
+        if (sLoadMarioAreaFailLogCount < 32) {
+            WHBLogPrintf("area: load_mario_area failed spawnArea=%d currArea=%d",
+                         (int) gMarioSpawnInfo->areaIndex, (int) gCurrAreaIndex);
+            sLoadMarioAreaFailLogCount++;
+        }
+#endif
+        return;
+    }
 
     if (gCurrentArea->index == gMarioSpawnInfo->areaIndex) {
         gCurrentArea->flags |= 0x01;

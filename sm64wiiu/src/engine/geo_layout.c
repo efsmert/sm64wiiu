@@ -8,6 +8,9 @@
 #include "game/memory.h"
 #include "graph_node.h"
 #include "geo_commands.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 // Forward declaration to avoid pulling DynOS/Lua headers into the engine layer.
 void dynos_level_load_background(void *ptr);
@@ -148,6 +151,7 @@ UNUSED s32 D_8038BCA8;
  */
 struct GraphNode **gGeoViews;
 u16 gGeoNumViews; // length of gGeoViews array
+static const void *gGeoSourcePtr;
 
 uintptr_t gGeoLayoutStack[16];
 struct GraphNode *gCurGraphNodeList[32];
@@ -156,18 +160,32 @@ s16 gGeoLayoutStackIndex; // similar to SP register in MIPS
 UNUSED s16 D_8038BD7C;
 s16 gGeoLayoutReturnIndex; // similar to RA register in MIPS
 u8 *gGeoLayoutCommand;
+u8 gGeoCmdSwapEndianFields;
 
 u32 unused_8038B894[3] = { 0 };
+
+static inline bool geo_layout_ptr_is_plausible(const void *ptr) {
+    return (uintptr_t) ptr >= 0x10000000u;
+}
 
 /*
   0x00: Branch and store return address
    cmd+0x04: void *branchTarget
 */
 void geo_layout_cmd_branch_and_link(void) {
+    if (gGeoLayoutStackIndex + 2 > (s16) ARRAY_COUNT(gGeoLayoutStack)) {
+        printf("geo_layout: stack overflow cmd=%p src=%p\n", gGeoLayoutCommand, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+        return;
+    }
     gGeoLayoutStack[gGeoLayoutStackIndex++] = (uintptr_t) (gGeoLayoutCommand + CMD_PROCESS_OFFSET(8));
     gGeoLayoutStack[gGeoLayoutStackIndex++] = (gCurGraphNodeIndex << 16) + gGeoLayoutReturnIndex;
     gGeoLayoutReturnIndex = gGeoLayoutStackIndex;
     gGeoLayoutCommand = segmented_to_virtual(cur_geo_cmd_ptr(0x04));
+    if (!geo_layout_ptr_is_plausible(gGeoLayoutCommand)) {
+        printf("geo_layout: bad branch_and_link target=%p src=%p\n", gGeoLayoutCommand, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+    }
 }
 
 // 0x01: Terminate geo layout
@@ -184,19 +202,42 @@ void geo_layout_cmd_end(void) {
 */
 void geo_layout_cmd_branch(void) {
     if (cur_geo_cmd_u8(0x01) == 1) {
+        if (gGeoLayoutStackIndex + 1 > (s16) ARRAY_COUNT(gGeoLayoutStack)) {
+            printf("geo_layout: stack overflow cmd=%p src=%p\n", gGeoLayoutCommand, gGeoSourcePtr);
+            gGeoLayoutCommand = NULL;
+            return;
+        }
         gGeoLayoutStack[gGeoLayoutStackIndex++] = (uintptr_t) (gGeoLayoutCommand + CMD_PROCESS_OFFSET(8));
     }
 
     gGeoLayoutCommand = segmented_to_virtual(cur_geo_cmd_ptr(0x04));
+    if (!geo_layout_ptr_is_plausible(gGeoLayoutCommand)) {
+        printf("geo_layout: bad branch target=%p src=%p\n", gGeoLayoutCommand, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+    }
 }
 
 // 0x03: Return from branch
 void geo_layout_cmd_return(void) {
+    if (gGeoLayoutStackIndex <= 0) {
+        printf("geo_layout: stack underflow on return src=%p\n", gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+        return;
+    }
     gGeoLayoutCommand = (u8 *) gGeoLayoutStack[--gGeoLayoutStackIndex];
+    if (!geo_layout_ptr_is_plausible(gGeoLayoutCommand)) {
+        printf("geo_layout: bad return target=%p src=%p\n", gGeoLayoutCommand, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+    }
 }
 
 // 0x04: Open node
 void geo_layout_cmd_open_node(void) {
+    if (gCurGraphNodeIndex + 1 >= (s16) ARRAY_COUNT(gCurGraphNodeList)) {
+        printf("geo_layout: node stack overflow idx=%d src=%p\n", gCurGraphNodeIndex, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+        return;
+    }
     gCurGraphNodeList[gCurGraphNodeIndex + 1] = gCurGraphNodeList[gCurGraphNodeIndex];
     gCurGraphNodeIndex++;
     gGeoLayoutCommand += 0x04 << CMD_SIZE_SHIFT;
@@ -204,6 +245,11 @@ void geo_layout_cmd_open_node(void) {
 
 // 0x05: Close node
 void geo_layout_cmd_close_node(void) {
+    if (gCurGraphNodeIndex <= 0) {
+        printf("geo_layout: node stack underflow src=%p\n", gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+        return;
+    }
     gCurGraphNodeIndex--;
     gGeoLayoutCommand += 0x04 << CMD_SIZE_SHIFT;
 }
@@ -259,6 +305,7 @@ void geo_layout_cmd_update_node_flags(void) {
 void geo_layout_cmd_node_root(void) {
     s32 i;
     struct GraphNodeRoot *graphNode;
+    s16 requestedViews;
 
     s16 x = cur_geo_cmd_s16(0x04);
     s16 y = cur_geo_cmd_s16(0x06);
@@ -268,7 +315,14 @@ void geo_layout_cmd_node_root(void) {
     // number of entries to allocate for gGeoViews array
     // at least 2 are allocated by default
     // cmd+0x02 = 0x00: Mario face, 0x0A: all other levels
-    gGeoNumViews = cur_geo_cmd_s16(0x02) + 2;
+    requestedViews = cur_geo_cmd_s16(0x02);
+    if (requestedViews < 0 || requestedViews > 64) {
+        printf("geo_layout: invalid root views=%d cmd=%p src=%p\n",
+               requestedViews, gGeoLayoutCommand, gGeoSourcePtr);
+        gGeoLayoutCommand = NULL;
+        return;
+    }
+    gGeoNumViews = (u16) (requestedViews + 2);
 
     graphNode = init_graph_node_root(gGraphNodePool, NULL, 0, x, y, width, height);
 
@@ -922,24 +976,19 @@ void geo_layout_cmd_bone(void) {
 }
 
 struct GraphNode *process_geo_layout(struct AllocOnlyPool *pool, void *segptr) {
-    // set by register_scene_graph_node when gCurGraphNodeIndex is 0
-    // and gCurRootGraphNode is NULL
-    gCurRootGraphNode = NULL;
-
-    gGeoNumViews = 0; // number of entries in gGeoViews
-
-    gCurGraphNodeList[0] = 0;
-    gCurGraphNodeIndex = 0; // incremented by cmd_open_node, decremented by cmd_close_node
-
-    gGeoLayoutStackIndex = 2;
-    gGeoLayoutReturnIndex = 2; // stack index is often copied here?
-
-    gGeoLayoutCommand = segmented_to_virtual(segptr);
-
-    gGraphNodePool = pool;
-
-    gGeoLayoutStack[0] = 0;
-    gGeoLayoutStack[1] = 0;
+    u8 *sourceVirt = segmented_to_virtual(segptr);
+    gGeoSourcePtr = segptr;
+    if (!geo_layout_ptr_is_plausible(sourceVirt)) {
+        printf("geo_layout: invalid source ptr=%p (virt=%p)\n", segptr, sourceVirt);
+#ifdef TARGET_WII_U
+        static u32 sGeoInvalidSourceLogs = 0;
+        if (sGeoInvalidSourceLogs < 32) {
+            WHBLogPrintf("geo_layout: invalid source ptr=%p virt=%p", segptr, sourceVirt);
+            sGeoInvalidSourceLogs++;
+        }
+#endif
+        return NULL;
+    }
 
     const GeoLayoutCommandProc *jumpTable = GeoLayoutJumpTable;
     if (jumpTable[0] != geo_layout_cmd_branch_and_link ||
@@ -954,15 +1003,123 @@ struct GraphNode *process_geo_layout(struct AllocOnlyPool *pool, void *segptr) {
         jumpTable = GeoLayoutJumpTableCanonical;
     }
 
-    while (gGeoLayoutCommand != NULL) {
-        u8 cmd = gGeoLayoutCommand[0x00];
-        if (cmd >= (sizeof(GeoLayoutJumpTableCanonical) / sizeof(GeoLayoutJumpTableCanonical[0]))) {
-            printf("geo_layout: unknown cmd %u at %p (segptr=%p)\n", cmd, gGeoLayoutCommand, segptr);
-            gGeoLayoutCommand = NULL;
+    gGraphNodePool = pool;
+    u32 safety = 0;
+    for (u8 attempt = 0; attempt < 2; ++attempt) {
+        // set by register_scene_graph_node when gCurGraphNodeIndex is 0
+        // and gCurRootGraphNode is NULL
+        gCurRootGraphNode = NULL;
+        gGeoNumViews = 0; // number of entries in gGeoViews
+        gCurGraphNodeList[0] = 0;
+        gCurGraphNodeIndex = 0; // incremented by cmd_open_node, decremented by cmd_close_node
+        gGeoLayoutStackIndex = 2;
+        gGeoLayoutReturnIndex = 2; // stack index is often copied here?
+        gGeoLayoutCommand = sourceVirt;
+        gGeoLayoutStack[0] = 0;
+        gGeoLayoutStack[1] = 0;
+        gGeoCmdSwapEndianFields = (attempt == 1);
+
+#ifdef TARGET_WII_U
+        static u32 sGeoParseStartLogs = 0;
+        if (sGeoParseStartLogs < 64) {
+            const u8 *bytes = (const u8 *) gGeoLayoutCommand;
+            WHBLogPrintf("geo_layout: parse start src=%p virt=%p swap=%u bytes=%02X %02X %02X %02X %02X %02X %02X %02X",
+                         segptr, gGeoLayoutCommand, (unsigned) gGeoCmdSwapEndianFields,
+                         (unsigned) bytes[0], (unsigned) bytes[1], (unsigned) bytes[2], (unsigned) bytes[3],
+                         (unsigned) bytes[4], (unsigned) bytes[5], (unsigned) bytes[6], (unsigned) bytes[7]);
+            sGeoParseStartLogs++;
+        }
+#endif
+
+        safety = 0;
+        while (gGeoLayoutCommand != NULL) {
+            if (++safety > 65536) {
+                printf("geo_layout: abort runaway parse src=%p cmd=%p\n", segptr, gGeoLayoutCommand);
+#ifdef TARGET_WII_U
+                static u32 sGeoRunawayLogs = 0;
+                if (sGeoRunawayLogs < 32) {
+                    WHBLogPrintf("geo_layout: abort runaway parse src=%p cmd=%p", segptr, gGeoLayoutCommand);
+                    sGeoRunawayLogs++;
+                }
+#endif
+                gGeoLayoutCommand = NULL;
+                break;
+            }
+
+            u8 cmd = gGeoLayoutCommand[0x00];
+            if (cmd >= (sizeof(GeoLayoutJumpTableCanonical) / sizeof(GeoLayoutJumpTableCanonical[0]))) {
+                printf("geo_layout: unknown cmd %u at %p (segptr=%p)\n", cmd, gGeoLayoutCommand, segptr);
+#ifdef TARGET_WII_U
+                static u32 sGeoUnknownCmdLogs = 0;
+                if (sGeoUnknownCmdLogs < 32) {
+                    WHBLogPrintf("geo_layout: unknown cmd=%u at=%p src=%p bytes=%02X %02X %02X %02X",
+                                 (unsigned) cmd, gGeoLayoutCommand, segptr,
+                                 (unsigned) gGeoLayoutCommand[0],
+                                 (unsigned) gGeoLayoutCommand[1],
+                                 (unsigned) gGeoLayoutCommand[2],
+                                 (unsigned) gGeoLayoutCommand[3]);
+                    sGeoUnknownCmdLogs++;
+                }
+#endif
+                gGeoLayoutCommand = NULL;
+                break;
+            }
+            jumpTable[cmd]();
+        }
+
+        if (gCurRootGraphNode != NULL) {
             break;
         }
-        jumpTable[cmd]();
+
+        if (attempt == 0) {
+            const u8 *srcBytes = (const u8 *) sourceVirt;
+            // DynOS custom geos built on little-endian hosts can store s16/u32
+            // command payload fields byte-reversed on Wii U. Retry with swapped
+            // field decoding if this looks like that pattern.
+            bool likelyLittleEndianFields =
+                (safety <= 2 &&
+                 srcBytes[0] == 0x08 &&
+                 srcBytes[1] == 0x00 &&
+                 srcBytes[2] != 0x00 &&
+                 srcBytes[3] == 0x00);
+            if (!likelyLittleEndianFields) {
+                break;
+            }
+#ifdef TARGET_WII_U
+            static u32 sGeoRetrySwapLogs = 0;
+            if (sGeoRetrySwapLogs < 32) {
+                WHBLogPrintf("geo_layout: retry swap-endian-fields src=%p bytes=%02X %02X %02X %02X",
+                             segptr,
+                             (unsigned) srcBytes[0], (unsigned) srcBytes[1],
+                             (unsigned) srcBytes[2], (unsigned) srcBytes[3]);
+                sGeoRetrySwapLogs++;
+            }
+#endif
+        }
     }
+
+    gGeoCmdSwapEndianFields = 0;
+
+#ifdef TARGET_WII_U
+    if (gCurRootGraphNode == NULL) {
+        static u32 sGeoNullRootLogs = 0;
+        if (sGeoNullRootLogs < 64) {
+            const u8 *srcBytes = (const u8 *) sourceVirt;
+            if (geo_layout_ptr_is_plausible(srcBytes)) {
+                WHBLogPrintf("geo_layout: parse result NULL src=%p lastCmd=%p steps=%u bytes=%02X %02X %02X %02X %02X %02X %02X %02X",
+                             segptr, gGeoLayoutCommand, (unsigned) safety,
+                             (unsigned) srcBytes[0], (unsigned) srcBytes[1],
+                             (unsigned) srcBytes[2], (unsigned) srcBytes[3],
+                             (unsigned) srcBytes[4], (unsigned) srcBytes[5],
+                             (unsigned) srcBytes[6], (unsigned) srcBytes[7]);
+            } else {
+                WHBLogPrintf("geo_layout: parse result NULL src=%p lastCmd=%p steps=%u bytes=<bad-ptr:%p>",
+                             segptr, gGeoLayoutCommand, (unsigned) safety, srcBytes);
+            }
+            sGeoNullRootLogs++;
+        }
+    }
+#endif
 
     if (gCurRootGraphNode) {
         gCurRootGraphNode->georef = (const void *) segptr;

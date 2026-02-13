@@ -222,6 +222,23 @@ const BehaviorScript *smlua_get_hooked_behavior_from_id(s32 id, bool returnOrigi
     return NULL;
 }
 
+const BehaviorScript *smlua_override_behavior(const BehaviorScript *behavior) {
+    if (behavior == NULL) {
+        return NULL;
+    }
+
+    const BehaviorScript *hooked = smlua_get_hooked_behavior_from_id((s32)get_id_from_behavior(behavior), false);
+    return hooked != NULL ? hooked : behavior;
+}
+
+bool smlua_is_behavior_hooked(const BehaviorScript *behavior) {
+    if (behavior == NULL) {
+        return false;
+    }
+
+    return smlua_get_hooked_behavior_from_id((s32)get_id_from_behavior(behavior), false) != NULL;
+}
+
 // DynOS compatibility: register custom behavior IDs and expose globals to Lua like CoopDX.
 int smlua_hook_custom_bhv(BehaviorScript *bhvScript, const char *bhvName) {
     if (bhvScript == NULL || bhvName == NULL || bhvName[0] == '\0') {

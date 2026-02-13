@@ -8,6 +8,9 @@
 #include "game/rendering_graph_node.h"
 #include "game/area.h"
 #include "geo_layout.h"
+#ifndef TARGET_N64
+#include "data/dynos.c.h"
+#endif
 
 // unused Mtx(s)
 s16 identityMtx[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
@@ -383,6 +386,9 @@ struct GraphNodeObject *init_graph_node_object(struct AllocOnlyPool *pool,
         graphNode->skipInViewCheck = false;
         graphNode->inited = false;
         graphNode->node.flags |= GRAPH_RENDER_HAS_ANIMATION;
+#ifndef TARGET_N64
+        dynos_actor_override(NULL, (void *) &graphNode->sharedChild);
+#endif
     }
 
     return graphNode;
@@ -524,6 +530,9 @@ struct GraphNodeObjectParent *init_graph_node_object_parent(struct AllocOnlyPool
     if (graphNode != NULL) {
         init_scene_graph_node_links(&graphNode->node, GRAPH_NODE_TYPE_OBJECT_PARENT);
         graphNode->sharedChild = sharedChild;
+#ifndef TARGET_N64
+        dynos_actor_override(NULL, (void *) &graphNode->sharedChild);
+#endif
     }
 
     return graphNode;
@@ -810,6 +819,9 @@ void geo_obj_init(struct GraphNodeObject *graphNode, void *sharedChild, Vec3f po
     graphNode->disableAutomaticShadowPos = false;
     graphNode->skipInViewCheck = false;
     graphNode->inited = false;
+#ifndef TARGET_N64
+    dynos_actor_override(NULL, (void *) &graphNode->sharedChild);
+#endif
 
     graphNode->node.flags |= GRAPH_RENDER_ACTIVE;
     graphNode->node.flags &= ~GRAPH_RENDER_INVISIBLE;
@@ -855,6 +867,9 @@ void geo_obj_init_spawninfo(struct GraphNodeObject *graphNode, struct SpawnInfo 
     graphNode->disableAutomaticShadowPos = false;
     graphNode->skipInViewCheck = false;
     graphNode->inited = false;
+#ifndef TARGET_N64
+    dynos_actor_override(NULL, (void *) &graphNode->sharedChild);
+#endif
 
     graphNode->node.flags |= GRAPH_RENDER_ACTIVE;
     graphNode->node.flags &= ~GRAPH_RENDER_INVISIBLE;
