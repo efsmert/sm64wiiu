@@ -36,6 +36,10 @@ static s32 sDynosWarpLevelNum = -1;
 static s32 sDynosWarpAreaNum  = -1;
 static s32 sDynosWarpActNum   = -1;
 static s32 sDynosWarpNodeNum  = -1;
+static s32 sDynosLastWarpLevelNum = -1;
+static s32 sDynosLastWarpAreaNum  = -1;
+static s32 sDynosLastWarpActNum   = -1;
+static u32 sDynosLastWarpFrame    = 0;
 static s32 sDynosExitLevelNum = -1;
 static s32 sDynosExitAreaNum  = -1;
 
@@ -105,6 +109,7 @@ bool DynOS_Warp_ToLevel(s32 aLevel, s32 aArea, s32 aAct) {
     s16 *warp = DynOS_Level_GetWarpEntry(aLevel, aArea);
 #ifdef TARGET_WII_U
     static u32 sWarpToLevelLogCount = 0;
+    static u32 sWarpToLevelSkipLogCount = 0;
 #endif
     if (!warp) {
 #ifdef TARGET_WII_U
@@ -114,6 +119,41 @@ bool DynOS_Warp_ToLevel(s32 aLevel, s32 aArea, s32 aAct) {
         }
 #endif
         return false;
+    }
+
+    // Ignore duplicate same-destination requests while one is already pending.
+    if (sDynosWarpNodeNum == -1 &&
+        sDynosWarpLevelNum == aLevel &&
+        sDynosWarpAreaNum == aArea &&
+        sDynosWarpActNum == aAct) {
+#ifdef TARGET_WII_U
+        if (sWarpToLevelSkipLogCount < 64) {
+            WHBLogPrintf("dynos: warp_to_level SKIP pending-duplicate level=%d area=%d act=%d",
+                         (int)aLevel, (int)aArea, (int)aAct);
+            sWarpToLevelSkipLogCount++;
+        }
+#endif
+        return true;
+    }
+
+    // Flood lobby can briefly re-request the same warp right after spawn.
+    // Suppress immediate same-destination re-warps once we've just landed.
+    if (sDynosWarpLevelNum == -1 &&
+        sDynosLastWarpLevelNum == aLevel &&
+        sDynosLastWarpAreaNum == aArea &&
+        sDynosLastWarpActNum == aAct &&
+        gCurrLevelNum == aLevel &&
+        gCurrAreaIndex == aArea &&
+        (u32)(gGlobalTimer - sDynosLastWarpFrame) <= 120) {
+#ifdef TARGET_WII_U
+        if (sWarpToLevelSkipLogCount < 64) {
+            WHBLogPrintf("dynos: warp_to_level SKIP recent-duplicate level=%d area=%d act=%d dt=%u",
+                         (int)aLevel, (int)aArea, (int)aAct,
+                         (unsigned)(gGlobalTimer - sDynosLastWarpFrame));
+            sWarpToLevelSkipLogCount++;
+        }
+#endif
+        return true;
     }
 
 #ifdef TARGET_WII_U
@@ -412,6 +452,10 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
 #endif
 
             // Reset values
+            sDynosLastWarpLevelNum = gCurrLevelNum;
+            sDynosLastWarpAreaNum = gCurrAreaIndex;
+            sDynosLastWarpActNum = sDynosWarpActNum;
+            sDynosLastWarpFrame = gGlobalTimer;
             sDynosWarpTargetArea = -1;
             sDynosWarpLevelNum   = -1;
             sDynosWarpAreaNum    = -1;

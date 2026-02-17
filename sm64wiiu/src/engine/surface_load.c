@@ -16,10 +16,116 @@
 #include "game/macro_special_objects.h"
 #include "surface_collision.h"
 #include "game/mario.h"
+#include "game/level_update.h"
 #include "game/object_list_processor.h"
 #include "surface_load.h"
+#ifndef TARGET_N64
+#include "pc/debuglog.h"
+#endif
 
 s32 unused8038BE90;
+
+// DynOS custom stage collision data is typically authored/packed on little-endian hosts.
+// Wii U is big-endian, so reading that stream as `s16*` without swapping will mis-parse
+// commands (e.g. 0x0040 becomes 0x4000), which can walk off the end of the stream and
+// corrupt surface partitions (leading to camera find_ceil crashes in custom stages).
+#ifdef TARGET_WII_U
+// Forward decl (definition lives further down in this file).
+static s32 surface_has_force(s16 surfaceType);
+
+static inline u16 bswap16_u16(u16 v) { return (u16)((v << 8) | (v >> 8)); }
+
+static bool terrain_data_looks_little_endian(const s16 *data) {
+    if (!data) { return false; }
+    // Heuristic: built-in collision arrays live in the RPX image; avoid patching those in-place.
+    uintptr_t addr = (uintptr_t) data;
+    if (addr < 0x10000000u) { return false; }
+
+    // Count how often raw vs swapped values look like known terrain control commands.
+    // This is more robust than checking only the first word (some DynOS streams can
+    // have extra prefix words depending on how they are packed).
+    static const u16 kCmds[] = {
+        TERRAIN_LOAD_VERTICES,
+        TERRAIN_LOAD_CONTINUE,
+        TERRAIN_LOAD_END,
+        TERRAIN_LOAD_OBJECTS,
+        TERRAIN_LOAD_ENVIRONMENT,
+    };
+
+    u32 rawHits = 0;
+    u32 swapHits = 0;
+    for (u32 i = 0; i < 16; i++) {
+        u16 raw = (u16) data[i];
+        u16 swp = bswap16_u16(raw);
+        for (u32 j = 0; j < (sizeof(kCmds) / sizeof(kCmds[0])); j++) {
+            if (raw == kCmds[j]) { rawHits++; }
+            if (swp == kCmds[j]) { swapHits++; }
+        }
+    }
+
+    // If swapped view finds commands but raw view finds none, this is almost certainly LE data.
+    return (swapHits > 0 && rawHits == 0);
+}
+
+static u32 terrain_stream_word_count_swapped(const s16 *data) {
+    const s16 *p = data;
+    bool end = false;
+    while (!end) {
+        u16 cmd = bswap16_u16((u16) *p++);
+        if (TERRAIN_LOAD_IS_SURFACE_TYPE_LOW(cmd) || TERRAIN_LOAD_IS_SURFACE_TYPE_HIGH(cmd)) {
+            u16 numSurfaces = bswap16_u16((u16) *p++);
+            bool hasForce = surface_has_force(cmd);
+            p += (3 + (hasForce ? 1 : 0)) * (s32) numSurfaces;
+            continue;
+        }
+        switch (cmd) {
+            case TERRAIN_LOAD_VERTICES: {
+                u16 numVerts = bswap16_u16((u16) *p++);
+                p += 3 * (s32) numVerts;
+            } break;
+            case TERRAIN_LOAD_OBJECTS: {
+                u16 len = bswap16_u16((u16) *p++);
+                p += 4 * (s32) len;
+            } break;
+            case TERRAIN_LOAD_ENVIRONMENT: {
+                u16 numRegions = bswap16_u16((u16) *p++);
+                p += 6 * (s32) numRegions;
+            } break;
+            case TERRAIN_LOAD_CONTINUE:
+                break;
+            case TERRAIN_LOAD_END:
+                end = true;
+                break;
+            default: {
+                // Unknown command; treat like a surface type (format: cmd, count, tris...)
+                u16 numSurfaces = bswap16_u16((u16) *p++);
+                bool hasForce = surface_has_force(cmd);
+                p += (3 + (hasForce ? 1 : 0)) * (s32) numSurfaces;
+            } break;
+        }
+    }
+    return (u32)(p - data);
+}
+
+static s16 *terrain_make_byteswapped_copy(const s16 *data, u32 *outWords) {
+    if (outWords) { *outWords = 0; }
+    if (!data) { return NULL; }
+
+    u32 words = terrain_stream_word_count_swapped(data);
+    // Hard cap to avoid infinite loops on corrupted inputs.
+    if (words == 0 || words > (1024u * 1024u)) { return NULL; }
+
+    s16 *copy = malloc(words * sizeof(s16));
+    if (!copy) { return NULL; }
+
+    for (u32 i = 0; i < words; i++) {
+        copy[i] = (s16) bswap16_u16((u16) data[i]);
+    }
+
+    if (outWords) { *outWords = words; }
+    return copy;
+}
+#endif // TARGET_WII_U
 
 /**
  * Partitions for course and object surfaces. The arrays represent
@@ -46,6 +152,56 @@ static struct GrowingArray *sSurfacePool = NULL;
 
 
 u8 unused8038EEA8[0x30];
+
+bool surface_node_ptr_is_valid(struct SurfaceNode *node) {
+    if (node == NULL) { return true; }
+#ifdef USE_SYSTEM_MALLOC
+#ifdef TARGET_WII_U
+    // Fast checks first, then verify membership in the active surface-node pools.
+    uintptr_t addr = (uintptr_t) node;
+    if ((addr & 0x3u) != 0) { return false; }
+    if (addr < 0x10000000u || addr >= 0x80000000u) { return false; }
+    if (sStaticSurfaceNodePool == NULL || sDynamicSurfaceNodePool == NULL) { return false; }
+    if (alloc_only_pool_contains_ptr(sStaticSurfaceNodePool, node)) { return true; }
+    if (alloc_only_pool_contains_ptr(sDynamicSurfaceNodePool, node)) { return true; }
+    return false;
+#else
+    return true;
+#endif
+#else
+    if (!sSurfaceNodePool || !sSurfaceNodePool->buffer) { return false; }
+    // Only scan the currently used range.
+    u32 used = sSurfaceNodePool->count;
+    for (u32 i = 0; i < used; i++) {
+        if (sSurfaceNodePool->buffer[i] == (void *) node) { return true; }
+    }
+    return false;
+#endif
+}
+
+bool surface_ptr_is_valid(struct Surface *surf) {
+    if (surf == NULL) { return false; }
+#ifdef USE_SYSTEM_MALLOC
+#ifdef TARGET_WII_U
+    uintptr_t addr = (uintptr_t) surf;
+    if ((addr & 0x3u) != 0) { return false; }
+    if (addr < 0x10000000u || addr >= 0x80000000u) { return false; }
+    if (sStaticSurfacePool == NULL || sDynamicSurfacePool == NULL) { return false; }
+    if (alloc_only_pool_contains_ptr(sStaticSurfacePool, surf)) { return true; }
+    if (alloc_only_pool_contains_ptr(sDynamicSurfacePool, surf)) { return true; }
+    return false;
+#else
+    return true;
+#endif
+#else
+    if (!sSurfacePool || !sSurfacePool->buffer) { return false; }
+    u32 used = sSurfacePool->count;
+    for (u32 i = 0; i < used; i++) {
+        if (sSurfacePool->buffer[i] == (void *) surf) { return true; }
+    }
+    return false;
+#endif
+}
 
 /**
  * Allocate the part of the surface node pool to contain a surface node.
@@ -641,31 +797,77 @@ void load_area_terrain(s16 index, s16 *data, s8 *surfaceRooms, s16 *macroObjects
 #endif
 
     clear_static_surfaces();
+    // CoopDX-style growing pools reuse Surface/SurfaceNode allocations between area loads.
+    // If we don't clear the dynamic partition lists here, stale dynamic nodes from the
+    // previous area can still be referenced (and then overwritten when we reuse the pools),
+    // which can crash early camera/mario collision queries (e.g. find_ceil) in custom stages.
+    clear_spatial_partition(&gDynamicSurfacePartition[0][0]);
 
     // A while loop iterating through each section of the level data. Sections of data
     // are prefixed by a terrain "type." This type is reused for surfaces as the surface
     // type.
+#ifdef TARGET_WII_U
+    // Wii U is big-endian, but DynOS custom collision streams are often authored on LE hosts.
+    // Parse from a swapped copy (don't mutate the original buffer).
+    s16 *parseData = data;
+    s16 *swappedCopy = NULL;
+    u32 swappedWords = 0;
+
+#ifndef TARGET_N64
+    static u32 sTerrainHdrLogCounter = 0;
+    if (sTerrainHdrLogCounter++ < 32 && gCurrLevelNum >= 50) {
+        u16 w0 = (u16) data[0];
+        u16 w1 = (u16) data[1];
+        u16 w2 = (u16) data[2];
+        u16 w3 = (u16) data[3];
+        LOG_INFO("terrain: hdr lvl=%d area=%d ptr=%p raw=%04X %04X %04X %04X swap=%04X %04X %04X %04X",
+                 (int)gCurrLevelNum, (int)gCurrAreaIndex, data,
+                 (unsigned)w0, (unsigned)w1, (unsigned)w2, (unsigned)w3,
+                 (unsigned)bswap16_u16(w0), (unsigned)bswap16_u16(w1), (unsigned)bswap16_u16(w2), (unsigned)bswap16_u16(w3));
+    }
+#endif
+
+    if (terrain_data_looks_little_endian(data)) {
+        swappedCopy = terrain_make_byteswapped_copy(data, &swappedWords);
+        if (swappedCopy) {
+            parseData = swappedCopy;
+#ifndef TARGET_N64
+            LOG_INFO("terrain: using byteswapped copy words=%u orig=%p copy=%p lvl=%d area=%d",
+                     (unsigned)swappedWords, data, swappedCopy, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+        } else {
+#ifndef TARGET_N64
+            LOG_ERROR("terrain: detected LE stream but failed to allocate swapped copy ptr=%p lvl=%d area=%d",
+                      data, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+        }
+    }
+#endif
+    s16 *p = parseData;
     while (TRUE) {
-        terrainLoadType = *data;
-        data++;
+        terrainLoadType = *p;
+        p++;
 
         if (TERRAIN_LOAD_IS_SURFACE_TYPE_LOW(terrainLoadType)) {
-            load_static_surfaces(&data, vertexData, terrainLoadType, &surfaceRooms);
+            load_static_surfaces(&p, vertexData, terrainLoadType, &surfaceRooms);
         } else if (terrainLoadType == TERRAIN_LOAD_VERTICES) {
-            vertexData = read_vertex_data(&data);
+            vertexData = read_vertex_data(&p);
         } else if (terrainLoadType == TERRAIN_LOAD_OBJECTS) {
-            spawn_special_objects(index, &data);
+            spawn_special_objects(index, &p);
         } else if (terrainLoadType == TERRAIN_LOAD_ENVIRONMENT) {
-            load_environmental_regions(&data);
+            load_environmental_regions(&p);
         } else if (terrainLoadType == TERRAIN_LOAD_CONTINUE) {
             continue;
         } else if (terrainLoadType == TERRAIN_LOAD_END) {
             break;
         } else if (TERRAIN_LOAD_IS_SURFACE_TYPE_HIGH(terrainLoadType)) {
-            load_static_surfaces(&data, vertexData, terrainLoadType, &surfaceRooms);
+            load_static_surfaces(&p, vertexData, terrainLoadType, &surfaceRooms);
             continue;
         }
     }
+#ifdef TARGET_WII_U
+    if (swappedCopy) { free(swappedCopy); }
+#endif
 
     if (macroObjects != NULL && *macroObjects != -1) {
         // If the first macro object presetID is within the range [0, 29].
@@ -815,17 +1017,67 @@ void load_object_surfaces(s16 **data, s16 *vertexData) {
  * Transform an object's vertices, reload them, and render the object.
  */
 void load_object_collision_model(void) {
-    UNUSED s32 unused;
-    s16 vertexData[600];
+    // Co-op DX parity + stability:
+    // Vanilla uses a fixed `s16 vertexData[600]` stack buffer which assumes <= 200 vertices.
+    // DynOS custom actors/stages can exceed that and silently smash the stack, causing later
+    // crashes in collision queries (camera find_ceil/find_floor). Allocate dynamically and
+    // validate vertex count.
+    static bool sIsLoadingCollision = false;
+    static s32 sVertexDataCount = 0;
+    static s16 *sVertexData = NULL;
+
+    if (!gCurrentObject) { return; }
+    if (gCurrentObject->collisionData == NULL) { return; }
+    if (sIsLoadingCollision) { return; }
 
     s16 *collisionData = gCurrentObject->collisionData;
-    f32 marioDist = gCurrentObject->oDistanceToMario;
-    f32 tangibleDist = gCurrentObject->oCollisionDistance;
 
-    // On an object's first frame, the distance is set to 19000.0f.
-    // If the distance hasn't been updated, update it now.
-    if (gCurrentObject->oDistanceToMario == 19000.0f) {
-        marioDist = dist_between_objects(gCurrentObject, gMarioObject);
+    // Hard validation: if the stream isn't in the expected COL_INIT -> vertexCount -> vertices layout,
+    // we must not try to parse it. Otherwise `transform_object_vertices()` can iterate a gigantic
+    // count and smash memory, leading to later crashes in camera/mario collision queries.
+    //
+    // This is especially important on Wii U where an endian bug upstream can turn 0x0040 into 0x4000.
+    if (collisionData[0] != COL_INIT()) {
+        LOG_ERROR("Object collisions missing COL_INIT: col0=0x%04X obj=%p beh=%p model=%p",
+                  (unsigned)(u16)collisionData[0], gCurrentObject, gCurrentObject->behavior, gCurrentObject->header.gfx.sharedChild);
+        return;
+    }
+
+    s32 numVertices = (s32)(u16)collisionData[1];
+    if (numVertices <= 0) {
+        LOG_ERROR("Object collisions had invalid vertex count: %d", (int)numVertices);
+        return;
+    }
+    if (numVertices >= 4096) {
+        LOG_ERROR("Object collisions had too many vertices: %d", (int)numVertices);
+        return;
+    }
+
+    sIsLoadingCollision = true;
+
+    if (numVertices > sVertexDataCount || sVertexData == NULL) {
+        if (sVertexData) { free(sVertexData); }
+        sVertexDataCount = numVertices;
+        if (sVertexDataCount < 64) { sVertexDataCount = 64; }
+        sVertexData = malloc((3 * sVertexDataCount + 1) * sizeof(s16));
+        if (sVertexData == NULL) {
+            LOG_ERROR("Failed to allocate object collision vertex buffer");
+            sIsLoadingCollision = false;
+            return;
+        }
+        LOG_INFO("Reallocating object vertex data: %u", (unsigned) sVertexDataCount);
+    }
+
+    // Determine whether any player is in collision range (Co-op DX semantics).
+    // This avoids doing heavy collision work for far objects, and prevents some
+    // mods from loading giant collision blobs too early.
+    u8 anyPlayerInTangibleRange = FALSE;
+    f32 tangibleDist = gCurrentObject->oCollisionDistance;
+    for (s32 i = 0; i < MAX_PLAYERS; i++) {
+        struct Object *mobj = gMarioStates[i].marioObj;
+        if (mobj == NULL) { continue; }
+        f32 dist = dist_between_objects(gCurrentObject, mobj);
+        if (dist < tangibleDist) { anyPlayerInTangibleRange = TRUE; break; }
     }
 
     // If the object collision is supposed to be loaded more than the
@@ -834,16 +1086,46 @@ void load_object_collision_model(void) {
         gCurrentObject->oDrawingDistance = gCurrentObject->oCollisionDistance;
     }
 
-    // Update if no Time Stop, in range, and in the current room.
-    if (!(gTimeStopState & TIME_STOP_ACTIVE) && marioDist < tangibleDist
+    if (!(gTimeStopState & TIME_STOP_ACTIVE) && anyPlayerInTangibleRange
         && !(gCurrentObject->activeFlags & ACTIVE_FLAG_IN_DIFFERENT_ROOM)) {
         collisionData++;
-        transform_object_vertices(&collisionData, vertexData);
+
+        // Re-check the stream-provided vertex count (first word after COL_INIT).
+        // If this doesn't match the header we used for allocation, bail out.
+        s32 streamVertexCount = (s32)(u16)(*collisionData);
+        if (streamVertexCount != numVertices) {
+            LOG_ERROR("Object collisions vertex count mismatch: hdr=%d stream=%d obj=%p beh=%p",
+                      (int)numVertices, (int)streamVertexCount, gCurrentObject, gCurrentObject->behavior);
+            sIsLoadingCollision = false;
+            return;
+        }
+        if (streamVertexCount > sVertexDataCount) {
+            LOG_ERROR("Object collisions vertex count exceeds buffer: %d > %d", (int)streamVertexCount, (int)sVertexDataCount);
+            sIsLoadingCollision = false;
+            return;
+        }
+
+        transform_object_vertices(&collisionData, sVertexData);
 
         // TERRAIN_LOAD_CONTINUE acts as an "end" to the terrain data.
+        // Guard against corrupted streams that never reach COL_TRI_STOP().
+        s32 safetyIters = 0;
         while (*collisionData != TERRAIN_LOAD_CONTINUE) {
-            load_object_surfaces(&collisionData, vertexData);
+            if (++safetyIters > 8192) {
+                LOG_ERROR("Object collisions exceeded safety iterations (corrupt stream?) obj=%p beh=%p", gCurrentObject, gCurrentObject->behavior);
+                break;
+            }
+            load_object_surfaces(&collisionData, sVertexData);
         }
+    }
+
+    // stop loading collision before potential rendering logic to avoid reentrancy
+    sIsLoadingCollision = false;
+
+    // Render distance gating
+    f32 marioDist = gCurrentObject->oDistanceToMario;
+    if (gCurrentObject->oDistanceToMario == 19000.0f && gMarioObject != NULL) {
+        marioDist = dist_between_objects(gCurrentObject, gMarioObject);
     }
 
 #ifndef NODRAWINGDISTANCE

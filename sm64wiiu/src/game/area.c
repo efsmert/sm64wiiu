@@ -22,6 +22,7 @@
 #include "save_file.h"
 #include "level_table.h"
 #include "dialog_ids.h"
+#include "pc/pc_diag.h"
 #ifndef TARGET_N64
 #include "pc/djui/djui.h"
 #include "data/dynos.c.h"
@@ -416,17 +417,24 @@ void play_transition_after_delay(s16 transType, s16 time, u8 red, u8 green, u8 b
 }
 
 void render_game(void) {
+    pc_diag_mark_stage("render_game:enter");
 #ifndef TARGET_N64
+    pc_diag_mark_stage("render_game:before_dynos_update_gfx");
     dynos_update_gfx();
+    pc_diag_mark_stage("render_game:after_dynos_update_gfx");
 #endif
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {
+        pc_diag_mark_stage("render_game:before_geo_process_root");
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
+        pc_diag_mark_stage("render_game:after_geo_process_root");
 
         gSPViewport(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(&D_8032CF00));
 
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, BORDER_HEIGHT, SCREEN_WIDTH,
                       SCREEN_HEIGHT - BORDER_HEIGHT);
+        pc_diag_mark_stage("render_game:before_render_hud");
         render_hud();
+        pc_diag_mark_stage("render_game:after_render_hud");
 
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
         render_text_labels();
@@ -445,10 +453,14 @@ void render_game(void) {
         if (gDjuiInMainMenu) {
             gMenuOptSelectIndex = MENU_OPT_NONE;
         } else {
+            pc_diag_mark_stage("render_game:before_render_menus_and_dialogs");
             gMenuOptSelectIndex = render_menus_and_dialogs();
+            pc_diag_mark_stage("render_game:after_render_menus_and_dialogs");
         }
 #else
+        pc_diag_mark_stage("render_game:before_render_menus_and_dialogs");
         gMenuOptSelectIndex = render_menus_and_dialogs();
+        pc_diag_mark_stage("render_game:after_render_menus_and_dialogs");
 #endif
         if (gMenuOptSelectIndex != MENU_OPT_NONE) {
             gSaveOptSelectIndex = gMenuOptSelectIndex;
@@ -477,6 +489,7 @@ void render_game(void) {
             }
         }
     } else {
+        pc_diag_mark_stage("render_game:no_area_or_paused");
         render_text_labels();
         if (D_8032CE78 != NULL) {
             clear_viewport(D_8032CE78, gWarpTransFBSetColor);
@@ -487,4 +500,5 @@ void render_game(void) {
 
     D_8032CE74 = NULL;
     D_8032CE78 = NULL;
+    pc_diag_mark_stage("render_game:return");
 }

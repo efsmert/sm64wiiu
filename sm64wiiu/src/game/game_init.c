@@ -20,6 +20,7 @@
 #include "segment_symbols.h"
 #include "rumble_init.h"
 #include "pc/djui/djui.h"
+#include "pc/pc_diag.h"
 #include <prevent_bss_reordering.h>
 
 // First 3 controller slots
@@ -750,12 +751,25 @@ void game_loop_one_iteration(void) {
             osContStartReadData(&gSIEventMesgQueue);
         }
 
+        pc_diag_mark_stage("game_loop:before_audio_game_loop_tick");
         audio_game_loop_tick();
-        select_gfx_pool();
-        read_controller_inputs();
-        levelCommandAddr = level_script_execute(levelCommandAddr);
+        pc_diag_mark_stage("game_loop:after_audio_game_loop_tick");
 
+        pc_diag_mark_stage("game_loop:before_select_gfx_pool");
+        select_gfx_pool();
+        pc_diag_mark_stage("game_loop:after_select_gfx_pool");
+
+        pc_diag_mark_stage("game_loop:before_read_controller_inputs");
+        read_controller_inputs();
+        pc_diag_mark_stage("game_loop:after_read_controller_inputs");
+
+        pc_diag_mark_stage("game_loop:before_level_script_execute");
+        levelCommandAddr = level_script_execute(levelCommandAddr);
+        pc_diag_mark_stage("game_loop:after_level_script_execute");
+
+        pc_diag_mark_stage("game_loop:before_display_and_vsync");
         display_and_vsync();
+        pc_diag_mark_stage("game_loop:after_display_and_vsync");
 
         // when debug info is enabled, print the "BUF %d" information.
         if (gShowDebugText) {

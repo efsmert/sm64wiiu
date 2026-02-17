@@ -12,9 +12,11 @@
 #include "shadow.h"
 #include "sm64.h"
 #include "camera.h"
+#include "pc/pc_diag.h"
 #ifdef TARGET_WII_U
 #include "../pc/lua/smlua.h"
 #include "../pc/lua/smlua_hooks.h"
+#include <whb/log.h>
 #endif
 
 /**
@@ -266,8 +268,18 @@ static void geo_process_master_list_sub(struct GraphNodeMasterList *node) {
 
     for (i = 0; i < GFX_NUM_MASTER_LISTS; i++) {
         if ((currList = node->listHeads[i]) != NULL) {
+            u32 listGuard = 0;
             gDPSetRenderMode(gDisplayListHead++, modeList->modes[i], mode2List->modes[i]);
             while (currList != NULL) {
+                if (++listGuard > 50000) {
+#ifdef TARGET_WII_U
+                    WHBLogPrintf("geo_render: master list guard tripped layer=%d node=%p head=%p cur=%p next=%p",
+                                 i, node, node->listHeads[i], currList, currList != NULL ? currList->next : NULL);
+#endif
+                    printf("geo_render: master list guard tripped layer=%d node=%p head=%p cur=%p next=%p\n",
+                           i, node, node->listHeads[i], currList, currList != NULL ? currList->next : NULL);
+                    break;
+                }
                 if (currList->transformPrev != NULL) {
                     detect_and_skip_mtx_interpolation(&currList->transformPrev, &currList->transform);
 
@@ -308,6 +320,16 @@ static void geo_append_display_list(void *displayList, s16 layer) {
 #ifdef F3DEX_GBI_2
     gSPLookAt(gDisplayListHead++, &lookAt);
 #endif
+    if (layer < 0 || layer >= GFX_NUM_MASTER_LISTS) {
+#ifdef TARGET_WII_U
+        WHBLogPrintf("geo_render: invalid layer=%d dl=%p root=%p cam=%p obj=%p", layer, displayList,
+                     gCurGraphNodeRoot, gCurGraphNodeCamera, gCurGraphNodeObject);
+#endif
+        printf("geo_render: invalid layer=%d dl=%p root=%p cam=%p obj=%p\n",
+               layer, displayList, gCurGraphNodeRoot, gCurGraphNodeCamera, gCurGraphNodeObject);
+        return;
+    }
+
     if (gCurGraphNodeMasterList != 0) {
         struct DisplayListNode *listNode =
             alloc_only_pool_alloc(gDisplayListHeap, sizeof(struct DisplayListNode));
@@ -1387,6 +1409,7 @@ void geo_process_node_and_siblings(struct GraphNode *firstNode) {
     s16 iterateChildren = TRUE;
     struct GraphNode *curGraphNode = firstNode;
     struct GraphNode *parent = curGraphNode->parent;
+    u32 siblingGuard = 0;
 
     // In the case of a switch node, exactly one of the children of the node is
     // processed instead of all children like usual
@@ -1395,6 +1418,17 @@ void geo_process_node_and_siblings(struct GraphNode *firstNode) {
     }
 
     do {
+        if (++siblingGuard > 200000) {
+#ifdef TARGET_WII_U
+            WHBLogPrintf("geo_render: sibling guard tripped first=%p cur=%p parent=%p next=%p type=%u flags=0x%04X",
+                         firstNode, curGraphNode, parent, curGraphNode != NULL ? curGraphNode->next : NULL,
+                         curGraphNode != NULL ? curGraphNode->type : 0, curGraphNode != NULL ? curGraphNode->flags : 0);
+#endif
+            printf("geo_render: sibling guard tripped first=%p cur=%p parent=%p next=%p type=%u flags=0x%04X\n",
+                   firstNode, curGraphNode, parent, curGraphNode != NULL ? curGraphNode->next : NULL,
+                   curGraphNode != NULL ? curGraphNode->type : 0, curGraphNode != NULL ? curGraphNode->flags : 0);
+            break;
+        }
         if (curGraphNode->flags & GRAPH_RENDER_ACTIVE) {
             if (curGraphNode->flags & GRAPH_RENDER_CHILDREN_FIRST) {
                 geo_try_process_children(curGraphNode);
@@ -1480,6 +1514,7 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
     UNUSED s32 unused;
 
     if (node->node.flags & GRAPH_RENDER_ACTIVE) {
+        pc_diag_mark_stage("geo_process_root:enter");
         sBackgroundRootNode = node;
         Mtx *initialMatrix;
         Mtx *initialMatrixPrev;
@@ -1522,7 +1557,9 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
         smlua_call_event_hooks(HOOK_ON_GEO_PROCESS);
 #endif
         if (node->node.children != NULL) {
+            pc_diag_mark_stage("geo_process_root:before_children");
             geo_process_node_and_siblings(node->node.children);
+            pc_diag_mark_stage("geo_process_root:after_children");
         }
         gCurGraphNodeRoot = NULL;
         if (gShowDebugText) {
@@ -1532,5 +1569,6 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
 #endif
         }
         main_pool_free(gDisplayListHeap);
+        pc_diag_mark_stage("geo_process_root:return");
     }
 }

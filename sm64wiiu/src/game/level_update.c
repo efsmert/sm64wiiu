@@ -32,7 +32,10 @@
 #ifndef TARGET_N64
 #include "pc/lua/smlua_hooks.h"
 #include "pc/djui/djui.h"
+#include "pc/djui/djui_panel_pause.h"
 #include "pc/configfile.h"
+#include "pc/lua/utils/smlua_level_utils.h"
+#include "data/dynos.c.h"
 #endif
 #ifdef TARGET_WII_U
 #include <whb/log.h>
@@ -1196,56 +1199,121 @@ s32 update_level(void) {
 #endif
 
 #ifdef TARGET_WII_U
-    // Flood Expanded casino lobby diagnostics:
-    // When the lobby is broken, we often stop seeing logs from update_objects().
-    // This print runs from update_level() (main loop) so we can confirm play mode
-    // and other gating state even if object updates are not happening.
-    if (gCurrLevelNum == 55) { // Flood casino_entry
-        // Use a call counter so logs still appear if gGlobalTimer is frozen.
-        static u32 sFloodLobbyCallCounter = 0;
-        static u32 sFloodLobbyLastLogCall = 0;
-        sFloodLobbyCallCounter++;
-        if ((u32)(sFloodLobbyCallCounter - sFloodLobbyLastLogCall) >= 60) {
-            sFloodLobbyLastLogCall = sFloodLobbyCallCounter;
+    // Flood Expanded lobby diagnostics:
+    // When control breaks we often stop seeing logs from update_objects().
+    // Print from update_level() so we still get signal even if object updates are gated.
+    // Log whenever we're in a DynOS custom stage or a registered custom level.
+    static s16 sLastDiagLevel = -1;
+    static u32 sDiagCallCounter = 0;
+    static u32 sDiagLastLogCall = 0;
+    sDiagCallCounter++;
+    bool isCustom = (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START);
+    if (!isCustom) {
+        // DynOS custom stages can reuse vanilla level numbers; use mod-index as a backstop.
+        extern s32 gLevelScriptModIndex;
+        isCustom = (gLevelScriptModIndex >= 0);
+    }
+    if (isCustom) {
+        // Log immediately when entering a new level, then at ~4Hz.
+        u32 interval = 15;
+        if (sLastDiagLevel != gCurrLevelNum) {
+            sLastDiagLevel = gCurrLevelNum;
+            sDiagLastLogCall = 0;
+        }
+        if (sDiagLastLogCall == 0 || (u32)(sDiagCallCounter - sDiagLastLogCall) >= interval) {
+            sDiagLastLogCall = sDiagCallCounter;
             extern bool gDjuiInMainMenu;
+            extern bool gInteractableOverridePad;
             const struct Controller *ctrl = (gMarioState != NULL) ? gMarioState->controller : NULL;
             const u16 btnDown = ctrl ? ctrl->buttonDown : 0;
+            const u16 btnPressed = ctrl ? ctrl->buttonPressed : 0;
             const int stickMag = ctrl ? (int)ctrl->stickMag : -1;
+            const int stickX = ctrl ? (int)ctrl->rawStickX : 0;
+            const int stickY = ctrl ? (int)ctrl->rawStickY : 0;
             WHBLogPrintf(
-                "flood_lobby_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X btnDown=0x%04X stickMag=%d",
-                (unsigned int)sFloodLobbyCallCounter,
+                "flood_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X ctrl=%p btnDown=0x%04X btnPress=0x%04X stick=(%d,%d) mag=%d",
+                (unsigned int)sDiagCallCounter,
                 (unsigned int)gGlobalTimer,
                 (int)gCurrLevelNum,
                 (int)gCurrAreaIndex,
                 (int)gCurrActNum,
                 (int)sCurrPlayMode,
                 (int)gDjuiInMainMenu,
+                (int)gInteractableOverridePad,
+                (int)gDjuiPanelPauseCreated,
                 (int)sDelayedWarpOp,
                 (int)gWarpTransition.isActive,
                 (unsigned int)gTimeStopState,
                 (void*)gCurrentArea,
                 (void*)gMarioState,
                 (unsigned int)(gMarioState ? gMarioState->action : 0),
+                (void*)ctrl,
                 (unsigned int)btnDown,
+                (unsigned int)btnPressed,
+                stickX, stickY,
                 stickMag
             );
             printf(
-                "flood_lobby_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X btnDown=0x%04X stickMag=%d\n",
-                (unsigned int)sFloodLobbyCallCounter,
+                "flood_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X ctrl=%p btnDown=0x%04X btnPress=0x%04X stick=(%d,%d) mag=%d\n",
+                (unsigned int)sDiagCallCounter,
                 (unsigned int)gGlobalTimer,
                 (int)gCurrLevelNum,
                 (int)gCurrAreaIndex,
                 (int)gCurrActNum,
                 (int)sCurrPlayMode,
                 (int)gDjuiInMainMenu,
+                (int)gInteractableOverridePad,
+                (int)gDjuiPanelPauseCreated,
                 (int)sDelayedWarpOp,
                 (int)gWarpTransition.isActive,
                 (unsigned int)gTimeStopState,
                 (void*)gCurrentArea,
                 (void*)gMarioState,
                 (unsigned int)(gMarioState ? gMarioState->action : 0),
+                (void*)ctrl,
                 (unsigned int)btnDown,
+                (unsigned int)btnPressed,
+                stickX, stickY,
                 stickMag
+            );
+        }
+    }
+
+    // Focused log for Flood Casino lobby (level 55). This is the current
+    // blocker: Mario renders but input/pause can be dead in the waiting room.
+    // Log at ~4Hz regardless of "custom detection" to avoid missing it.
+    if (gCurrLevelNum == 55) {
+        static u32 sCasinoCallCounter = 0;
+        static u32 sCasinoLastLogCall = 0;
+        sCasinoCallCounter++;
+        if (sCasinoLastLogCall == 0 || (u32)(sCasinoCallCounter - sCasinoLastLogCall) >= 15) {
+            sCasinoLastLogCall = sCasinoCallCounter;
+            extern bool gDjuiInMainMenu;
+            extern bool gInteractableOverridePad;
+            const struct Controller *p1 = gPlayer1Controller;
+            const struct Controller *mctrl = (gMarioState != NULL) ? gMarioState->controller : NULL;
+            WHBLogPrintf(
+                "flood_casino: call=%u gt=%u lvl=%d area=%d act=%d play=%d warpActive=%d delayedWarp=%d timeStop=0x%X transActive=%d djuiMenu=%d overridePad=%d pausePanel=%d p1=%p mctrl=%p p1Down=0x%04X p1Press=0x%04X mDown=0x%04X mPress=0x%04X action=0x%08X",
+                (unsigned)sCasinoCallCounter,
+                (unsigned)gGlobalTimer,
+                (int)gCurrLevelNum,
+                (int)gCurrAreaIndex,
+                (int)gCurrActNum,
+                (int)sCurrPlayMode,
+                (int)gWarpTransition.isActive,
+                (int)sDelayedWarpOp,
+                (unsigned)gTimeStopState,
+                (int)gWarpTransition.isActive,
+                (int)gDjuiInMainMenu,
+                (int)gInteractableOverridePad,
+                (int)gDjuiPanelPauseCreated,
+                (void*)p1,
+                (void*)mctrl,
+                (unsigned)(p1 ? p1->buttonDown : 0),
+                (unsigned)(p1 ? p1->buttonPressed : 0),
+                (unsigned)(mctrl ? mctrl->buttonDown : 0),
+                (unsigned)(mctrl ? mctrl->buttonPressed : 0),
+                (unsigned)(gMarioState ? gMarioState->action : 0)
             );
         }
     }
@@ -1390,6 +1458,29 @@ s32 init_level(void) {
  */
 s32 lvl_init_or_update(s16 initOrUpdate, UNUSED s32 unused) {
     s32 result = 0;
+
+#ifdef TARGET_WII_U
+    // Flood casino lobby debugging:
+    // Confirm whether CALL_LOOP is passing initOrUpdate=1 (update) or a bogus value (e.g. 0x0100)
+    // due to endian/context issues. If this is wrong, update_level() never runs and Mario can't move.
+    if (gCurrLevelNum == 55) {
+        static u32 sLioCallCounter = 0;
+        sLioCallCounter++;
+        if ((sLioCallCounter % 15u) == 0u) { // ~4Hz at 60fps
+            extern s32 gLevelScriptModIndex;
+            WHBLogPrintf(
+                "flood_lio: call=%u gt=%u lvl=%d play=%d modIndex=%d initOrUpdate=%d (0x%04X)",
+                (unsigned) sLioCallCounter,
+                (unsigned) gGlobalTimer,
+                (int) gCurrLevelNum,
+                (int) sCurrPlayMode,
+                (int) gLevelScriptModIndex,
+                (int) initOrUpdate,
+                (unsigned) (u16) initOrUpdate
+            );
+        }
+    }
+#endif
 
     switch (initOrUpdate) {
         case 0:

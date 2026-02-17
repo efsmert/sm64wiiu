@@ -1,4 +1,5 @@
 #include <PR/ultratypes.h>
+#include <string.h>
 
 #include "sm64.h"
 #include "game/debug.h"
@@ -7,6 +8,35 @@
 #include "game/object_list_processor.h"
 #include "surface_collision.h"
 #include "surface_load.h"
+#ifndef TARGET_N64
+#include "pc/debuglog.h"
+#endif
+
+// Avoid FP traps on Wii U when the FPSCR exception enables are set.
+// We use bit-level float classification (no FP compares) to sanitize values
+// coming from potentially corrupted Surface structs.
+static inline bool f32_is_nan_or_inf(f32 v) {
+    u32 bits = 0;
+    memcpy(&bits, &v, sizeof(bits));
+    u32 exp = bits & 0x7F800000u;
+    return (exp == 0x7F800000u);
+}
+
+static inline bool f32_is_nan(f32 v) {
+    u32 bits = 0;
+    memcpy(&bits, &v, sizeof(bits));
+    u32 exp = bits & 0x7F800000u;
+    u32 frac = bits & 0x007FFFFFu;
+    return (exp == 0x7F800000u) && (frac != 0);
+}
+
+static inline bool f32_is_inf(f32 v) {
+    u32 bits = 0;
+    memcpy(&bits, &v, sizeof(bits));
+    u32 exp = bits & 0x7F800000u;
+    u32 frac = bits & 0x007FFFFFu;
+    return (exp == 0x7F800000u) && (frac == 0);
+}
 
 /**************************************************
  *                      WALLS                     *
@@ -223,17 +253,53 @@ s32 find_wall_collisions(struct WallCollisionData *colData) {
 /**
  * Iterate through the list of ceilings and find the first ceiling over a given point.
  */
-static struct Surface *find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 x, s32 y, s32 z, f32 *pheight) {
+// Wii U stability: Avoid writing ceil heights through a pointer into the caller's stack.
+// We've observed repeated Cemu crashes at `lfs` from find_ceil() stack locals right after
+// returning from this function in DynOS custom stages (Flood casino).
+//
+// Returning the height in f1 keeps it in a float register in the hot path and avoids
+// stack traffic for the height values.
+static f32 find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 x, s32 y, s32 z, struct Surface **outCeil) {
     register struct Surface *surf;
     register s32 x1, z1, x2, z2, x3, z3;
     struct Surface *ceil = NULL;
+    f32 ceilHeight = CELL_HEIGHT_LIMIT;
 
     ceil = NULL;
+    if (outCeil) { *outCeil = NULL; }
+
+    // Defensive: corrupted partition lists (dangling nodes/surfaces) can crash the camera in custom stages.
+    // Validate the first node pointer before walking the list.
+#ifdef TARGET_WII_U
+    if (surfaceNode != NULL && !surface_node_ptr_is_valid(surfaceNode)) {
+#ifndef TARGET_N64
+        LOG_ERROR("find_ceil_from_list: invalid SurfaceNode*=%p (lvl=%d area=%d)", surfaceNode, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+        return CELL_HEIGHT_LIMIT;
+    }
+#endif
 
     // Stay in this loop until out of ceilings.
     while (surfaceNode != NULL) {
+#ifdef TARGET_WII_U
+        if (!surface_node_ptr_is_valid(surfaceNode)) {
+#ifndef TARGET_N64
+            LOG_ERROR("find_ceil_from_list: invalid iter SurfaceNode*=%p (lvl=%d area=%d)", surfaceNode, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+            return CELL_HEIGHT_LIMIT;
+        }
+#endif
         surf = surfaceNode->surface;
         surfaceNode = surfaceNode->next;
+
+#ifdef TARGET_WII_U
+        if (surf == NULL || !surface_ptr_is_valid(surf)) {
+#ifndef TARGET_N64
+            LOG_ERROR("find_ceil_from_list: invalid Surface*=%p (node=%p lvl=%d area=%d)", surf, surfaceNode, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+            return CELL_HEIGHT_LIMIT;
+        }
+#endif
 
         x1 = surf->vertex1[0];
         z1 = surf->vertex1[2];
@@ -273,6 +339,21 @@ static struct Surface *find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 
             f32 oo = surf->originOffset;
             f32 height;
 
+            // Corrupted surface contents (NaNs/Infs) can cause FP traps later in the caller
+            // during comparisons. Skip such surfaces early.
+#ifdef TARGET_WII_U
+            if (f32_is_nan_or_inf(nx) || f32_is_nan_or_inf(ny) || f32_is_nan_or_inf(nz) || f32_is_nan_or_inf(oo)) {
+#ifndef TARGET_N64
+                static u32 sBadSurfaceLogCounter = 0;
+                if (sBadSurfaceLogCounter++ < 64) {
+                    LOG_ERROR("find_ceil_from_list: bad surface floats surf=%p obj=%p type=%d flags=0x%X",
+                              surf, surf->object, (int) surf->type, (unsigned) surf->flags);
+                }
+#endif
+                continue;
+            }
+#endif
+
             // If a wall, ignore it. Likely a remnant, should never occur.
             if (ny == 0.0f) {
                 continue;
@@ -280,6 +361,12 @@ static struct Surface *find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 
 
             // Find the ceil height at the specific point.
             height = -(x * nx + nz * z + oo) / ny;
+
+#ifdef TARGET_WII_U
+            if (f32_is_nan(height) || f32_is_inf(height)) {
+                continue;
+            }
+#endif
 
             // Checks for ceiling interaction with a 78 unit buffer.
             //! (Exposed Ceilings) Because any point above a ceiling counts
@@ -289,7 +376,7 @@ static struct Surface *find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 
                 continue;
             }
 
-            *pheight = height;
+            ceilHeight = height;
             ceil = surf;
             break;
         }
@@ -297,7 +384,8 @@ static struct Surface *find_ceil_from_list(struct SurfaceNode *surfaceNode, s32 
 
     //! (Surface Cucking) Since only the first ceil is returned and not the lowest,
     //  lower ceilings can be "cucked" by higher ceilings.
-    return ceil;
+    if (outCeil) { *outCeil = ceil; }
+    return ceilHeight;
 }
 
 /**
@@ -307,8 +395,6 @@ f32 find_ceil(f32 posX, f32 posY, f32 posZ, struct Surface **pceil) {
     s16 cellZ, cellX;
     struct Surface *ceil, *dynamicCeil;
     struct SurfaceNode *surfaceList;
-    f32 height = CELL_HEIGHT_LIMIT;
-    f32 dynamicHeight = CELL_HEIGHT_LIMIT;
     s16 x, y, z;
 
     //! (Parallel Universes) Because position is casted to an s16, reaching higher
@@ -320,35 +406,64 @@ f32 find_ceil(f32 posX, f32 posY, f32 posZ, struct Surface **pceil) {
     *pceil = NULL;
 
     if (x <= -LEVEL_BOUNDARY_MAX || x >= LEVEL_BOUNDARY_MAX) {
-        return height;
+        return CELL_HEIGHT_LIMIT;
     }
     if (z <= -LEVEL_BOUNDARY_MAX || z >= LEVEL_BOUNDARY_MAX) {
-        return height;
+        return CELL_HEIGHT_LIMIT;
     }
 
     // Each level is split into cells to limit load, find the appropriate cell.
     cellX = ((x + LEVEL_BOUNDARY_MAX) / CELL_SIZE) & NUM_CELLS_INDEX;
     cellZ = ((z + LEVEL_BOUNDARY_MAX) / CELL_SIZE) & NUM_CELLS_INDEX;
 
+    // Wii U stability: avoid spilling ceil heights to the stack between calls.
+    // Cemu has repeatedly crashed in Flood custom stages on stack loads in this function.
+#ifdef TARGET_WII_U
+    // devkitPPC GCC uses "frN" register names for explicit FP register vars.
+    register f32 dynHeight asm("fr31") = CELL_HEIGHT_LIMIT;
+    register f32 statHeight asm("fr30") = CELL_HEIGHT_LIMIT;
+#else
+    f32 dynHeight = CELL_HEIGHT_LIMIT;
+    f32 statHeight = CELL_HEIGHT_LIMIT;
+#endif
+
     // Check for surfaces belonging to objects.
     surfaceList = gDynamicSurfacePartition[cellZ][cellX][SPATIAL_PARTITION_CEILS].next;
-    dynamicCeil = find_ceil_from_list(surfaceList, x, y, z, &dynamicHeight);
+#ifdef TARGET_WII_U
+    if (surfaceList != NULL && !surface_node_ptr_is_valid(surfaceList)) {
+#ifndef TARGET_N64
+        LOG_ERROR("find_ceil: invalid dynamic ceil list=%p cell=(%d,%d) pos=(%d,%d,%d) lvl=%d area=%d",
+                  surfaceList, (int)cellX, (int)cellZ, (int)x, (int)y, (int)z, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+        surfaceList = NULL;
+    }
+#endif
+    dynHeight = find_ceil_from_list(surfaceList, x, y, z, &dynamicCeil);
 
     // Check for surfaces that are a part of level geometry.
     surfaceList = gStaticSurfacePartition[cellZ][cellX][SPATIAL_PARTITION_CEILS].next;
-    ceil = find_ceil_from_list(surfaceList, x, y, z, &height);
-
-    if (dynamicHeight < height) {
-        ceil = dynamicCeil;
-        height = dynamicHeight;
+#ifdef TARGET_WII_U
+    if (surfaceList != NULL && !surface_node_ptr_is_valid(surfaceList)) {
+#ifndef TARGET_N64
+        LOG_ERROR("find_ceil: invalid static ceil list=%p cell=(%d,%d) pos=(%d,%d,%d) lvl=%d area=%d",
+                  surfaceList, (int)cellX, (int)cellZ, (int)x, (int)y, (int)z, (int)gCurrLevelNum, (int)gCurrAreaIndex);
+#endif
+        surfaceList = NULL;
     }
+#endif
+    statHeight = find_ceil_from_list(surfaceList, x, y, z, &ceil);
 
-    *pceil = ceil;
+    if (dynHeight < statHeight) {
+        *pceil = dynamicCeil;
+        statHeight = dynHeight;
+    } else {
+        *pceil = ceil;
+    }
 
     // Increment the debug tracker.
     gNumCalls.ceil += 1;
 
-    return height;
+    return statHeight;
 }
 
 /**************************************************

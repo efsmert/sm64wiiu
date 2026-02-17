@@ -62,6 +62,19 @@ struct AllocOnlyPool {
     u32 lastBlockNextPos;
 };
 
+struct AllocOnlyPoolBlockInfo {
+    struct AllocOnlyPool *pool;
+    struct AllocOnlyPoolBlock *block;
+    u32 size;
+    u32 used;
+    struct AllocOnlyPoolBlockInfo *next;
+};
+
+struct AllocOnlyPoolInfo {
+    struct AllocOnlyPool *pool;
+    struct AllocOnlyPoolInfo *next;
+};
+
 struct FreeListNode {
     struct FreeListNode *next;
 };
@@ -511,11 +524,80 @@ void load_engine_code_segment(void) {
 #endif
 
 #ifdef USE_SYSTEM_MALLOC
+// Keep metadata in fixed-size tables to avoid pointer-chasing through heap
+// structures inside crash-sensitive validation paths.
+#define MAX_ALLOC_ONLY_POOLS 64
+#define MAX_ALLOC_ONLY_POOL_BLOCK_INFOS 8192
+static struct AllocOnlyPool *sAllocOnlyPoolInfos[MAX_ALLOC_ONLY_POOLS];
+static u32 sAllocOnlyPoolInfoCount = 0;
+static struct AllocOnlyPoolBlockInfo sAllocOnlyPoolBlockInfos[MAX_ALLOC_ONLY_POOL_BLOCK_INFOS];
+static u32 sAllocOnlyPoolBlockInfoCount = 0;
+
+static bool alloc_only_pool_is_registered(struct AllocOnlyPool *pool) {
+    for (u32 i = 0; i < sAllocOnlyPoolInfoCount; i++) {
+        if (sAllocOnlyPoolInfos[i] == pool) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void alloc_only_pool_register(struct AllocOnlyPool *pool) {
+    if (pool == NULL || alloc_only_pool_is_registered(pool)) {
+        return;
+    }
+
+    if (sAllocOnlyPoolInfoCount >= MAX_ALLOC_ONLY_POOLS) {
+        abort();
+    }
+    sAllocOnlyPoolInfos[sAllocOnlyPoolInfoCount++] = pool;
+}
+
+static struct AllocOnlyPoolBlockInfo *alloc_only_pool_find_block_info(struct AllocOnlyPoolBlock *block) {
+    for (u32 i = 0; i < sAllocOnlyPoolBlockInfoCount; i++) {
+        if (sAllocOnlyPoolBlockInfos[i].block == block) {
+            return &sAllocOnlyPoolBlockInfos[i];
+        }
+    }
+    return NULL;
+}
+
+static struct AllocOnlyPoolBlockInfo *alloc_only_pool_get_or_add_block_info(struct AllocOnlyPool *pool, struct AllocOnlyPoolBlock *block, u32 size) {
+    struct AllocOnlyPoolBlockInfo *info = alloc_only_pool_find_block_info(block);
+    if (info != NULL) {
+        return info;
+    }
+
+    if (sAllocOnlyPoolBlockInfoCount >= MAX_ALLOC_ONLY_POOL_BLOCK_INFOS) {
+        abort();
+    }
+    info = &sAllocOnlyPoolBlockInfos[sAllocOnlyPoolBlockInfoCount++];
+    info->pool = pool;
+    info->block = block;
+    info->size = size;
+    info->used = 0;
+    info->next = NULL;
+    return info;
+}
+
+static void alloc_only_pool_remove_block_info(struct AllocOnlyPoolBlock *block) {
+    for (u32 i = 0; i < sAllocOnlyPoolBlockInfoCount; i++) {
+        if (sAllocOnlyPoolBlockInfos[i].block == block) {
+            sAllocOnlyPoolBlockInfoCount--;
+            if (i != sAllocOnlyPoolBlockInfoCount) {
+                sAllocOnlyPoolBlockInfos[i] = sAllocOnlyPoolBlockInfos[sAllocOnlyPoolBlockInfoCount];
+            }
+            return;
+        }
+    }
+}
+
 static void alloc_only_pool_release_handler(void *addr) {
     struct AllocOnlyPool *pool = (struct AllocOnlyPool *) addr;
     struct AllocOnlyPoolBlock *block = pool->lastBlock;
     while (block != NULL) {
         struct AllocOnlyPoolBlock *prev = block->prev;
+        alloc_only_pool_remove_block_info(block);
         free(block);
         block = prev;
     }
@@ -529,6 +611,7 @@ struct AllocOnlyPool *alloc_only_pool_init(void) {
     pool->lastBlock = NULL;
     pool->lastBlockSize = 0;
     pool->lastBlockNextPos = 0;
+    alloc_only_pool_register(pool);
 
     return pool;
 }
@@ -545,6 +628,7 @@ void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size) {
     u32 s = size + ptr_size;
     if (pool->lastBlockSize - pool->lastBlockNextPos < s) {
         struct AllocOnlyPoolBlock *block;
+        struct AllocOnlyPoolBlockInfo *info;
         u32 nextSize = pool->lastBlockSize * 2;
         if (nextSize < 100) {
             nextSize = 100;
@@ -556,17 +640,56 @@ void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size) {
         if (block == NULL) {
             abort();
         }
+        if (pool->lastBlock != NULL) {
+            info = alloc_only_pool_get_or_add_block_info(pool, pool->lastBlock, pool->lastBlockSize);
+            info->size = pool->lastBlockSize;
+            info->used = pool->lastBlockNextPos;
+        }
         block->prev = pool->lastBlock;
         pool->lastBlock = block;
         pool->lastBlockSize = nextSize;
         pool->lastBlockNextPos = 0;
+
+        info = alloc_only_pool_get_or_add_block_info(pool, block, nextSize);
+        info->size = nextSize;
+        info->used = 0;
     }
     s -= ptr_size;
     uintptr_t addr = (uintptr_t) (pool->lastBlock + 1) + pool->lastBlockNextPos;
     uintptr_t addrAligned = ((addr - 1) | (ptr_size - 1)) + 1;
     s += addrAligned - addr;
     pool->lastBlockNextPos += s;
+    {
+        struct AllocOnlyPoolBlockInfo *info = alloc_only_pool_get_or_add_block_info(pool, pool->lastBlock, pool->lastBlockSize);
+        info->size = pool->lastBlockSize;
+        info->used = pool->lastBlockNextPos;
+    }
     return (u8 *)addrAligned;
+}
+
+bool alloc_only_pool_contains_ptr(struct AllocOnlyPool *pool, const void *ptr) {
+    if (pool == NULL || ptr == NULL) {
+        return false;
+    }
+    if (!alloc_only_pool_is_registered(pool)) {
+        return false;
+    }
+
+    uintptr_t p = (uintptr_t) ptr;
+    for (u32 i = 0; i < sAllocOnlyPoolBlockInfoCount; i++) {
+        struct AllocOnlyPoolBlockInfo *info = &sAllocOnlyPoolBlockInfos[i];
+        if (info->pool != pool || info->block == NULL) {
+            continue;
+        }
+        uintptr_t start = (uintptr_t) (info->block + 1);
+        u32 used = (info->used <= info->size) ? info->used : info->size;
+        uintptr_t end = start + used;
+        if (p >= start && p < end) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 struct MemoryPool *mem_pool_init(UNUSED u32 size, UNUSED u32 side) {

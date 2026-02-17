@@ -56,7 +56,7 @@ static void flood_diag_log_sync_state(void) {
 
 static void flood_diag_log_mario_state(struct MarioState *m) {
 #ifdef TARGET_WII_U
-    if (m == NULL || m->controller == NULL) {
+    if (m == NULL) {
         return;
     }
 
@@ -65,11 +65,17 @@ static void flood_diag_log_mario_state(struct MarioState *m) {
     static u32 sCallCounter = 0;
     static u32 sLastLogCall = 0;
     sCallCounter++;
-    if ((u32)(sCallCounter - sLastLogCall) < 60) {
+    u32 interval = 60;
+    if (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START) {
+        // Custom lobbies are where control tends to break; log more frequently.
+        interval = 15;
+    }
+    if ((u32)(sCallCounter - sLastLogCall) < interval) {
         return;
     }
     sLastLogCall = sCallCounter;
 
+    const struct Controller *ctrl = m->controller;
     const struct Surface *floor = m->floor;
     const int floorType = floor ? (int)floor->type : -1;
     const void *floorPtr = (const void *)floor;
@@ -106,18 +112,18 @@ static void flood_diag_log_mario_state(struct MarioState *m) {
         (unsigned int)gTimeStopState,
         dialogId,
         freezeTimer,
-        (void*)m->controller,
+        (void*)ctrl,
         (unsigned int)m->action,
         (unsigned int)m->input,
         (double)m->pos[1],
         (double)m->floorHeight,
         floorPtr,
         floorType,
-        (unsigned int)m->controller->buttonDown,
-        (unsigned int)m->controller->buttonPressed,
-        (int)m->controller->rawStickX,
-        (int)m->controller->rawStickY,
-        (double)m->controller->stickMag,
+        (unsigned int)(ctrl ? ctrl->buttonDown : 0),
+        (unsigned int)(ctrl ? ctrl->buttonPressed : 0),
+        (int)(ctrl ? ctrl->rawStickX : 0),
+        (int)(ctrl ? ctrl->rawStickY : 0),
+        (double)(ctrl ? ctrl->stickMag : 0.0f),
         animId,
         customEntry,
         customCourse
@@ -138,18 +144,18 @@ static void flood_diag_log_mario_state(struct MarioState *m) {
         (unsigned int)gTimeStopState,
         dialogId,
         freezeTimer,
-        (void*)m->controller,
+        (void*)ctrl,
         (unsigned int)m->action,
         (unsigned int)m->input,
         (double)m->pos[1],
         (double)m->floorHeight,
         floorPtr,
         floorType,
-        (unsigned int)m->controller->buttonDown,
-        (unsigned int)m->controller->buttonPressed,
-        (int)m->controller->rawStickX,
-        (int)m->controller->rawStickY,
-        (double)m->controller->stickMag,
+        (unsigned int)(ctrl ? ctrl->buttonDown : 0),
+        (unsigned int)(ctrl ? ctrl->buttonPressed : 0),
+        (int)(ctrl ? ctrl->rawStickX : 0),
+        (int)(ctrl ? ctrl->rawStickY : 0),
+        (double)(ctrl ? ctrl->stickMag : 0.0f),
         animId,
         customEntry,
         customCourse
@@ -164,7 +170,11 @@ static void flood_diag_log_frame_state(void) {
     static u32 sFrameCallCounter = 0;
     static u32 sLastFrameLogCall = 0;
     sFrameCallCounter++;
-    if ((u32)(sFrameCallCounter - sLastFrameLogCall) < 60) {
+    u32 interval = 60;
+    if (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START) {
+        interval = 15;
+    }
+    if ((u32)(sFrameCallCounter - sLastFrameLogCall) < interval) {
         return;
     }
     sLastFrameLogCall = sFrameCallCounter;

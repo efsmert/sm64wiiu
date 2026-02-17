@@ -6530,8 +6530,11 @@ s16 camera_course_processing(struct Camera *c) {
         c->mode = sModeInfo.lastMode;
     }
     check_blocking_area_processing(&c->mode);
-    if (level > LEVEL_COUNT + 1) {
-        level = LEVEL_COUNT + 1;
+    // Custom level IDs can exceed the built-in table. Clamp to the actual array bounds.
+    if (level < 0) {
+        level = 0;
+    } else if ((u32) level >= ARRAY_COUNT(sCameraTriggers)) {
+        level = (s16) (ARRAY_COUNT(sCameraTriggers) - 1);
     }
 
     if (sCameraTriggers[level] != NULL) {

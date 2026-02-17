@@ -30,6 +30,11 @@ extern s32 unused8038BE90;
 extern SpatialPartitionCell gStaticSurfacePartition[NUM_CELLS][NUM_CELLS];
 extern SpatialPartitionCell gDynamicSurfacePartition[NUM_CELLS][NUM_CELLS];
 
+// Runtime validation helpers (mainly for Wii U / DynOS stability debugging).
+// These are implemented in surface_load.c where the surface pools live.
+bool surface_node_ptr_is_valid(struct SurfaceNode *node);
+bool surface_ptr_is_valid(struct Surface *surf);
+
 void alloc_surface_pools(void);
 #ifdef NO_SEGMENTED_MEMORY
 u32 get_area_terrain_size(s16 *data);

@@ -4150,17 +4150,37 @@ static int smlua_func_warp_to_level(lua_State *L) {
 
     level = (s16)lua_tointeger(L, 1);
     area = (s16)lua_tointeger(L, 2);
-	    act = (s16)lua_tointeger(L, 3);
+    act = (s16)lua_tointeger(L, 3);
 
 #ifndef TARGET_N64
-	    if (gDjuiInMainMenu) {
-	        djui_close_main_menu();
-	    }
-	    // Co-op DX parity: DynOS drives all warps (vanilla + custom) for deterministic behavior.
-	    bool ok = dynos_warp_to_level(level, area, act);
-	    smlua_logf("lua: warp_to_level(level=%d area=%d act=%d) -> %d", (int)level, (int)area, (int)act, ok ? 1 : 0);
-	    lua_pushboolean(L, ok);
-	    return 1;
+    if (gDjuiInMainMenu) {
+        djui_close_main_menu();
+    }
+#ifdef TARGET_WII_U
+    {
+        lua_Debug ar;
+        const char *src = "?";
+        const char *name = "?";
+        int line = -1;
+        if (lua_getstack(L, 1, &ar)) {
+            if (lua_getinfo(L, "Sln", &ar)) {
+                if (ar.short_src[0] != '\0') { src = ar.short_src; }
+                if (ar.name != NULL) { name = ar.name; }
+                line = ar.currentline;
+            }
+        }
+        WHBLogPrintf("lua: warp_to_level req level=%d area=%d act=%d src=%s line=%d fn=%s lvl=%d areaNow=%d play=%d warpActive=%d",
+                     (int)level, (int)area, (int)act,
+                     src, line, name,
+                     (int)gCurrLevelNum, (int)gCurrAreaIndex,
+                     (int)sCurrPlayMode, (int)gWarpTransition.isActive);
+    }
+#endif
+    // Co-op DX parity: DynOS drives all warps (vanilla + custom) for deterministic behavior.
+    bool ok = dynos_warp_to_level(level, area, act);
+    smlua_logf("lua: warp_to_level(level=%d area=%d act=%d) -> %d", (int)level, (int)area, (int)act, ok ? 1 : 0);
+    lua_pushboolean(L, ok);
+    return 1;
 #else
     lua_pushboolean(L, 0);
     return 1;

@@ -62,9 +62,39 @@ static inline u32 cur_geo_cmd_read_u32(u32 offset) {
 }
 
 static inline void *cur_geo_cmd_read_ptr(u32 offset) {
-    void *value;
+    // Geo layout streams can be mixed-endian on Wii U DynOS loads:
+    // scalar command fields may need LE->BE swapping, while pointer tokens are
+    // already resolved to native pointers at load time.
+    //
+    // Prefer the native pointer word when it looks plausible; only fall back to
+    // a byteswapped pointer when native clearly looks invalid.
+    uintptr_t value = 0;
     memcpy(&value, &gGeoLayoutCommand[CMD_PROCESS_OFFSET(offset)], sizeof(value));
-    return value;
+    if (gGeoCmdSwapEndianFields) {
+        uintptr_t swapped;
+        if (sizeof(value) == 8) {
+            swapped = (uintptr_t) __builtin_bswap64((u64) value);
+        } else {
+            swapped = (uintptr_t) __builtin_bswap32((u32) value);
+        }
+
+        bool nativeLooksPtr =
+            (value == 0) ||
+            // common Wii U text/data ranges used by this port and DynOS assets
+            (value >= 0x02000000u && value < 0x30000000u) ||
+            // segmented pointers (segment 0x01..0x0F)
+            (((value >> 24) > 0x00u) && ((value >> 24) <= 0x0Fu));
+
+        bool swappedLooksPtr =
+            (swapped == 0) ||
+            (swapped >= 0x02000000u && swapped < 0x30000000u) ||
+            (((swapped >> 24) > 0x00u) && ((swapped >> 24) <= 0x0Fu));
+
+        if (!nativeLooksPtr && swappedLooksPtr) {
+            value = swapped;
+        }
+    }
+    return (void *) value;
 }
 
 #define cur_geo_cmd_u8(offset) cur_geo_cmd_read_u8((offset))

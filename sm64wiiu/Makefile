@@ -1002,6 +1002,11 @@ ifeq ($(TARGET_WII_U),1)
   # Keep Lua at low optimization for runtime stability on Cemu/hardware while
   # Co-op DX API coverage is still being brought up.
   $(BUILD_DIR)/third_party/lua-5.3.6/src/%.o: CFLAGS += -fno-fast-math -O0
+
+  # Collision code is extremely sensitive to FP/stack codegen on Wii U/Cemu.
+  # Keep this translation unit on strict math to avoid fast-math assumptions and
+  # reduce emulator crash risk in large DynOS custom stages.
+  $(BUILD_DIR)/src/engine/surface_collision.o: CFLAGS += -fno-fast-math -fno-unsafe-math-optimizations -fno-finite-math-only
 endif
 
 # Alternate compiler flags needed for matching

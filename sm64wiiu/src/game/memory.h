@@ -87,6 +87,7 @@ void load_engine_code_segment(void);
 struct AllocOnlyPool *alloc_only_pool_init(void);
 void alloc_only_pool_clear(struct AllocOnlyPool *pool);
 void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size);
+bool alloc_only_pool_contains_ptr(struct AllocOnlyPool *pool, const void *ptr);
 #else
 struct AllocOnlyPool *alloc_only_pool_init(u32 size, u32 side);
 void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size);

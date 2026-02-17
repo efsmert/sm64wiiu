@@ -27,6 +27,8 @@
 #include "math_util.h"
 #include "surface_collision.h"
 #include "surface_load.h"
+#include "platform_info.h"
+#include "pc/pc_diag.h"
 
 #ifndef TARGET_N64
 #include "data/dynos.c.h"
@@ -82,7 +84,7 @@ static inline bool level_cmd_swap_scalar_fields(void) {
     if (gLevelScriptModIndex < 0 || sCurrentCmd == NULL) {
         return false;
     }
-#if DYNOS_HOST_BIG_ENDIAN
+#if IS_BIG_ENDIAN
     return true;
 #else
     return false;
@@ -499,19 +501,26 @@ static void level_cmd_begin_area(void) {
 #endif
         struct GraphNodeRoot *screenArea = NULL;
 #ifndef TARGET_N64
+        u32 id = 0;
+        screenArea = (struct GraphNodeRoot *) dynos_model_load_geo(&id, MODEL_POOL_LEVEL, geoLayoutAddr, false);
 #ifdef TARGET_WII_U
-        // DynOS custom levels can provide raw geo pointers in high memory.
-        // Parse those directly via the level pool if DynOS model loading fails.
-        if ((uintptr_t)geoLayoutAddr >= 0x10000000u) {
+        // Keep donor behavior first: DynOS owns geo loading/caching and manages its own pools.
+        // Fallback to direct parse only when DynOS cannot load a high-memory custom geo.
+        if (screenArea == NULL && (uintptr_t) geoLayoutAddr >= 0x10000000u && sLevelPool != NULL) {
             screenArea = (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
         }
 #endif
-        if (screenArea == NULL) {
-        u32 id = 0;
-        screenArea = (struct GraphNodeRoot *) dynos_model_load_geo(&id, MODEL_POOL_LEVEL, geoLayoutAddr, false);
-        }
 #else
         screenArea = (struct GraphNodeRoot *) process_geo_layout(sLevelPool, geoLayoutAddr);
+#endif
+#ifdef TARGET_WII_U
+        if (screenArea == NULL && (uintptr_t) geoLayoutAddr >= 0x10000000u && sLevelPool == NULL) {
+            static s32 sBeginAreaNullPoolLogs = 0;
+            if (sBeginAreaNullPoolLogs < 32) {
+                WHBLogPrintf("level_script: begin_area null level pool area=%u geo=%p cmd=%p", areaIndex, geoLayoutAddr, sCurrentCmd);
+                sBeginAreaNullPoolLogs++;
+            }
+        }
 #endif
         if (screenArea == NULL) {
 #ifdef TARGET_WII_U
@@ -1386,6 +1395,9 @@ static void (*LevelScriptJumpTableCanonical[])(void) = {
 };
 
 struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
+    u32 scriptLoopGuard = 0;
+
+    pc_diag_mark_stage("level_script_execute:enter");
     sScriptStatus = SCRIPT_RUNNING;
     sCurrentCmd = cmd;
 #ifndef TARGET_N64
@@ -1403,6 +1415,27 @@ struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
     }
 
     while (sScriptStatus == SCRIPT_RUNNING) {
+        scriptLoopGuard++;
+        if (scriptLoopGuard > 200000u) {
+#ifdef TARGET_WII_U
+            WHBLogPrintf("level_script: loop guard tripped cmd=%p type=0x%02X size=%u lvl=%d area=%d modIndex=%d",
+                         (void *) sCurrentCmd,
+                         (unsigned) (sCurrentCmd ? sCurrentCmd->type : 0),
+                         (unsigned) (sCurrentCmd ? sCurrentCmd->size : 0),
+                         (int) gCurrLevelNum,
+                         (int) gCurrAreaIndex,
+                         (int) gLevelScriptModIndex);
+#endif
+            printf("level_script: loop guard tripped cmd=%p type=0x%02X size=%u lvl=%d area=%d modIndex=%d\n",
+                   (void *) sCurrentCmd,
+                   (unsigned) (sCurrentCmd ? sCurrentCmd->type : 0),
+                   (unsigned) (sCurrentCmd ? sCurrentCmd->size : 0),
+                   (int) gCurrLevelNum,
+                   (int) gCurrAreaIndex,
+                   (int) gLevelScriptModIndex);
+            sScriptStatus = SCRIPT_PAUSED;
+            break;
+        }
 #ifndef TARGET_N64
         sCurrentCmd = (struct LevelCommand *) dynos_swap_cmd(sCurrentCmd);
         void *dynosCurrCmd = (void *) sCurrentCmd;
@@ -1421,12 +1454,55 @@ struct LevelCommand *level_script_execute(struct LevelCommand *cmd) {
         }
 #endif
     }
+    pc_diag_mark_stage("level_script_execute:after_script_loop");
+
+#ifdef TARGET_WII_U
+    // Flood casino lobby debugging:
+    // In the broken state, Mario renders but updates/input are dead. That usually means
+    // we're not calling lvl_init_or_update(1) each frame (or its argument is mis-read).
+    // This log runs even if update_level()/object updates never execute.
+    if (gCurrLevelNum == 55 && sCurrentCmd != NULL) {
+        static u32 sCasinoLsCounter = 0;
+        sCasinoLsCounter++;
+        if ((sCasinoLsCounter % 15u) == 0u) { // ~4Hz at 60fps
+            extern s32 gLevelScriptModIndex;
+            u8 type = sCurrentCmd->type;
+            u8 size = sCurrentCmd->size;
+            s16 rawArgS16 = 0;
+            memcpy(&rawArgS16, (CMD_PROCESS_OFFSET(2) + (u8 *) sCurrentCmd), sizeof(rawArgS16));
+            s16 swappedArgS16 = (s16) __builtin_bswap16((u16) rawArgS16);
+            void *funcPtr = NULL;
+            if (type == 0x12) { // CALL_LOOP
+                funcPtr = CMD_GET(void *, 4);
+            }
+            WHBLogPrintf(
+                "flood_ls: call=%u gt=%u lvl=%d play=%d cmd=%p type=0x%02X size=%u modIndex=%d rawArg=0x%04X swapArg=0x%04X func=%p",
+                (unsigned) sCasinoLsCounter,
+                (unsigned) gGlobalTimer,
+                (int) gCurrLevelNum,
+                (int) sCurrPlayMode,
+                (void *) sCurrentCmd,
+                (unsigned) type,
+                (unsigned) size,
+                (int) gLevelScriptModIndex,
+                (unsigned) (u16) rawArgS16,
+                (unsigned) (u16) swappedArgS16,
+                funcPtr
+            );
+        }
+    }
+#endif
 
     profiler_log_thread5_time(LEVEL_SCRIPT_EXECUTE);
+    pc_diag_mark_stage("level_script_execute:before_init_rcp");
     init_rcp();
+    pc_diag_mark_stage("level_script_execute:before_render_game");
     render_game();
+    pc_diag_mark_stage("level_script_execute:before_end_master_display_list");
     end_master_display_list();
+    pc_diag_mark_stage("level_script_execute:before_alloc_display_list");
     alloc_display_list(0);
+    pc_diag_mark_stage("level_script_execute:return");
 
     return sCurrentCmd;
 }
