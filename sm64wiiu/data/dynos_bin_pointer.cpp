@@ -267,7 +267,13 @@ static void *GetPointerFromData(GfxData *aGfxData, const String &aPtrName, u32 a
             if (aPtrData == 2) {
                 return (void *) &_Node->mData->a;
             }
+#ifdef TARGET_WII_U
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Unknown Light type: %u", aPtrData);
+            return NULL;
+#else
             sys_fatal("Unknown Light type: %u", aPtrData);
+#endif
         }
     }
 
@@ -280,7 +286,13 @@ static void *GetPointerFromData(GfxData *aGfxData, const String &aPtrName, u32 a
             if (aPtrData == 2) {
                 return (void *) &_Node->mData->a;
             }
+#ifdef TARGET_WII_U
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Unknown Light type: %u", aPtrData);
+            return NULL;
+#else
             sys_fatal("Unknown Light type: %u", aPtrData);
+#endif
         }
     }
 
@@ -296,7 +308,13 @@ static void *GetPointerFromData(GfxData *aGfxData, const String &aPtrName, u32 a
             if (aPtrData == 3) {
                 return (void *) &_Node->mData->dir[0];
             }
+#ifdef TARGET_WII_U
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Unknown Light type: %u", aPtrData);
+            return NULL;
+#else
             sys_fatal("Unknown Light type: %u", aPtrData);
+#endif
         }
     }
 
@@ -309,7 +327,13 @@ static void *GetPointerFromData(GfxData *aGfxData, const String &aPtrName, u32 a
             if (aPtrData == 2) {
                 return (void *) &_Node->mData->colc[0];
             }
+#ifdef TARGET_WII_U
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Unknown Light type: %u", aPtrData);
+            return NULL;
+#else
             sys_fatal("Unknown Light type: %u", aPtrData);
+#endif
         }
     }
 
@@ -456,8 +480,14 @@ static void *GetPointerFromData(GfxData *aGfxData, const String &aPtrName, u32 a
     }
 
     // Error
+#ifdef TARGET_WII_U
+    aGfxData->mErrorCount++;
+    PrintError("ERROR: Pointer not found: %s", aPtrName.begin());
+    return NULL;
+#else
     sys_fatal("Pointer not found: %s", aPtrName.begin());
     return NULL;
+#endif
 }
 
 void *DynOS_Pointer_Load(BinFile *aFile, GfxData *aGfxData, u32 aValue, u8 aFuncType, u8* outFlags) {
@@ -484,11 +514,23 @@ void *DynOS_Pointer_Load(BinFile *aFile, GfxData *aGfxData, u32 aValue, u8 aFunc
         }
         String error = DynOS_Builtin_Func_CheckMisuse(_FunctionIndex, aFuncType);
         if (!error.Empty()) {
+#ifdef TARGET_WII_U
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: %s", error.begin());
+            return NULL;
+#else
             sys_fatal(error.begin());
             return NULL;
+#endif
         }
+#ifdef TARGET_WII_U
+        aGfxData->mErrorCount++;
+        PrintError("ERROR: Invalid function index: %d", _FunctionIndex);
+        return NULL;
+#else
         sys_fatal("Invalid function index: %d", _FunctionIndex);
         return NULL;
+#endif
     }
 
     // PNTR

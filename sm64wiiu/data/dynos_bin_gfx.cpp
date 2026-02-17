@@ -1135,15 +1135,23 @@ void DynOS_Gfx_Load(BinFile *aFile, GfxData *aGfxData) {
     _Node->mSize = aFile->Read<u32>();
     _Node->mData = gfx_allocate_internal(NULL, _Node->mSize);
     for (u32 i = 0; i != _Node->mSize; ++i) {
-        u32 _WordsW0 = aFile->Read<u32>();
-        u32 _WordsW1 = aFile->Read<u32>();
-        void *_Ptr = DynOS_Pointer_Load(aFile, aGfxData, _WordsW1, 0, &_Node->mFlags);
+        // Display lists are interpreted as native u32 words by the renderer.
+        // Read using BinFile::Read<u32>() so big-endian targets (Wii U) get the
+        // correct host-endian word values.
+        u32 _W0 = aFile->Read<u32>();
+        u32 _W1 = aFile->Read<u32>();
+
+        void *_Ptr = DynOS_Pointer_Load(aFile, aGfxData, _W1, 0, &_Node->mFlags);
+        _Node->mData[i].words.w0 = (uintptr_t) _W0;
         if (_Ptr) {
-            _Node->mData[i].words.w0 = (uintptr_t) _WordsW0;
             _Node->mData[i].words.w1 = (uintptr_t) _Ptr;
+        } else if (_W1 == FUNCTION_CODE || _W1 == POINTER_CODE || _W1 == LUA_VAR_CODE) {
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Gfx pointer token decode failed: dl='%s' idx=%u token=0x%08X",
+                       _Node->mName.begin(), i, _W1);
+            _Node->mData[i].words.w1 = 0;
         } else {
-            _Node->mData[i].words.w0 = (uintptr_t) _WordsW0;
-            _Node->mData[i].words.w1 = (uintptr_t) _WordsW1;
+            _Node->mData[i].words.w1 = (uintptr_t) _W1;
         }
     }
 

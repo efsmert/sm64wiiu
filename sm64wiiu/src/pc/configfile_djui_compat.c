@@ -97,6 +97,7 @@ bool configDisablePopups = false;
 char configLanguage[MAX_CONFIG_STRING] = "English";
 bool configForce4By3 = false;
 bool configDynosLocalPlayerModelOnly = false;
+bool configDynosEnableActorBins = true;
 bool configSkipPackGeneration = true;
 bool configCompressOnStartup = false;
 unsigned int configPvpType = 0;

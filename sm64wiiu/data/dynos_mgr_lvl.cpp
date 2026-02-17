@@ -289,25 +289,66 @@ double_break:
 }
 
 void *DynOS_Lvl_Override(void *aCmd) {
+    // Track DynOS execution context per-command.
+    // Custom DynOS level scripts are authored on little-endian hosts; the Wii U
+    // interpreter swaps scalar reads when `gLevelScriptModIndex >= 0`.
+    //
+    // Flood custom stages call into vanilla/global scripts (e.g. `level_main_scripts_entry`)
+    // via JUMP/JUMP_LINK. If we leave `gLevelScriptModIndex` set while executing those
+    // vanilla scripts, the engine will swap their immediates and break segment loads/area init.
+    //
+    // Fix: set `gLevelScriptModIndex` based on whether `aCmd` is inside a DynOS-provided
+    // script buffer, not based only on base script pointer equality.
+    if (aCmd == NULL) {
+        gLevelScriptModIndex = -1;
+        gLevelScriptActive = NULL;
+        return NULL;
+    }
+
+    // Cache the last matched DynOS script memory range to keep the per-command overhead low.
+    static const u8 *sLastScriptBegin = NULL;
+    static const u8 *sLastScriptEnd = NULL;
+    static s32 sLastScriptModIndex = -1;
+    static LevelScript *sLastScriptBase = NULL;
+
     auto& _OverrideLevelScripts = DynosOverrideLevelScripts();
     for (auto& overrideStruct : _OverrideLevelScripts) {
         if (aCmd == overrideStruct.originalScript || aCmd == overrideStruct.newScript) {
             aCmd = (void*)overrideStruct.newScript;
-            gLevelScriptModIndex = overrideStruct.gfxData->mModIndex;
-            gLevelScriptActive = (LevelScript*)aCmd;
+            break;
         }
+    }
+
+    const u8 *cmdPtr = (const u8 *) aCmd;
+    if (sLastScriptBegin != NULL && cmdPtr >= sLastScriptBegin && cmdPtr < sLastScriptEnd) {
+        gLevelScriptModIndex = sLastScriptModIndex;
+        gLevelScriptActive = sLastScriptBase;
+        return aCmd;
     }
 
     auto& _CustomLevelScripts = DynOS_Lvl_GetArray();
     for (auto& script : _CustomLevelScripts) {
         auto& scripts = script.second->mLevelScripts;
         for (auto& s : scripts) {
-            if (aCmd == s->mData) {
-                gLevelScriptModIndex = script.second->mModIndex;
-                gLevelScriptActive = (LevelScript*)aCmd;
+            if (s == NULL || s->mData == NULL || s->mSize == 0) {
+                continue;
+            }
+            const u8 *begin = (const u8 *) s->mData;
+            const u8 *end = begin + ((size_t) s->mSize * sizeof(LevelScript));
+            if (cmdPtr >= begin && cmdPtr < end) {
+                sLastScriptBegin = begin;
+                sLastScriptEnd = end;
+                sLastScriptModIndex = script.second->mModIndex;
+                sLastScriptBase = s->mData;
+                gLevelScriptModIndex = sLastScriptModIndex;
+                gLevelScriptActive = sLastScriptBase;
+                return aCmd;
             }
         }
     }
 
+    // Not inside a DynOS-loaded script buffer; treat as vanilla.
+    gLevelScriptModIndex = -1;
+    gLevelScriptActive = NULL;
     return aCmd;
 }

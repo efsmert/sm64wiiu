@@ -12,6 +12,9 @@
 #include "course_table.h"
 #include "rumble_init.h"
 #include "pc/network/network.h"
+#ifndef TARGET_N64
+#include "pc/lua/utils/smlua_level_utils.h"
+#endif
 
 #define MENU_DATA_MAGIC 0x4849
 #define SAVE_FILE_MAGIC 0x4441
@@ -43,6 +46,16 @@ s8 gLevelToCourseNumTable[] = {
 
 // CoopDX compatibility helper (used by DynOS level parsing).
 s8 get_level_course_num(s32 levelNum) {
+    // Custom levels (DynOS/Lua) may live outside the vanilla LEVEL_* enum range.
+    // Those must not index into the static table below.
+#ifndef TARGET_N64
+    if (levelNum >= CUSTOM_LEVEL_NUM_START) {
+        struct CustomLevelInfo* info = smlua_level_util_get_info((s16)levelNum);
+        if (info != NULL) {
+            return (s8)info->courseNum;
+        }
+    }
+#endif
     if (levelNum <= LEVEL_NONE || levelNum >= LEVEL_COUNT) {
         return COURSE_NONE;
     }
@@ -659,7 +672,8 @@ void check_if_should_set_warp_checkpoint(struct WarpNode *warpNode) {
  */
 s32 check_warp_checkpoint(struct WarpNode *warpNode) {
     s16 warpCheckpointActive = FALSE;
-    s16 currCourseNum = gLevelToCourseNumTable[(warpNode->destLevel & 0x7F) - 1];
+    // Vanilla table lookup is unsafe for custom levels (50+) or invalid nodes.
+    s16 currCourseNum = get_level_course_num((warpNode->destLevel & 0x7F));
 
     // gSavedCourseNum is only used in this function.
     if (gWarpCheckpoint.courseNum != COURSE_NONE && gSavedCourseNum == currCourseNum

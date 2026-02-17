@@ -27,7 +27,7 @@
 // Enable verbose display-list diagnostics in crash-debug builds.
 // This helps diagnose custom-level hangs (bad pointers, cycles, huge DLs).
 #ifndef GFX_WIIU_VERBOSE_LOGS
-#if defined(WIIU_CRASH_DEBUG)
+#if defined(WIIU_CRASH_DEBUG) && defined(WIIU_CRASH_DEBUG_GFX_TRACE)
 #define GFX_WIIU_VERBOSE_LOGS 1
 #else
 #define GFX_WIIU_VERBOSE_LOGS 0
@@ -2570,7 +2570,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
         uint32_t opcode = sGfxDlLastW0 >> 24;
 #ifdef TARGET_WII_U
         // Per-frame progress logging. The counter is reset in gfx_run().
-#if defined(WIIU_CRASH_DEBUG)
+#if defined(WIIU_CRASH_DEBUG) && defined(WIIU_CRASH_DEBUG_GFX_TRACE)
         if (sGfxDlProgressLogCount < 512
             && (sGfxDlCommandCount <= 512 || (sGfxDlCommandCount % 500) == 0)) {
             GFX_WIIU_LOGF("gfx: dl_progress count=%u depth=%u opcode=0x%02x cmd=%p w0=0x%08x w1=0x%08x",
@@ -2977,7 +2977,7 @@ static void gfx_run_dl(Gfx* cmd, uint32_t depth) {
                 break;
         }
 #ifdef TARGET_WII_U
-#if defined(WIIU_CRASH_DEBUG)
+#if defined(WIIU_CRASH_DEBUG) && defined(WIIU_CRASH_DEBUG_GFX_TRACE)
         if (sGfxDlCommandExitLogCount < 512
             && (sGfxDlCommandCount <= 512 || (sGfxDlCommandCount % 500) == 0)) {
             GFX_WIIU_LOGF("gfx: dl_exit count=%u depth=%u opcode=0x%02x cmd=%p w0=0x%08x w1=0x%08x",

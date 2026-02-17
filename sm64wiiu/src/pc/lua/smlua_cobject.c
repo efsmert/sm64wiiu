@@ -11,6 +11,7 @@
 #include "game/ingame_menu.h"
 #include "game/level_update.h"
 #include "game/object_list_processor.h"
+#include "smlua.h"
 #include "smlua_cobject.h"
 #include "smlua_hooks.h"
 
@@ -18,6 +19,7 @@ static const char *SMLUA_COBJECT_METATABLE = "SM64.CObject";
 static const char *SMLUA_VEC3F_METATABLE = "SM64.Vec3fRef";
 static const char *SMLUA_VEC3S_METATABLE = "SM64.Vec3sRef";
 static const char *SMLUA_CONTROLLER_METATABLE = "SM64.ControllerRef";
+static const char *SMLUA_SURFACE_METATABLE = "SM64.SurfaceRef";
 static const char *SMLUA_OBJECT_HEADER_METATABLE = "SM64.ObjectHeaderRef";
 static const char *SMLUA_OBJECT_GFX_METATABLE = "SM64.ObjectGfxRef";
 static const char *SMLUA_OBJECT_ANIMINFO_METATABLE = "SM64.ObjectAnimInfoRef";
@@ -37,6 +39,10 @@ typedef struct SmluaVec3sRef {
 typedef struct SmluaControllerRef {
     struct Controller *pointer;
 } SmluaControllerRef;
+
+typedef struct SmluaSurfaceRef {
+    struct Surface *pointer;
+} SmluaSurfaceRef;
 
 typedef struct SmluaObjectHeaderRef {
     struct Object *object;
@@ -386,6 +392,86 @@ static void smlua_push_vec3s(lua_State *L, s16 *pointer) {
     lua_setmetatable(L, -2);
 }
 
+// Lua metamethod for Surface proxy userdata reads.
+static int smlua_surface_index(lua_State *L) {
+    const SmluaSurfaceRef *ref = luaL_checkudata(L, 1, SMLUA_SURFACE_METATABLE);
+    const char *key = luaL_checkstring(L, 2);
+    struct Surface *s = ref->pointer;
+
+    if (strcmp(key, "type") == 0) {
+        lua_pushinteger(L, s->type);
+        return 1;
+    }
+    if (strcmp(key, "force") == 0) {
+        lua_pushinteger(L, s->force);
+        return 1;
+    }
+    if (strcmp(key, "flags") == 0) {
+        lua_pushinteger(L, s->flags);
+        return 1;
+    }
+    if (strcmp(key, "room") == 0) {
+        lua_pushinteger(L, s->room);
+        return 1;
+    }
+    if (strcmp(key, "lowerY") == 0) {
+        lua_pushinteger(L, s->lowerY);
+        return 1;
+    }
+    if (strcmp(key, "upperY") == 0) {
+        lua_pushinteger(L, s->upperY);
+        return 1;
+    }
+    if (strcmp(key, "originOffset") == 0) {
+        lua_pushnumber(L, s->originOffset);
+        return 1;
+    }
+    if (strcmp(key, "object") == 0) {
+        smlua_push_object(L, s->object);
+        return 1;
+    }
+    if (strcmp(key, "pointer") == 0) {
+        lua_pushlightuserdata(L, s);
+        return 1;
+    }
+    if (strcmp(key, "is_null") == 0) {
+        lua_pushboolean(L, s == NULL ? 1 : 0);
+        return 1;
+    }
+
+    lua_pushnil(L);
+    return 1;
+}
+
+// Lua metamethod for Surface proxy writes.
+static int smlua_surface_newindex(lua_State *L) {
+    SmluaSurfaceRef *ref = luaL_checkudata(L, 1, SMLUA_SURFACE_METATABLE);
+    const char *key = luaL_checkstring(L, 2);
+    struct Surface *s = ref->pointer;
+
+    // Flood Expanded and similar mods patch surface types at runtime to avoid
+    // warp/quicksand semantics on custom stages.
+    if (strcmp(key, "type") == 0) {
+        s->type = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+
+    // Only implement additional writable fields when needed.
+    return luaL_error(L, "unknown Surface field '%s'", key);
+}
+
+// Pushes a Surface proxy userdata for direct Lua read/write access.
+static void smlua_push_surface(lua_State *L, struct Surface *pointer) {
+    if (pointer == NULL) {
+        lua_pushnil(L);
+        return;
+    }
+    SmluaSurfaceRef *ref = lua_newuserdata(L, sizeof(SmluaSurfaceRef));
+    ref->pointer = pointer;
+    luaL_getmetatable(L, SMLUA_SURFACE_METATABLE);
+    lua_setmetatable(L, -2);
+}
+
 // Lua metamethod for Controller proxy userdata reads.
 static int smlua_controller_index(lua_State *L) {
     const SmluaControllerRef *ref = luaL_checkudata(L, 1, SMLUA_CONTROLLER_METATABLE);
@@ -687,6 +773,10 @@ static int smlua_object_gfx_index(lua_State *L) {
         smlua_push_object_shared_child(L, ref->object);
         return 1;
     }
+    if (strcmp(key, "skipInViewCheck") == 0) {
+        lua_pushboolean(L, ref->object->header.gfx.skipInViewCheck ? 1 : 0);
+        return 1;
+    }
     if (strcmp(key, "type") == 0) {
         lua_pushstring(L, "ObjectGfx");
         return 1;
@@ -717,6 +807,10 @@ static int smlua_object_gfx_newindex(lua_State *L) {
         ref->object->header.gfx.disableAutomaticShadowPos = lua_toboolean(L, 3) != 0;
         return 0;
     }
+    if (strcmp(key, "skipInViewCheck") == 0) {
+        ref->object->header.gfx.skipInViewCheck = lua_toboolean(L, 3) != 0;
+        return 0;
+    }
 
     return luaL_error(L, "unknown ObjectGfx field '%s'", key);
 }
@@ -733,6 +827,14 @@ static int smlua_object_animinfo_index(lua_State *L) {
     }
     if (strcmp(key, "animFrame") == 0) {
         lua_pushinteger(L, anim_info->animFrame);
+        return 1;
+    }
+    if (strcmp(key, "prevAnimFrame") == 0) {
+        lua_pushinteger(L, anim_info->prevAnimFrame);
+        return 1;
+    }
+    if (strcmp(key, "prevAnimFrameTimestamp") == 0) {
+        lua_pushinteger(L, anim_info->prevAnimFrameTimestamp);
         return 1;
     }
     if (strcmp(key, "type") == 0) {
@@ -760,6 +862,14 @@ static int smlua_object_animinfo_newindex(lua_State *L) {
     }
     if (strcmp(key, "animFrame") == 0) {
         anim_info->animFrame = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "prevAnimFrame") == 0) {
+        anim_info->prevAnimFrame = (s16)luaL_checkinteger(L, 3);
+        return 0;
+    }
+    if (strcmp(key, "prevAnimFrameTimestamp") == 0) {
+        anim_info->prevAnimFrameTimestamp = (u32)luaL_checkinteger(L, 3);
         return 0;
     }
 
@@ -876,7 +986,7 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
         return true;
     }
     if (strcmp(key, "playerIndex") == 0) {
-        lua_pushinteger(L, (lua_Integer)(m - gMarioStates));
+        lua_pushinteger(L, (lua_Integer)smlua_debug_get_mario_state_index(m));
         return true;
     }
     if (strcmp(key, "freeze") == 0) {
@@ -969,6 +1079,18 @@ static bool smlua_push_mario_field(lua_State *L, struct MarioState *m, const cha
     }
     if (strcmp(key, "waterLevel") == 0) {
         lua_pushinteger(L, m->waterLevel);
+        return true;
+    }
+    if (strcmp(key, "wall") == 0) {
+        smlua_push_surface(L, m->wall);
+        return true;
+    }
+    if (strcmp(key, "ceil") == 0) {
+        smlua_push_surface(L, m->ceil);
+        return true;
+    }
+    if (strcmp(key, "floor") == 0) {
+        smlua_push_surface(L, m->floor);
         return true;
     }
     if (strcmp(key, "peakHeight") == 0) {
@@ -2238,6 +2360,16 @@ void smlua_bind_cobject(lua_State *L) {
         lua_pushcfunction(L, smlua_controller_index);
         lua_setfield(L, -2, "__index");
         lua_pushcfunction(L, smlua_controller_newindex);
+        lua_setfield(L, -2, "__newindex");
+        lua_pushboolean(L, 0);
+        lua_setfield(L, -2, "__metatable");
+    }
+    lua_pop(L, 1);
+
+    if (luaL_newmetatable(L, SMLUA_SURFACE_METATABLE)) {
+        lua_pushcfunction(L, smlua_surface_index);
+        lua_setfield(L, -2, "__index");
+        lua_pushcfunction(L, smlua_surface_newindex);
         lua_setfield(L, -2, "__newindex");
         lua_pushboolean(L, 0);
         lua_setfield(L, -2, "__metatable");

@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include <stdio.h>
 
 #include "sm64.h"
 #include "seq_ids.h"
@@ -1030,19 +1031,6 @@ s32 play_mode_normal(void) {
     warp_area();
     check_instant_warp();
 
-#ifndef TARGET_N64
-    if (gDjuiInMainMenu && gMarioState != NULL && gMarioState->controller != NULL) {
-        set_mario_action(gMarioState, ACT_IDLE, 0);
-        gMarioState->controller->buttonDown = 0;
-        gMarioState->controller->buttonPressed = 0;
-        gMarioState->controller->rawStickX = 0;
-        gMarioState->controller->rawStickY = 0;
-        gMarioState->controller->stickX = 0;
-        gMarioState->controller->stickY = 0;
-        gMarioState->controller->stickMag = 0.0f;
-    }
-#endif
-
     if (sTimerRunning && gHudDisplay.timer < 17999) {
         gHudDisplay.timer += 1;
     }
@@ -1207,6 +1195,62 @@ s32 update_level(void) {
     djui_update_menu_level();
 #endif
 
+#ifdef TARGET_WII_U
+    // Flood Expanded casino lobby diagnostics:
+    // When the lobby is broken, we often stop seeing logs from update_objects().
+    // This print runs from update_level() (main loop) so we can confirm play mode
+    // and other gating state even if object updates are not happening.
+    if (gCurrLevelNum == 55) { // Flood casino_entry
+        // Use a call counter so logs still appear if gGlobalTimer is frozen.
+        static u32 sFloodLobbyCallCounter = 0;
+        static u32 sFloodLobbyLastLogCall = 0;
+        sFloodLobbyCallCounter++;
+        if ((u32)(sFloodLobbyCallCounter - sFloodLobbyLastLogCall) >= 60) {
+            sFloodLobbyLastLogCall = sFloodLobbyCallCounter;
+            extern bool gDjuiInMainMenu;
+            const struct Controller *ctrl = (gMarioState != NULL) ? gMarioState->controller : NULL;
+            const u16 btnDown = ctrl ? ctrl->buttonDown : 0;
+            const int stickMag = ctrl ? (int)ctrl->stickMag : -1;
+            WHBLogPrintf(
+                "flood_lobby_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X btnDown=0x%04X stickMag=%d",
+                (unsigned int)sFloodLobbyCallCounter,
+                (unsigned int)gGlobalTimer,
+                (int)gCurrLevelNum,
+                (int)gCurrAreaIndex,
+                (int)gCurrActNum,
+                (int)sCurrPlayMode,
+                (int)gDjuiInMainMenu,
+                (int)sDelayedWarpOp,
+                (int)gWarpTransition.isActive,
+                (unsigned int)gTimeStopState,
+                (void*)gCurrentArea,
+                (void*)gMarioState,
+                (unsigned int)(gMarioState ? gMarioState->action : 0),
+                (unsigned int)btnDown,
+                stickMag
+            );
+            printf(
+                "flood_lobby_loop: call=%u gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d delayedWarp=%d warpActive=%d timeStop=0x%X gArea=%p mario=%p action=0x%08X btnDown=0x%04X stickMag=%d\n",
+                (unsigned int)sFloodLobbyCallCounter,
+                (unsigned int)gGlobalTimer,
+                (int)gCurrLevelNum,
+                (int)gCurrAreaIndex,
+                (int)gCurrActNum,
+                (int)sCurrPlayMode,
+                (int)gDjuiInMainMenu,
+                (int)sDelayedWarpOp,
+                (int)gWarpTransition.isActive,
+                (unsigned int)gTimeStopState,
+                (void*)gCurrentArea,
+                (void*)gMarioState,
+                (unsigned int)(gMarioState ? gMarioState->action : 0),
+                (unsigned int)btnDown,
+                stickMag
+            );
+        }
+    }
+#endif
+
     if (!gWarpTransition.isActive && sDelayedWarpOp == WARP_OP_NONE && gChangeLevelTransition != -1) {
         gHudDisplay.flags = HUD_DISPLAY_NONE;
         sTransitionTimer = 0;
@@ -1244,6 +1288,10 @@ s32 update_level(void) {
 
 s32 init_level(void) {
     s32 val4 = 0;
+
+    // Co-op DX parity: always clear dialog state on level init.
+    // Mods like Flood Expanded gate pause/menu input on dialog being inactive.
+    reset_dialog_render_state();
 
     set_play_mode(PLAY_MODE_NORMAL);
 
@@ -1401,7 +1449,10 @@ s32 lvl_set_current_level(UNUSED s16 arg0, s32 levelNum) {
 
     sWarpCheckpointActive = FALSE;
     gCurrLevelNum = levelNum;
-    gCurrCourseNum = gLevelToCourseNumTable[levelNum - 1];
+    // CoopDX compatibility: Flood and other DynOS/Lua mods can register custom
+    // levels with IDs beyond LEVEL_COUNT. Using the vanilla lookup table here
+    // will read out-of-bounds and corrupt memory.
+    gCurrCourseNum = get_level_course_num(levelNum);
 
     if (gCurrDemoInput != NULL || gCurrCreditsEntry != NULL || gCurrCourseNum == COURSE_NONE) {
         return 0;

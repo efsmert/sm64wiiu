@@ -13,6 +13,9 @@
 #include "pc/configfile.h"
 #include "seq_ids.h"
 #include "dialog_ids.h"
+#ifndef TARGET_N64
+#include "pc/lua/utils/smlua_level_utils.h"
+#endif
 
 #if defined(VERSION_EU) || defined(VERSION_SH)
 #define EU_FLOAT(x) x##f
@@ -439,6 +442,53 @@ static void fade_channel_volume_scale(u8 player, u8 channelId, u8 targetScale, u
 void process_level_music_dynamics(void);
 static u8 begin_background_music_fade(u16 fadeDuration);
 void func_80320ED8(void);
+
+// CoopDX compatibility: custom levels (DynOS/Lua) can use level numbers >= CUSTOM_LEVEL_NUM_START.
+// The vanilla audio tables are indexed by level number and would read out of bounds, causing
+// memory corruption and crashes during custom-stage warps.
+static s16 get_level_dynamics(s16 levelNum, s16 index) {
+    if (levelNum < 0 || levelNum >= LEVEL_COUNT) {
+        return 0;
+    }
+    return sLevelDynamics[levelNum][index];
+}
+
+static u8 get_level_area_reverb(s16 levelNum, s16 index) {
+#ifndef TARGET_N64
+    if (levelNum >= CUSTOM_LEVEL_NUM_START) {
+        struct CustomLevelInfo* info = smlua_level_util_get_info(levelNum);
+        if (!info) { return 0x00; }
+        switch (index) {
+            case 0: return (u8)info->echoLevel1;
+            case 1: return (u8)info->echoLevel2;
+            case 2: return (u8)info->echoLevel3;
+        }
+        return 0x00;
+    }
+#endif
+
+    if (levelNum < 0 || levelNum >= LEVEL_COUNT) {
+        return 0x00;
+    }
+    if (index < 0 || index >= 3) {
+        return 0x00;
+    }
+    return sLevelAreaReverbs[levelNum][index];
+}
+
+static u16 get_level_acoustic_reaches(s16 levelNum) {
+#ifndef TARGET_N64
+    if (levelNum >= CUSTOM_LEVEL_NUM_START) {
+        struct CustomLevelInfo* info = smlua_level_util_get_info(levelNum);
+        return (u16)(info ? info->acousticReach : 20000);
+    }
+#endif
+
+    if (levelNum < 0 || levelNum >= LEVEL_COUNT) {
+        return 20000;
+    }
+    return sLevelAcousticReaches[levelNum];
+}
 
 #ifndef VERSION_JP
 void unused_8031E4F0(void) {
@@ -1238,7 +1288,7 @@ static f32 get_sound_volume(u8 bank, u8 soundIndex, f32 volumeRange) {
     if (!(sSoundBanks[bank][soundIndex].soundBits & SOUND_NO_VOLUME_LOSS)) {
 #ifdef VERSION_JP
         // Intensity linearly lowers from 1 at the camera to 0 at maxSoundDistance
-        maxSoundDistance = sLevelAcousticReaches[gCurrLevelNum];
+        maxSoundDistance = get_level_acoustic_reaches(gCurrLevelNum);
         if (maxSoundDistance < sSoundBanks[bank][soundIndex].distance) {
             intensity = 0.0f;
         } else {
@@ -1250,7 +1300,7 @@ static f32 get_sound_volume(u8 bank, u8 soundIndex, f32 volumeRange) {
         if (sSoundBanks[bank][soundIndex].distance > AUDIO_MAX_DISTANCE) {
             intensity = 0.0f;
         } else {
-            maxSoundDistance = sLevelAcousticReaches[gCurrLevelNum] / div;
+            maxSoundDistance = (f32)get_level_acoustic_reaches(gCurrLevelNum) / div;
             if (maxSoundDistance < sSoundBanks[bank][soundIndex].distance) {
                 intensity = ((AUDIO_MAX_DISTANCE - sSoundBanks[bank][soundIndex].distance)
                              / (AUDIO_MAX_DISTANCE - maxSoundDistance))
@@ -1307,7 +1357,7 @@ static f32 get_sound_freq_scale(u8 bank, u8 item) {
  */
 static u8 get_sound_reverb(UNUSED u8 bank, UNUSED u8 soundIndex, u8 channelIndex) {
     u8 area;
-    u8 level;
+    s16 level;
     u8 reverb;
 
 #ifndef VERSION_JP
@@ -1317,7 +1367,7 @@ static u8 get_sound_reverb(UNUSED u8 bank, UNUSED u8 soundIndex, u8 channelIndex
         area = 0;
     } else {
 #endif
-        level = (gCurrLevelNum > LEVEL_MAX ? LEVEL_MAX : gCurrLevelNum);
+        level = gCurrLevelNum;
         area = gCurrAreaIndex - 1;
         if (area > 2) {
             area = 2;
@@ -1330,7 +1380,7 @@ static u8 get_sound_reverb(UNUSED u8 bank, UNUSED u8 soundIndex, u8 channelIndex
     // The volume-dependent value is 0 when volume is at maximum, and raises to
     // LOW_VOLUME_REVERB when the volume is 0
     reverb = (u8)((u8) gSequencePlayers[SEQ_PLAYER_SFX].channels[channelIndex]->soundScriptIO[5]
-                  + sLevelAreaReverbs[level][area]
+                  + get_level_area_reverb(level, area)
                   + (US_FLOAT(1.0) - gSequencePlayers[SEQ_PLAYER_SFX].channels[channelIndex]->volume)
                         * LOW_VOLUME_REVERB);
 
@@ -1895,12 +1945,12 @@ void process_level_music_dynamics(void) {
         sBackgroundMusicForDynamics = sCurrentBackgroundMusicSeqId;
     }
 
-    if (sBackgroundMusicForDynamics != sLevelDynamics[gCurrLevelNum][0]) {
+    if (sBackgroundMusicForDynamics != get_level_dynamics(gCurrLevelNum, 0)) {
         return;
     }
 
-    conditionBits = sLevelDynamics[gCurrLevelNum][1] & 0xff00;
-    musicDynIndex = (u8) sLevelDynamics[gCurrLevelNum][1] & 0xff;
+    conditionBits = get_level_dynamics(gCurrLevelNum, 1) & 0xff00;
+    musicDynIndex = (u8) get_level_dynamics(gCurrLevelNum, 1) & 0xff;
     i = 2;
     while (conditionBits & 0xff00) {
         j = 0;
@@ -1908,7 +1958,7 @@ void process_level_music_dynamics(void) {
         bit = 0x8000;
         while (j < 8) {
             if (conditionBits & bit) {
-                conditionValues[condIndex] = sLevelDynamics[gCurrLevelNum][i++];
+                conditionValues[condIndex] = get_level_dynamics(gCurrLevelNum, i++);
                 conditionTypes[condIndex] = j;
                 condIndex++;
             }
@@ -1974,8 +2024,8 @@ void process_level_music_dynamics(void) {
             // The area matches. Break out of the loop.
             tempBits = 0;
         } else {
-            tempBits      = sLevelDynamics[gCurrLevelNum][i] & 0xff00;
-            musicDynIndex = sLevelDynamics[gCurrLevelNum][i] & 0xff;
+            tempBits      = get_level_dynamics(gCurrLevelNum, i) & 0xff00;
+            musicDynIndex = get_level_dynamics(gCurrLevelNum, i) & 0xff;
             i++;
         }
 

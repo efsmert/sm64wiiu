@@ -1,6 +1,7 @@
 #include <PR/ultratypes.h>
 #ifndef TARGET_N64
 #include <string.h>
+#include <stdlib.h>
 #endif
 #ifdef USE_SYSTEM_MALLOC
 #include <stdlib.h>
@@ -822,6 +823,85 @@ s32 load_patchable_table(struct DmaHandlerList *list, s32 index) {
     }
     return ret;
 }
+
+#if !defined(TARGET_N64)
+///////////////////
+// GrowingArray  //
+///////////////////
+
+struct GrowingArray *growing_array_init(struct GrowingArray *array, u32 capacity, GrowingArrayAllocFunc alloc, GrowingArrayFreeFunc freeFunc) {
+    growing_array_free(&array);
+    array = calloc(1, sizeof(struct GrowingArray));
+    if (!array) { return NULL; }
+    array->buffer = calloc(capacity, sizeof(void *));
+    if (!array->buffer) {
+        free(array);
+        return NULL;
+    }
+    array->capacity = capacity;
+    array->count = 0;
+    array->alloc = alloc;
+    array->free = freeFunc;
+    return array;
+}
+
+void *growing_array_alloc(struct GrowingArray *array, u32 size) {
+    if (!array || !array->buffer) { return NULL; }
+
+    // Increase capacity if needed
+    while (array->count >= array->capacity) {
+        u32 newCapacity = (array->capacity == 0) ? 1 : (array->capacity * 2);
+        void **newBuffer = calloc(newCapacity, sizeof(void *));
+        if (!newBuffer) { return NULL; }
+        if (array->capacity) {
+            memcpy(newBuffer, array->buffer, array->capacity * sizeof(void *));
+        }
+        free(array->buffer);
+        array->buffer = newBuffer;
+        array->capacity = newCapacity;
+    }
+
+    // Alloc element if needed
+    void **elem = &array->buffer[array->count++];
+    if (!*elem) {
+        *elem = array->alloc(size);
+        if (!*elem) { return NULL; }
+    }
+    memset(*elem, 0, size);
+    return *elem;
+}
+
+void growing_array_move(struct GrowingArray *array, u32 from, u32 to, u32 count) {
+    if (!array || !array->buffer || count == 0) { return; }
+    if (!((to < from) || (to > from + count))) { return; }
+    if ((from + count) > array->count) { return; }
+    if (to > array->count) { return; }
+
+    void **temp = malloc(sizeof(void *) * count);
+    if (!temp) { return; }
+
+    memcpy(temp, array->buffer + from, sizeof(void *) * count);
+    memmove(array->buffer + from, array->buffer + (from + count), sizeof(void *) * (array->count - (from + count)));
+    if (to > from) { to -= count; }
+    memmove(array->buffer + (to + count), array->buffer + to, sizeof(void *) * (array->count - (to + count)));
+    memcpy(array->buffer + to, temp, sizeof(void *) * count);
+    free(temp);
+}
+
+void growing_array_free(struct GrowingArray **array) {
+    if (!array || !*array) { return; }
+    if ((*array)->buffer && (*array)->free) {
+        for (u32 i = 0; i != (*array)->capacity; ++i) {
+            if ((*array)->buffer[i]) {
+                (*array)->free((*array)->buffer[i]);
+            }
+        }
+    }
+    free((*array)->buffer);
+    free(*array);
+    *array = NULL;
+}
+#endif
 
 #ifdef TARGET_WII_U
 #include <coreinit/cache.h>

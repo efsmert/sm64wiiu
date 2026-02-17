@@ -101,4 +101,28 @@ void *alloc_display_list(u32 size);
 void setup_dma_table_list(struct DmaHandlerList *list, void *srcAddr, void *buffer);
 s32 load_patchable_table(struct DmaHandlerList *list, s32 index);
 
+//
+// CoopDX compatibility: GrowingArray
+// Used by systems that need stable pointers but an unbounded (or large) pool,
+// e.g. custom stage collision/surface loading.
+//
+#if !defined(TARGET_N64)
+#include <stddef.h>
+typedef void *(*GrowingArrayAllocFunc)(size_t);
+typedef void (*GrowingArrayFreeFunc)(void *);
+
+struct GrowingArray {
+    void **buffer;
+    u32 count;     // next index to allocate (caller may set this)
+    u32 capacity;  // number of pointer slots in buffer
+    GrowingArrayAllocFunc alloc;
+    GrowingArrayFreeFunc free;
+};
+
+struct GrowingArray *growing_array_init(struct GrowingArray *array, u32 capacity, GrowingArrayAllocFunc alloc, GrowingArrayFreeFunc free);
+void *growing_array_alloc(struct GrowingArray *array, u32 size);
+void growing_array_move(struct GrowingArray *array, u32 from, u32 to, u32 count);
+void growing_array_free(struct GrowingArray **array);
+#endif
+
 #endif // MEMORY_H

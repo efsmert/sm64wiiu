@@ -12,6 +12,7 @@
 #include "engine/surface_load.h"
 #include "interaction.h"
 #include "level_update.h"
+#include "game_init.h"
 #include "mario.h"
 #include "memory.h"
 #include "object_collision.h"
@@ -21,7 +22,216 @@
 #include "profiler.h"
 #include "spawn_object.h"
 #include "pc/lua/smlua_hooks.h"
+#include "dialog_ids.h"
+#include "ingame_menu.h"
+#ifndef TARGET_N64
+#include "pc/djui/djui.h"
+#include "pc/djui/djui_interactable.h"
+#include "pc/djui/djui_panel_pause.h"
+#include "pc/lua/smlua.h"
+#include "pc/lua/utils/smlua_level_utils.h"
+#endif
 
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
+
+// Flood Expanded lobby diagnostics:
+// Print a compact Mario state snapshot once per second on custom levels.
+// This helps distinguish "bad spawn/action" from "input suppression" and "time-stop" issues.
+static void flood_diag_log_sync_state(void) {
+#ifdef TARGET_WII_U
+    const int spectator = (int)smlua_debug_get_player_sync_spectator(0, -1);
+    const int roundState = (int)smlua_debug_get_global_sync_integer("round_state", -1);
+    const int mapmode = (int)smlua_debug_get_global_sync_integer("mapmode", -1);
+    const int limiter = (int)smlua_debug_get_global_sync_integer("limiter_list", -1);
+    const int syncLevel = (int)smlua_debug_get_global_sync_integer("level", -1);
+    const int syncArea = (int)smlua_debug_get_global_sync_integer("area", -1);
+    WHBLogPrintf("flood_sync: spectator=%d round=%d mapmode=%d limiter=%d syncLevel=%d syncArea=%d",
+                 spectator, roundState, mapmode, limiter, syncLevel, syncArea);
+    printf("flood_sync: spectator=%d round=%d mapmode=%d limiter=%d syncLevel=%d syncArea=%d\n",
+           spectator, roundState, mapmode, limiter, syncLevel, syncArea);
+#endif
+}
+
+static void flood_diag_log_mario_state(struct MarioState *m) {
+#ifdef TARGET_WII_U
+    if (m == NULL || m->controller == NULL) {
+        return;
+    }
+
+    // Use a local call counter instead of gGlobalTimer so logs still appear even if
+    // the game timer is frozen by time-stop / menu states.
+    static u32 sCallCounter = 0;
+    static u32 sLastLogCall = 0;
+    sCallCounter++;
+    if ((u32)(sCallCounter - sLastLogCall) < 60) {
+        return;
+    }
+    sLastLogCall = sCallCounter;
+
+    const struct Surface *floor = m->floor;
+    const int floorType = floor ? (int)floor->type : -1;
+    const void *floorPtr = (const void *)floor;
+    const int dialogId = (int)get_dialog_id();
+    const int freezeTimer = (int)smlua_get_mario_freeze_timer(m);
+    const int animId = (m->marioObj != NULL) ? (int)m->marioObj->header.gfx.animInfo.animID : -1;
+    const int djuiMenu = (int)gDjuiInMainMenu;
+    const int djuiDonor = (int)gDjuiUseDonorStack;
+    const int overridePad = (int)gInteractableOverridePad;
+    const int pausePanel = (int)gDjuiPanelPauseCreated;
+    struct CustomLevelInfo *customInfo = NULL;
+    if (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START) {
+        customInfo = smlua_level_util_get_info((s16)gCurrLevelNum);
+    }
+    const char *customEntry = (customInfo != NULL && customInfo->scriptEntryName != NULL)
+                                  ? customInfo->scriptEntryName
+                                  : "-";
+    const int customCourse = (customInfo != NULL) ? (int)customInfo->courseNum : -1;
+
+    // Print to both OSConsole and stdout so the line always lands in Cemu's log.
+    WHBLogPrintf(
+        "flood_diag: gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d donor=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X dialog=%d freeze=%d ctrl=%p action=0x%08X input=0x%04X posY=%.1f floorH=%.1f floor=%p floorType=%d btnDown=0x%04X btnPress=0x%04X stick=(%d,%d) mag=%.1f anim=%d customEntry=%s customCourse=%d",
+        (unsigned int)gGlobalTimer,
+        (int)gCurrLevelNum,
+        (int)gCurrAreaIndex,
+        (int)gCurrActNum,
+        (int)sCurrPlayMode,
+        djuiMenu,
+        djuiDonor,
+        overridePad,
+        pausePanel,
+        (int)sDelayedWarpOp,
+        (int)gWarpTransition.isActive,
+        (unsigned int)gTimeStopState,
+        dialogId,
+        freezeTimer,
+        (void*)m->controller,
+        (unsigned int)m->action,
+        (unsigned int)m->input,
+        (double)m->pos[1],
+        (double)m->floorHeight,
+        floorPtr,
+        floorType,
+        (unsigned int)m->controller->buttonDown,
+        (unsigned int)m->controller->buttonPressed,
+        (int)m->controller->rawStickX,
+        (int)m->controller->rawStickY,
+        (double)m->controller->stickMag,
+        animId,
+        customEntry,
+        customCourse
+    );
+    printf(
+        "flood_diag: gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d donor=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X dialog=%d freeze=%d ctrl=%p action=0x%08X input=0x%04X posY=%.1f floorH=%.1f floor=%p floorType=%d btnDown=0x%04X btnPress=0x%04X stick=(%d,%d) mag=%.1f anim=%d customEntry=%s customCourse=%d\n",
+        (unsigned int)gGlobalTimer,
+        (int)gCurrLevelNum,
+        (int)gCurrAreaIndex,
+        (int)gCurrActNum,
+        (int)sCurrPlayMode,
+        djuiMenu,
+        djuiDonor,
+        overridePad,
+        pausePanel,
+        (int)sDelayedWarpOp,
+        (int)gWarpTransition.isActive,
+        (unsigned int)gTimeStopState,
+        dialogId,
+        freezeTimer,
+        (void*)m->controller,
+        (unsigned int)m->action,
+        (unsigned int)m->input,
+        (double)m->pos[1],
+        (double)m->floorHeight,
+        floorPtr,
+        floorType,
+        (unsigned int)m->controller->buttonDown,
+        (unsigned int)m->controller->buttonPressed,
+        (int)m->controller->rawStickX,
+        (int)m->controller->rawStickY,
+        (double)m->controller->stickMag,
+        animId,
+        customEntry,
+        customCourse
+    );
+#else
+    (void)m;
+#endif
+}
+
+static void flood_diag_log_frame_state(void) {
+#ifdef TARGET_WII_U
+    static u32 sFrameCallCounter = 0;
+    static u32 sLastFrameLogCall = 0;
+    sFrameCallCounter++;
+    if ((u32)(sFrameCallCounter - sLastFrameLogCall) < 60) {
+        return;
+    }
+    sLastFrameLogCall = sFrameCallCounter;
+
+    static bool sBuildLogged = false;
+    if (!sBuildLogged) {
+        sBuildLogged = true;
+        WHBLogPrintf("flood_diag_build: %s %s", __DATE__, __TIME__);
+        printf("flood_diag_build: %s %s\n", __DATE__, __TIME__);
+    }
+
+    const int djuiMenu = (int)gDjuiInMainMenu;
+    const int djuiDonor = (int)gDjuiUseDonorStack;
+    const int overridePad = (int)gInteractableOverridePad;
+    const int pausePanel = (int)gDjuiPanelPauseCreated;
+    const void *marioController = (gMarioState != NULL) ? (const void *)gMarioState->controller : NULL;
+    struct CustomLevelInfo *customInfo = NULL;
+    if (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START) {
+        customInfo = smlua_level_util_get_info((s16)gCurrLevelNum);
+    }
+    const char *customEntry = (customInfo != NULL && customInfo->scriptEntryName != NULL)
+                                  ? customInfo->scriptEntryName
+                                  : "-";
+    const int customCourse = (customInfo != NULL) ? (int)customInfo->courseNum : -1;
+    WHBLogPrintf(
+        "flood_diag_frame: gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d donor=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X marioObj=%p marioState=%p ctrl=%p customEntry=%s customCourse=%d",
+        (unsigned int)gGlobalTimer,
+        (int)gCurrLevelNum,
+        (int)gCurrAreaIndex,
+        (int)gCurrActNum,
+        (int)sCurrPlayMode,
+        djuiMenu,
+        djuiDonor,
+        overridePad,
+        pausePanel,
+        (int)sDelayedWarpOp,
+        (int)gWarpTransition.isActive,
+        (unsigned int)gTimeStopState,
+        (void*)gMarioObject,
+        (void*)gMarioState,
+        marioController,
+        customEntry,
+        customCourse
+    );
+    printf(
+        "flood_diag_frame: gt=%u lvl=%d area=%d act=%d play=%d djuiMenu=%d donor=%d overridePad=%d pausePanel=%d delayedWarp=%d warpActive=%d timeStop=0x%X marioObj=%p marioState=%p ctrl=%p customEntry=%s customCourse=%d\n",
+        (unsigned int)gGlobalTimer,
+        (int)gCurrLevelNum,
+        (int)gCurrAreaIndex,
+        (int)gCurrActNum,
+        (int)sCurrPlayMode,
+        djuiMenu,
+        djuiDonor,
+        overridePad,
+        pausePanel,
+        (int)sDelayedWarpOp,
+        (int)gWarpTransition.isActive,
+        (unsigned int)gTimeStopState,
+        (void*)gMarioObject,
+        (void*)gMarioState,
+        marioController,
+        customEntry,
+        customCourse
+    );
+    flood_diag_log_sync_state();
+#endif
+}
 
 /**
  * Flags controlling what debug info is displayed.
@@ -278,6 +488,7 @@ void bhv_mario_update(void) {
 
     // Co-op DX-compatible order: before-update hooks run before action execution.
     smlua_call_event_hooks_mario(HOOK_BEFORE_MARIO_UPDATE, gMarioState);
+    flood_diag_log_mario_state(gMarioState);
     particleFlags = execute_mario_action(gCurrentObject);
     smlua_call_event_hooks_mario(HOOK_MARIO_UPDATE, gMarioState);
     gCurrentObject->oMarioParticleFlags = particleFlags;
@@ -660,6 +871,8 @@ void update_objects(UNUSED s32 unused) {
     s64 cycleCounts[30];
 
     cycleCounts[0] = get_current_clock();
+
+    flood_diag_log_frame_state();
 
     gTimeStopState &= ~TIME_STOP_MARIO_OPENED_DOOR;
 

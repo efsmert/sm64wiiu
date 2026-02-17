@@ -12,6 +12,11 @@ extern "C" {
 #include "game/level_update.h"
 #include "game/sound_init.h"
 #include "game/object_list_processor.h"
+#ifndef TARGET_N64
+#include "pc/djui/djui.h"
+#include "pc/djui/djui_interactable.h"
+#include "pc/djui/djui_panel_pause.h"
+#endif
 #ifndef TARGET_WII_U
 #include "pc/network/packets/packet.h"
 #endif
@@ -34,6 +39,39 @@ static s32 sDynosWarpNodeNum  = -1;
 static s32 sDynosExitLevelNum = -1;
 static s32 sDynosExitAreaNum  = -1;
 
+#ifndef TARGET_N64
+static void DynOS_Warp_LeaveMainMenuForGameplay() {
+    if (gDjuiInMainMenu) {
+        // Flood and similar mods can issue runtime warps from Lua while DJUI is still
+        // marked as owning the main menu scene; close it so gameplay input resumes.
+        djui_close_main_menu();
+#ifdef TARGET_WII_U
+        static u32 sMenuCloseLogCount = 0;
+        if (sMenuCloseLogCount < 64) {
+            WHBLogPrintf("dynos: forced menu close lvl=%d area=%d play=%d donor=%d",
+                         (int)gCurrLevelNum, (int)gCurrAreaIndex, (int)sCurrPlayMode,
+                         (int)gDjuiUseDonorStack);
+            sMenuCloseLogCount++;
+        }
+#endif
+    }
+}
+
+#ifdef TARGET_WII_U
+static void DynOS_Warp_LogGameplayOwnershipState(const char *phase) {
+    static u32 sOwnershipLogCount = 0;
+    if (sOwnershipLogCount < 96) {
+        WHBLogPrintf("dynos: ownership phase=%s lvl=%d area=%d play=%d djuiMenu=%d donor=%d overridePad=%d pausePanel=%d",
+                     phase != NULL ? phase : "?",
+                     (int)gCurrLevelNum, (int)gCurrAreaIndex, (int)sCurrPlayMode,
+                     (int)gDjuiInMainMenu, (int)gDjuiUseDonorStack,
+                     (int)gInteractableOverridePad, (int)gDjuiPanelPauseCreated);
+        sOwnershipLogCount++;
+    }
+}
+#endif
+#endif
+
 //
 // Specific Warp Node
 //
@@ -42,6 +80,10 @@ bool DynOS_Warp_ToWarpNode(s32 aLevel, s32 aArea, s32 aAct, s32 aWarpId) {
     if (!DynOS_Level_GetWarp(aLevel, aArea, aWarpId)) {
         return false;
     }
+
+#ifndef TARGET_N64
+    DynOS_Warp_LeaveMainMenuForGameplay();
+#endif
 
     if (aLevel != gCurrLevelNum) {
         // stop music
@@ -79,6 +121,10 @@ bool DynOS_Warp_ToLevel(s32 aLevel, s32 aArea, s32 aAct) {
         WHBLogPrintf("dynos: warp_to_level OK level=%d area=%d act=%d warpEntry=%p", (int)aLevel, (int)aArea, (int)aAct, warp);
         sWarpToLevelLogCount++;
     }
+#endif
+
+#ifndef TARGET_N64
+    DynOS_Warp_LeaveMainMenuForGameplay();
 #endif
 
     // stop music
@@ -180,6 +226,15 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
         level_set_transition(0, NULL);
         gDialogBoxState = 0;
         gMenuMode = MENU_MODE_NONE;
+        // Co-op DX behavior: warps requested by mods should always land back in normal play
+        // mode (otherwise Mario can get stuck in PLAY_MODE_PAUSED/CHANGE_LEVEL with no updates).
+        set_play_mode(0);
+#ifndef TARGET_N64
+        DynOS_Warp_LeaveMainMenuForGameplay();
+#ifdef TARGET_WII_U
+        DynOS_Warp_LogGameplayOwnershipState("warp-phase1");
+#endif
+#endif
 
         // Cancel out every music/sound/sequence
         for (u16 seqid = 0; seqid != SEQ_COUNT; ++seqid) {
@@ -295,6 +350,18 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
             gMarioSpawnInfo->areaIndex = gCurrAreaIndex;
             init_mario();
             set_mario_initial_action(gMarioState, sDynosWarpSpawnType, 0);
+#ifdef TARGET_WII_U
+            static u32 sWarpSpawnLogCount = 0;
+            if (sWarpSpawnLogCount < 48) {
+                WHBLogPrintf("dynos: warp spawn level=%d area=%d warpId=%d type=%d pos=(%d,%d,%d) ang=%d spawnType=%d playMode=%d action=0x%08X",
+                             (int)gCurrLevelNum, (int)gCurrAreaIndex,
+                             (int)_Warp[1], (int)_Warp[2],
+                             (int)_Warp[3], (int)_Warp[4], (int)_Warp[5], (int)_Warp[6],
+                             (int)sDynosWarpSpawnType,
+                             (int)sCurrPlayMode, (unsigned)gMarioState->action);
+                sWarpSpawnLogCount++;
+            }
+#endif
 
             // Init transition
             if (gCurrentArea != NULL) {
@@ -335,6 +402,15 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
             // lua hooks
             smlua_call_event_hooks(HOOK_ON_WARP, sBackupWarpDest.type, sDynosWarpLevelNum, sDynosWarpAreaNum, sDynosWarpNodeNum, sBackupWarpDest.arg);
 
+            // Ensure we resume normal gameplay immediately after the warp finishes.
+            set_play_mode(0);
+#ifndef TARGET_N64
+            DynOS_Warp_LeaveMainMenuForGameplay();
+#ifdef TARGET_WII_U
+            DynOS_Warp_LogGameplayOwnershipState("warp-phase3");
+#endif
+#endif
+
             // Reset values
             sDynosWarpTargetArea = -1;
             sDynosWarpLevelNum   = -1;
@@ -344,8 +420,16 @@ static void *DynOS_Warp_UpdateWarp(void *aCmd, bool aIsLevelInitDone) {
 #ifdef TARGET_WII_U
             static u32 sWarpPhase3DoneLogCount = 0;
             if (sWarpPhase3DoneLogCount < 32) {
-                WHBLogPrintf("dynos: warp phase3 complete level=%d area=%d mario=%p currentArea=%p",
-                             (int)gCurrLevelNum, (int)gCurrAreaIndex, gMarioObject, gCurrentArea);
+                const u8 freezeTimer = (gMarioState != NULL) ? smlua_get_mario_freeze_timer(gMarioState) : 0;
+                const u32 action = (gMarioState != NULL) ? (u32)gMarioState->action : 0;
+                const int animId = (gMarioObject != NULL) ? (int)gMarioObject->header.gfx.animInfo.animID : -1;
+                const void *ctrl = (gMarioState != NULL) ? (const void *)gMarioState->controller : NULL;
+                WHBLogPrintf("dynos: warp phase3 complete level=%d area=%d mario=%p currentArea=%p play=%d djuiMenu=%d overridePad=%d pausePanel=%d action=0x%08X freeze=%u timeStop=0x%X anim=%d ctrl=%p",
+                             (int)gCurrLevelNum, (int)gCurrAreaIndex, gMarioObject, gCurrentArea,
+                             (int)sCurrPlayMode, (int)gDjuiInMainMenu,
+                             (int)gInteractableOverridePad, (int)gDjuiPanelPauseCreated,
+                             (unsigned)action, (unsigned)freezeTimer,
+                             (unsigned)gTimeStopState, animId, ctrl);
                 sWarpPhase3DoneLogCount++;
             }
 #endif

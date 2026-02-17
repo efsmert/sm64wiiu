@@ -76,6 +76,12 @@ struct DjuiColor {
 #include <whb/log.h>
 #endif
 
+// Lua warps are often triggered from DJUI panels (host/mod menus). If the main menu
+// stays open during the warp, DJUI can keep overriding the controller input and
+// block pause/movement inside the target level (e.g. Flood's casino lobby).
+extern bool gDjuiInMainMenu;
+void djui_close_main_menu(void);
+
 static lua_State *sLuaState = NULL;
 static const char *SMLUA_COBJECT_METATABLE = "SM64.CObject";
 static const char *SMLUA_TEXINFO_METATABLE = "SM64.TextureInfo";
@@ -170,6 +176,18 @@ struct SmluaModStorageCacheSlot {
 static struct SmluaModStorageCacheSlot sModStorageCache[SMLUA_MOD_STORAGE_CACHE_SLOTS];
 static int sModStorageCacheNextVictim = 0;
 
+// Lua compatibility mirrors for non-local player slots.
+// Wii U gameplay is local-only, but Co-op DX mods index `gMarioStates[1..N]`.
+// Keep those indices backed by isolated structs so scripts don't accidentally
+// mutate the live local MarioState through aliasing.
+static struct MarioState sLuaCompatMarioStates[MAX_PLAYERS];
+static struct MarioBodyState sLuaCompatMarioBodyStates[MAX_PLAYERS];
+static struct PlayerCameraState sLuaCompatMarioCamStates[MAX_PLAYERS];
+static struct Controller sLuaCompatMarioControllers[MAX_PLAYERS];
+static struct SpawnInfo sLuaCompatMarioSpawnInfos[MAX_PLAYERS];
+static struct Object sLuaCompatMarioObjects[MAX_PLAYERS];
+static bool sLuaCompatMarioStatesInitialized[MAX_PLAYERS];
+
 struct SmluaHudColor {
     int r;
     int g;
@@ -206,6 +224,50 @@ static bool sLuaHudHidden = false;
 static s32 sLuaHudSavedFlags = HUD_DISPLAY_DEFAULT;
 static s8 sLuaHudFlash = 0;
 static s32 sLuaActSelectHudMask = 0;
+
+#define SMLUA_MAX_PENDING_PACKETS 64
+static int sLuaPendingPacketRefs[SMLUA_MAX_PENDING_PACKETS];
+static u8 sLuaPendingPacketCount = 0;
+static bool sLuaPendingPacketOverflowLogged = false;
+
+static void smlua_pending_packet_queue_clear(lua_State *L) {
+    if (L != NULL) {
+        for (u8 i = 0; i < sLuaPendingPacketCount; i++) {
+            luaL_unref(L, LUA_REGISTRYINDEX, sLuaPendingPacketRefs[i]);
+            sLuaPendingPacketRefs[i] = LUA_NOREF;
+        }
+    }
+    sLuaPendingPacketCount = 0;
+    sLuaPendingPacketOverflowLogged = false;
+}
+
+static void smlua_pending_packet_queue_push(lua_State *L, int table_ref) {
+    if (L == NULL) { return; }
+    if (table_ref == LUA_NOREF || table_ref == LUA_REFNIL) { return; }
+    if (sLuaPendingPacketCount >= SMLUA_MAX_PENDING_PACKETS) {
+        luaL_unref(L, LUA_REGISTRYINDEX, table_ref);
+#ifdef TARGET_WII_U
+        if (!sLuaPendingPacketOverflowLogged) {
+            WHBLogPrint("lua: pending packet queue overflow (dropping packets)");
+            sLuaPendingPacketOverflowLogged = true;
+        }
+#endif
+        return;
+    }
+    sLuaPendingPacketRefs[sLuaPendingPacketCount++] = table_ref;
+}
+
+static void smlua_pending_packet_queue_process(lua_State *L) {
+    if (L == NULL) { return; }
+    for (u8 i = 0; i < sLuaPendingPacketCount; i++) {
+        int ref = sLuaPendingPacketRefs[i];
+        sLuaPendingPacketRefs[i] = LUA_NOREF;
+        (void)smlua_call_event_hooks_on_packet_receive(ref);
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    }
+    sLuaPendingPacketCount = 0;
+    sLuaPendingPacketOverflowLogged = false;
+}
 
 struct SmluaSequenceOverride {
     bool active;
@@ -540,6 +602,76 @@ void smlua_get_skybox_color(uint8_t out_color[3]) {
     for (int i = 0; i < 3; i++) {
         out_color[i] = (u8)(((u32)sLuaScriptSkyboxColor[i] * (u32)sLuaDncSkyboxColor[i] + 127u) / 255u);
     }
+}
+
+int32_t smlua_debug_get_player_sync_spectator(int32_t playerIndex, int32_t fallbackValue) {
+    lua_State *L = sLuaState;
+    int top;
+    int32_t result = fallbackValue;
+
+    if (L == NULL || playerIndex < 0) {
+        return fallbackValue;
+    }
+
+    top = lua_gettop(L);
+    lua_getglobal(L, "gPlayerSyncTable");
+    if (lua_istable(L, -1)) {
+        lua_rawgeti(L, -1, playerIndex + 1);
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "spectator");
+            if (lua_isboolean(L, -1)) {
+                result = lua_toboolean(L, -1) ? 1 : 0;
+            } else if (lua_isnumber(L, -1)) {
+                result = (lua_tointeger(L, -1) != 0) ? 1 : 0;
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+    return result;
+}
+
+int32_t smlua_debug_get_global_sync_integer(const char *fieldName, int32_t fallbackValue) {
+    lua_State *L = sLuaState;
+    int top;
+    int32_t result = fallbackValue;
+
+    if (L == NULL || fieldName == NULL || fieldName[0] == '\0') {
+        return fallbackValue;
+    }
+
+    top = lua_gettop(L);
+    lua_getglobal(L, "gGlobalSyncTable");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, fieldName);
+        if (lua_isboolean(L, -1)) {
+            result = lua_toboolean(L, -1) ? 1 : 0;
+        } else if (lua_isnumber(L, -1)) {
+            result = (int32_t) lua_tointeger(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+    return result;
+}
+
+int32_t smlua_debug_get_mario_state_index(const struct MarioState *marioState) {
+    if (marioState == NULL) {
+        return -1;
+    }
+
+    if (marioState >= &gMarioStates[0] && marioState < &gMarioStates[MAX_PLAYERS]) {
+        return (int32_t)(marioState - &gMarioStates[0]);
+    }
+
+    for (int i = 1; i < MAX_PLAYERS; i++) {
+        if (sLuaCompatMarioStatesInitialized[i] && marioState == &sLuaCompatMarioStates[i]) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 // Resets Lua-driven lighting/fog compatibility state to neutral renderer values.
@@ -3312,6 +3444,23 @@ static int smlua_func_obj_mark_for_deletion(lua_State *L) {
     return 0;
 }
 
+// Compatibility bridge for Lua helper used by custom behaviors (Flood Expanded).
+static int smlua_func_obj_set_hitbox_radius_and_height(lua_State *L) {
+    struct Object *obj = smlua_to_object_arg(L, 1);
+    f32 radius = (f32)luaL_checknumber(L, 2);
+    f32 height = (f32)luaL_checknumber(L, 3);
+    obj_set_hitbox_radius_and_height(obj, radius, height);
+    return 0;
+}
+
+// Compatibility bridge for Lua helper used by custom behaviors (Flood Expanded).
+static int smlua_func_cur_obj_set_hitbox_radius_and_height(lua_State *L) {
+    f32 radius = (f32)luaL_checknumber(L, 1);
+    f32 height = (f32)luaL_checknumber(L, 2);
+    cur_obj_set_hitbox_radius_and_height(radius, height);
+    return 0;
+}
+
 // Compatibility bridge for object-position copy helper used by behavior scripts.
 static int smlua_func_vec3f_to_object_pos(lua_State *L) {
     SmluaCObject *cobj = luaL_testudata(L, 1, SMLUA_COBJECT_METATABLE);
@@ -3868,7 +4017,15 @@ static int smlua_func_network_send_object(lua_State *L) {
 
 // Single-player compatibility shim for targeted packet sends.
 static int smlua_func_network_send_to(lua_State *L) {
-    (void)L;
+    // Co-op DX signature: network_send_to(localPlayerIndex, reliable, dataTable)
+    (void)luaL_optinteger(L, 1, 0);
+    (void)lua_toboolean(L, 2);
+    if (!lua_istable(L, 3)) {
+        return 0;
+    }
+    lua_pushvalue(L, 3);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    smlua_pending_packet_queue_push(L, ref);
     return 0;
 }
 
@@ -3993,14 +4150,17 @@ static int smlua_func_warp_to_level(lua_State *L) {
 
     level = (s16)lua_tointeger(L, 1);
     area = (s16)lua_tointeger(L, 2);
-    act = (s16)lua_tointeger(L, 3);
+	    act = (s16)lua_tointeger(L, 3);
 
 #ifndef TARGET_N64
-    // Co-op DX parity: DynOS drives all warps (vanilla + custom) for deterministic behavior.
-    bool ok = dynos_warp_to_level(level, area, act);
-    smlua_logf("lua: warp_to_level(level=%d area=%d act=%d) -> %d", (int)level, (int)area, (int)act, ok ? 1 : 0);
-    lua_pushboolean(L, ok);
-    return 1;
+	    if (gDjuiInMainMenu) {
+	        djui_close_main_menu();
+	    }
+	    // Co-op DX parity: DynOS drives all warps (vanilla + custom) for deterministic behavior.
+	    bool ok = dynos_warp_to_level(level, area, act);
+	    smlua_logf("lua: warp_to_level(level=%d area=%d act=%d) -> %d", (int)level, (int)area, (int)act, ok ? 1 : 0);
+	    lua_pushboolean(L, ok);
+	    return 1;
 #else
     lua_pushboolean(L, 0);
     return 1;
@@ -4032,15 +4192,18 @@ static int smlua_func_level_register(lua_State *L) {
 }
 
 static int smlua_func_warp_to_warpnode(lua_State *L) {
-    s32 level = (s32)luaL_optinteger(L, 1, 0);
-    s32 area = (s32)luaL_optinteger(L, 2, 1);
-    s32 act = (s32)luaL_optinteger(L, 3, 1);
-    s32 warpId = (s32)luaL_optinteger(L, 4, 0x0A);
+	    s32 level = (s32)luaL_optinteger(L, 1, 0);
+	    s32 area = (s32)luaL_optinteger(L, 2, 1);
+	    s32 act = (s32)luaL_optinteger(L, 3, 1);
+	    s32 warpId = (s32)luaL_optinteger(L, 4, 0x0A);
 #ifndef TARGET_N64
-    lua_pushboolean(L, dynos_warp_to_warpnode(level, area, act, warpId));
+	    if (gDjuiInMainMenu) {
+	        djui_close_main_menu();
+	    }
+	    lua_pushboolean(L, dynos_warp_to_warpnode(level, area, act, warpId));
 #else
-    (void)level; (void)area; (void)act; (void)warpId;
-    lua_pushboolean(L, 0);
+	    (void)level; (void)area; (void)act; (void)warpId;
+	    lua_pushboolean(L, 0);
 #endif
     return 1;
 }
@@ -4559,7 +4722,14 @@ static int smlua_func_network_get_player_text_color_string(lua_State *L) {
 
 // Single-player shim for custom packet sends.
 static int smlua_func_network_send(lua_State *L) {
-    (void)L;
+    // Co-op DX signature: network_send(reliable, dataTable)
+    (void)lua_toboolean(L, 1);
+    if (!lua_istable(L, 2)) {
+        return 0;
+    }
+    lua_pushvalue(L, 2);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    smlua_pending_packet_queue_push(L, ref);
     return 0;
 }
 
@@ -5623,6 +5793,20 @@ static int smlua_func_stationary_ground_step(lua_State *L) {
     return 1;
 }
 
+// Flood Expanded expects this helper during its behavior loop hooks.
+static int smlua_func_cur_obj_rotate_face_angle_using_vel(lua_State *L) {
+    (void)L;
+    cur_obj_rotate_face_angle_using_vel();
+    return 0;
+}
+
+// Flood Expanded behavior init hooks call this directly.
+static int smlua_func_cur_obj_init_animation(lua_State *L) {
+    s32 anim_index = (s32)luaL_checkinteger(L, 1);
+    cur_obj_init_animation(anim_index);
+    return 0;
+}
+
 // Local compatibility for pause-menu flash flag queried by HUD scripts.
 static int smlua_func_hud_get_flash(lua_State *L) {
     (void)L;
@@ -5885,6 +6069,46 @@ static void smlua_ensure_table_string_field(lua_State *L, int table_index,
     lua_pop(L, 1);
 }
 
+static struct MarioState *smlua_get_compat_mario_state(int playerIndex) {
+    if (playerIndex <= 0 || playerIndex >= MAX_PLAYERS) {
+        return NULL;
+    }
+
+    if (!sLuaCompatMarioStatesInitialized[playerIndex]) {
+        struct MarioState *state = &sLuaCompatMarioStates[playerIndex];
+        struct Object *object = &sLuaCompatMarioObjects[playerIndex];
+        memset(state, 0, sizeof(*state));
+        memset(object, 0, sizeof(*object));
+        state->spawnInfo = &sLuaCompatMarioSpawnInfos[playerIndex];
+        state->statusForCamera = &sLuaCompatMarioCamStates[playerIndex];
+        state->marioBodyState = &sLuaCompatMarioBodyStates[playerIndex];
+        state->controller = &sLuaCompatMarioControllers[playerIndex];
+        state->animList = &gMarioAnimsBuf;
+        state->numLives = 4;
+        state->health = 0x880;
+        state->action = ACT_DISAPPEARED;
+        // Keep non-local slots script-safe: many Co-op DX mods iterate
+        // gMarioStates[0..MAX_PLAYERS-1] and dereference m.marioObj without
+        // checking whether a remote player is connected.
+        object->activeFlags = ACTIVE_FLAG_DEACTIVATED;
+        state->marioObj = object;
+        sLuaCompatMarioStatesInitialized[playerIndex] = true;
+    }
+
+    struct MarioState *state = &sLuaCompatMarioStates[playerIndex];
+    struct Object *object = &sLuaCompatMarioObjects[playerIndex];
+    state->area = gCurrentArea;
+    state->marioObj = object;
+    object->oPosX = state->pos[0];
+    object->oPosY = state->pos[1];
+    object->oPosZ = state->pos[2];
+    object->oFaceAnglePitch = state->faceAngle[0];
+    object->oFaceAngleYaw = state->faceAngle[1];
+    object->oFaceAngleRoll = state->faceAngle[2];
+    object->platform = NULL;
+    return state;
+}
+
 // Ensures common Co-op DX globals exist before bundled companion scripts execute.
 static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L) {
     if (L == NULL) {
@@ -5935,6 +6159,11 @@ static void smlua_bind_wiiu_mod_runtime_compat(lua_State *L) {
 static void smlua_ensure_singleplayer_tables(lua_State *L) {
     int max_players = smlua_get_lua_max_players(L);
     const char *local_name = (configPlayerName[0] != '\0') ? configPlayerName : "Player";
+    if (max_players < 1) {
+        max_players = 1;
+    } else if (max_players > MAX_PLAYERS) {
+        max_players = MAX_PLAYERS;
+    }
 
     lua_getglobal(L, "gPlayerSyncTable");
     if (!lua_istable(L, -1)) {
@@ -5989,14 +6218,17 @@ static void smlua_ensure_singleplayer_tables(lua_State *L) {
     int mario_states_table = lua_absindex(L, -1);
     for (int i = 0; i < max_players; i++) {
         lua_pushinteger(L, i);
-        lua_gettable(L, mario_states_table);
-        bool missing_entry = lua_isnil(L, -1);
-        lua_pop(L, 1);
-        if (missing_entry) {
-            lua_pushinteger(L, i);
+        if (i == 0) {
             smlua_push_mario_state(L, &gMarioStates[0]);
-            lua_settable(L, mario_states_table);
+        } else {
+            struct MarioState *compatState = smlua_get_compat_mario_state(i);
+            if (compatState != NULL) {
+                smlua_push_mario_state(L, compatState);
+            } else {
+                lua_pushnil(L);
+            }
         }
+        lua_settable(L, mario_states_table);
     }
     lua_setglobal(L, "gMarioStates");
 }
@@ -6272,6 +6504,9 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "act_select_hud_is_hidden", smlua_func_act_select_hud_is_hidden);
     smlua_set_global_function(L, "check_common_idle_cancels", smlua_func_check_common_idle_cancels);
     smlua_set_global_function(L, "stationary_ground_step", smlua_func_stationary_ground_step);
+    smlua_set_global_function(L, "cur_obj_init_animation", smlua_func_cur_obj_init_animation);
+    smlua_set_global_function(L, "cur_obj_rotate_face_angle_using_vel",
+                              smlua_func_cur_obj_rotate_face_angle_using_vel);
     // Co-op DX helper (Flood achievements expects it).
     // Wii U has no Discord integration, so return 0 as a stable placeholder.
     smlua_set_global_function(L, "get_local_discord_id", smlua_func_get_local_discord_id);
@@ -6452,6 +6687,8 @@ static void smlua_bind_minimal_functions(lua_State *L) {
     smlua_set_global_function(L, "spawn_non_sync_object", smlua_func_spawn_non_sync_object);
     smlua_set_global_function(L, "obj_scale", smlua_func_obj_scale);
     smlua_set_global_function(L, "obj_mark_for_deletion", smlua_func_obj_mark_for_deletion);
+    smlua_set_global_function(L, "obj_set_hitbox_radius_and_height", smlua_func_obj_set_hitbox_radius_and_height);
+    smlua_set_global_function(L, "cur_obj_set_hitbox_radius_and_height", smlua_func_cur_obj_set_hitbox_radius_and_height);
     smlua_set_global_function(L, "vec3f_to_object_pos", smlua_func_vec3f_to_object_pos);
     smlua_set_global_function(L, "djui_chat_message_create", smlua_func_djui_chat_message_create);
     smlua_set_global_function(L, "play_sound", smlua_func_play_sound);
@@ -7887,10 +8124,12 @@ void smlua_init(void) {
     smlua_level_util_set_register_mod_index(0);
 
 #ifdef TARGET_WII_U
+    smlua_level_util_log_snapshot("post_scripts");
     smlua_log_runtime_hook_snapshot(sLuaState, "pre_mods_loaded");
 #endif
     smlua_call_event_hooks(HOOK_ON_MODS_LOADED);
 #ifdef TARGET_WII_U
+    smlua_level_util_log_snapshot("post_mods_loaded");
     smlua_log_runtime_hook_snapshot(sLuaState, "post_mods_loaded");
 #endif
     smlua_refresh_mod_overlay_lines();
@@ -7927,6 +8166,11 @@ void smlua_update(void) {
     smlua_cobject_update_globals(sLuaState);
     smlua_ensure_singleplayer_tables(sLuaState);
     smlua_update_singleplayer_network_snapshot(sLuaState);
+    // Co-op DX semantics: packets sent via network_send()/network_send_to() are
+    // received through HOOK_ON_PACKET_RECEIVE. In Wii U single-player mode we
+    // emulate that by queueing packets and delivering them at the start of the
+    // next update tick (avoids re-entrancy).
+    smlua_pending_packet_queue_process(sLuaState);
 #ifdef TARGET_WII_U
     f64 t_pre_hooks = clock_elapsed_f64();
 #endif
@@ -8002,6 +8246,7 @@ void smlua_shutdown(void) {
     if (sLuaState != NULL) {
         smlua_call_event_hooks(HOOK_ON_EXIT);
         smlua_clear_hooks(sLuaState);
+        smlua_pending_packet_queue_clear(sLuaState);
         lua_close(sLuaState);
         sLuaState = NULL;
     }

@@ -132,6 +132,9 @@ void smlua_call_event_hooks_before_set_mario_action(const void *mario_state, int
                                                     int action_arg);
 void smlua_call_event_hooks_on_set_mario_action(const void *mario_state);
 void smlua_call_event_hooks_object_set_model(const void *object, int model_id);
+// Dispatches HOOK_ON_PACKET_RECEIVE callbacks with the provided Lua table reference.
+// `packet_table_ref` must be a registry ref for a table.
+bool smlua_call_event_hooks_on_packet_receive(int packet_table_ref);
 void smlua_poll_sync_table_change_hooks(void);
 bool smlua_call_mario_action_hook(const void *mario_state, int *in_loop);
 void smlua_call_behavior_hooks(void);

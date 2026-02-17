@@ -95,6 +95,9 @@ From repo root, run:
 - Added custom-level registration mod-index wiring (`smlua_level_util_set_register_mod_index`) aligned with enabled root-script order so `level_register()` records the same DynOS mod index used during asset activation.
 - Restored donor-style `level_cmd_begin_area` geo loading on Wii U by removing the raw-geo bypass and always routing through `dynos_model_load_geo`, avoiding direct geo parser entry on unresolved `0x1xxxxxxx` custom-level addresses.
 - Fixed DynOS geo binary load endianness handling for Wii U by preserving raw geo command-word bytes while decoding pointer tokens from swapped values, so custom geo command streams and pointer substitutions both remain valid on big-endian.
+- Fixed DynOS custom level command parsing on Wii U to endian-fix scalar fields while leaving resolved pointer fields untouched (behavior pointers, jump/execute targets, terrain pointers), restoring reliable custom-level warp metadata extraction across Flood stages.
+- Corrected single-player Lua `gMarioStates` compatibility wiring so indices `1..MAX_PLAYERS-1` no longer alias local `gMarioStates[0]`; non-local slots now use isolated mirror `MarioState` structs to prevent remote-slot script writes from mutating local gameplay state.
+- Added Flood Lua behavior parity follow-up: exposed `cur_obj_init_animation` and backed non-local compatibility `gMarioStates[i].marioObj` with inert per-slot objects so compiled Flood behavior hooks that iterate `MAX_PLAYERS` no longer nil-deref remote slots in single-player mode.
 
 ### K) HUD/dialog/interaction slices
 - Dialog override conversion/render integration for common charset.
@@ -137,6 +140,10 @@ From repo root, run:
 - Added GX2 window start-frame diagnostics and a first-frame clear skip mitigation in `gfx_gx2_window_start_frame()` to avoid intermittent black-screen hangs before `start_frame()` returns on Cemu full-sync paths.
 - Added Wii U watchdog diagnostics thread + cross-module stage markers (`pc_main`/`gfx_run`) so hangs without crashes still emit periodic `diag: stall ... stage=...` logs showing where frame progress stopped.
 - Hardened Mario re-init against transition-time null globals (`gMarioObject`, `gMarioSpawnInfo`) and ensured `statusForCamera` fallback initialization so Lua-triggered `init_single_mario()` calls during host/countdown transitions cannot null-deref in `init_mario()`.
+- Added runtime warp/menu ownership handoff for mod-initiated DynOS warps (`DynOS_Warp_ToLevel` / `DynOS_Warp_ToWarpNode`): if DJUI main menu is still active, close it before gameplay warp setup so Flood lobby gameplay is no longer stuck under menu input clamping.
+- Expanded DynOS warp-to-gameplay ownership enforcement to also run during warp update phases, with bounded Wii U state diagnostics (`play`/`djuiMenu`/`overridePad`/`pausePanel`) to catch menu ownership regressions that occur after initial warp setup.
+- Added custom-level registration diagnostics (`level_register` + post-load snapshots) exposing registered script/course/mod metadata, so Flood custom-stage selection failures can be traced to missing/misaligned registry data instead of only runtime warp misses.
+- Added Flood Lua sync-state diagnostics (`flood_sync`) by exposing read-only C helpers for `gPlayerSyncTable[0].spectator` and selected `gGlobalSyncTable` integers (`round_state`, `mapmode`, `limiter_list`, `level`, `area`), and updated Mario-state logging to continue when `marioObj` is temporarily null.
 
 ### O) DJUI bootstrap (phase slice 1)
 - Added initial `src/pc/djui` scaffold (`djui.[ch]`) and wired lifecycle hooks into Wii U startup/shutdown (`djui_init`, `djui_init_late`, `djui_shutdown`).
@@ -226,6 +233,8 @@ From repo root, run:
 - DynOS custom behavior IDs must be exported after `smlua_bind_hooks()`/`smlua_clear_hooks()` has run; exporting `.bhv` globals before hook-state init can silently clear the custom behavior registry and surface nil behavior IDs later.
 - For Cemu crash triage, use `sm64wiiu/tools/wiiu_decode_cemu_crash.sh` after reproducing; it parses the latest `Error: signal` block and resolves IP/LR/ReturnAddr against the current Wii U ELF.
 - In `level_cmd_begin_area`, custom-level geo pointers that look like `0x1xxxxxxx` still need DynOS resolution; direct `process_geo_layout` on that value can fault in early geo commands (`geo_layout_cmd_node_ortho_projection`/`_perspective`) during host/start transitions.
+- In DynOS level-script parsing on Wii U, endian-fix only scalar command fields; pointer command fields are already resolved to native addresses, and swapping them breaks custom script jumps/behavior lookups/terrain pointers.
+- Some compiled Co-op DX behavior scripts dereference `gMarioStates[i].marioObj` for all `MAX_PLAYERS` slots without connected-player guards; single-player compatibility mirrors should keep non-local `marioObj` pointers non-nil (inert placeholders) to avoid per-frame Lua hook abort loops.
 
 ## 8) Remaining Work / Next Focus
 - Continue non-network gameplay/mod parity with stability-first validation.
@@ -315,6 +324,34 @@ Notes:
   - files: `sm64wiiu/src/game/mario.c`
   - validation: `PATH="/opt/devkitpro/devkitPPC/bin:$PATH" WIIU_CRASH_DEBUG=1 ./build_wiiu_then_wuhb.sh`
   - outcome: build and WUHB packaging succeeded; next host/countdown repro should show whether crash is replaced by stable recovery or a new deeper fault.
+
+### 2026-02-13
+- Flood custom-stage warp stability hardening (DynOS parser + DJUI handoff): made DynOS custom level command parsing pointer-safe under Wii U endian fixup and forced DJUI main-menu ownership release before DynOS gameplay warps, so Flood lobby/custom-stage warps no longer run with menu input clamping and custom script traversal can resolve reliably.
+  - files: `sm64wiiu/data/dynos_level.cpp`, `sm64wiiu/data/dynos_warps.cpp`
+  - validation: `make -C sm64wiiu clean && ./build_wiiu_then_wuhb.sh`
+  - outcome: clean rebuild and WUHB packaging succeeded; next Cemu Flood host repro should confirm lobby-control recovery and improved custom-stage selection/warp reliability.
+  - gotcha: custom `.lvl` scalar fields need endian fixup on Wii U, but pointer fields must stay unswapped after DynOS token resolution or level-script control flow/warp metadata silently degrades.
+- Flood lobby ownership + custom-level registry diagnostics slice: reinforced DynOS gameplay-ownership handoff across warp lifecycle phases and added Wii U-bounded Flood/custom-level snapshot logs (including `level_register` traces and post-load registry dumps) to isolate whether broken lobby controls and missing random custom-stage picks come from menu ownership, input override, or registration mismatches.
+  - files: `sm64wiiu/data/dynos_warps.cpp`, `sm64wiiu/src/game/object_list_processor.c`, `sm64wiiu/src/pc/lua/smlua.c`, `sm64wiiu/src/pc/lua/utils/smlua_level_utils.c`, `sm64wiiu/src/pc/lua/utils/smlua_level_utils.h`, `sm64wiiu/src/pc/djui/djui_donor.c`
+  - validation: `make -C sm64wiiu clean && ./build_wiiu_then_wuhb.sh`
+  - outcome: clean rebuild and WUHB packaging succeeded; next Cemu host repro should now emit explicit ownership/state + custom-level registry evidence for the broken-lobby window and custom-stage selection path.
+  - gotcha: one-time menu close at warp start is insufficient when later warp-update phases can re-enter donor/DJUI ownership paths; ownership must be asserted at each gameplay handoff boundary to prevent transient input clamp states.
+- Flood sync-table state instrumentation slice: added Wii U-bounded `flood_sync` logs wired to Lua state (`gPlayerSyncTable` spectator + key `gGlobalSyncTable` fields) and removed strict `marioObj` requirement from Mario diagnostics so post-warp control locks can be distinguished between engine ownership/input state and Lua round/spectator state transitions.
+  - files: `sm64wiiu/src/game/object_list_processor.c`, `sm64wiiu/src/pc/lua/smlua.c`, `sm64wiiu/src/pc/lua/smlua.h`
+  - validation: `./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next Cemu Flood host repro should include per-tick sync-state evidence during the broken-lobby window.
+- Flood local-state isolation fix candidate (Lua `gMarioStates` aliasing): replaced single-player non-local `gMarioStates` table slot aliasing with isolated compatibility mirror structs so scripts touching `gMarioStates[1..]` cannot accidentally mutate local Mario state; also extended Flood diagnostics with controller-pointer context for post-warp control-lock triage.
+  - files: `sm64wiiu/src/pc/lua/smlua.c`, `sm64wiiu/src/game/object_list_processor.c`
+  - validation: `./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next Cemu Flood host repro should confirm whether lobby-control lock/t-pose behavior was caused by local-state corruption from non-local Lua Mario-state writes.
+- Flood MarioState index parity slice (`smlua_cobject` + warp phase3 telemetry): switched Lua Mario `playerIndex` exposure from raw pointer subtraction to a helper that recognizes both native and compat MarioState pools, and expanded DynOS phase3 completion logs with action/freeze/timestop/anim/controller fields for post-warp state confirmation in the broken-lobby window.
+  - files: `sm64wiiu/src/pc/lua/smlua.c`, `sm64wiiu/src/pc/lua/smlua.h`, `sm64wiiu/src/pc/lua/smlua_cobject.c`, `sm64wiiu/data/dynos_warps.cpp`
+  - validation: `./build_wiiu_then_wuhb.sh`
+  - outcome: build and WUHB packaging succeeded; next Cemu repro should show whether Flood scripts still read invalid local-player index data after custom warp.
+- Flood behavior hook nil-fault fix (Lua API + non-local marioObj placeholders): added missing `cur_obj_init_animation` Lua binding and assigned inert per-slot object mirrors to non-local `gMarioStates` compatibility entries so Flood compiled behavior loops no longer fault on `marioObj` nil for remote slots in single-player.
+  - files: `sm64wiiu/src/pc/lua/smlua.c`
+  - validation: `make -C sm64wiiu clean && ./build_wiiu_then_wuhb.sh`
+  - outcome: non-debug rebuild and WUHB packaging succeeded; next Cemu Flood host repro should confirm `cur_obj_init_animation`/`marioObj` hook error spam is eliminated during custom-stage gameplay entry.
 
 ## 10) Required Format For Future Summary Updates
 

@@ -7,6 +7,10 @@
 #include "data/dynos.c.h"
 #endif
 
+// Geo layouts from DynOS packs can be authored on little-endian hosts.
+// The Wii U geo parser retries with swapped scalar decoding via this flag.
+extern u8 gGeoCmdSwapEndianFields;
+
 #if IS_64_BIT
 static s16 next_s16_in_geo_script(s16 **src) {
     s16 ret;
@@ -17,10 +21,19 @@ static s16 next_s16_in_geo_script(s16 **src) {
     if (((uintptr_t)(*src) & 7) == 4) {
          *src += 2; // skip 32 bits
     }
+    if (gGeoCmdSwapEndianFields) {
+        ret = (s16) __builtin_bswap16((u16) ret);
+    }
     return ret;
 }
 #else
-#define next_s16_in_geo_script(src) (*(*src)++)
+static inline s16 next_s16_in_geo_script(s16 **src) {
+    s16 ret = *(*src)++;
+    if (gGeoCmdSwapEndianFields) {
+        ret = (s16) __builtin_bswap16((u16) ret);
+    }
+    return ret;
+}
 #endif
 
 /**

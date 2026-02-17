@@ -700,6 +700,32 @@ static bool smlua_dispatch_hook_callbacks(enum LuaHookedEventType hook_type, int
     return called;
 }
 
+struct LuaPacketHookArgs {
+    int tableRef;
+};
+
+// Pushes a table referenced in the Lua registry for packet receive hooks.
+static void smlua_push_packet_hook_args(lua_State *L, const void *ctx) {
+    const struct LuaPacketHookArgs *args = (const struct LuaPacketHookArgs *)ctx;
+    if (L == NULL || args == NULL) {
+        lua_pushnil(L);
+        return;
+    }
+    lua_rawgeti(L, LUA_REGISTRYINDEX, args->tableRef);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_newtable(L);
+    }
+}
+
+// Dispatches packet receive hooks with a Lua table stored in the registry.
+bool smlua_call_event_hooks_on_packet_receive(int packet_table_ref) {
+    struct LuaPacketHookArgs args = { packet_table_ref };
+    return smlua_dispatch_hook_callbacks(HOOK_ON_PACKET_RECEIVE, 1, 0,
+                                         smlua_push_packet_hook_args, &args,
+                                         NULL, NULL);
+}
+
 struct LuaWarpHookArgs {
     int warpType;
     int levelNum;

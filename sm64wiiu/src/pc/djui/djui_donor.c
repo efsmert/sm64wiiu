@@ -27,7 +27,11 @@
 #include "djui_theme.h"
 #include "djui_unicode.h"
 #include "pc/configfile.h"
+#include "pc/lua/utils/smlua_level_utils.h"
 #include "seq_ids.h"
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
 
 extern bool gDjuiInMainMenu;
 extern bool gDjuiDisabled;
@@ -49,6 +53,27 @@ static struct DjuiRoot* sDjuiRootBehind = NULL;
 #define DJUI_MENU_RANDOM_MIN 1
 #define DJUI_MENU_RANDOM_MAX 17
 #define DJUI_PLAY_MODE_PAUSED 2
+
+static void djui_donor_ensure_gameplay_ownership(void) {
+    if (!sDonorInitialized || !gDjuiInMainMenu) {
+        return;
+    }
+
+    // Gameplay should never remain under DJUI main-menu ownership once we've
+    // entered a custom (mod-registered) level. If this state persists, input can
+    // stay clamped and Flood lobby control appears "frozen" until round start.
+    if (gCurrLevelNum >= CUSTOM_LEVEL_NUM_START) {
+        djui_donor_close_main_menu();
+#ifdef TARGET_WII_U
+        static u32 sForcedMenuCloseLogs = 0;
+        if (sForcedMenuCloseLogs < 32) {
+            WHBLogPrintf("djui: forced menu close in custom level=%d area=%d play=%d",
+                         (int)gCurrLevelNum, (int)gCurrAreaIndex, (int)sCurrPlayMode);
+            sForcedMenuCloseLogs++;
+        }
+#endif
+    }
+}
 
 struct DjuiMenuPreset {
     s16 level;
@@ -226,6 +251,8 @@ void djui_donor_update(void) {
         return;
     }
 
+    djui_donor_ensure_gameplay_ownership();
+
     panelActive = djui_panel_is_active();
     gInteractableOverridePad = panelActive && (gDjuiInMainMenu || gDjuiPanelPauseCreated);
 
@@ -256,7 +283,12 @@ void djui_donor_update_menu_level(void) {
     bool levelMismatch = false;
     bool areaMismatch = false;
 
-    if (!sDonorInitialized || !gDjuiInMainMenu || gMarioState == NULL) {
+    if (!sDonorInitialized || gMarioState == NULL) {
+        return;
+    }
+
+    djui_donor_ensure_gameplay_ownership();
+    if (!gDjuiInMainMenu) {
         return;
     }
 

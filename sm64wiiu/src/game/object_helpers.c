@@ -1623,6 +1623,14 @@ void obj_set_cylboard(struct Object *obj) {
     obj->header.gfx.node.flags |= GRAPH_RENDER_CYLBOARD;
 }
 
+void obj_set_hitbox_radius_and_height(struct Object *obj, f32 radius, f32 height) {
+    if (obj == NULL) {
+        return;
+    }
+    obj->hitboxRadius = radius;
+    obj->hitboxHeight = height;
+}
+
 void cur_obj_set_hitbox_radius_and_height(f32 radius, f32 height) {
     o->hitboxRadius = radius;
     o->hitboxHeight = height;

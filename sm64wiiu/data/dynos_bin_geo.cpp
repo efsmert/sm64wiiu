@@ -542,6 +542,11 @@ void DynOS_Geo_Load(BinFile *aFile, GfxData *aGfxData) {
         void *_Ptr = DynOS_Pointer_Load(aFile, aGfxData, _TokenValue, FUNCTION_GEO, &_Node->mFlags);
         if (_Ptr) {
             _Node->mData[i] = (uintptr_t) _Ptr;
+        } else if (_TokenValue == FUNCTION_CODE || _TokenValue == POINTER_CODE || _TokenValue == LUA_VAR_CODE) {
+            aGfxData->mErrorCount++;
+            PrintError("ERROR: Geo pointer token decode failed: geo='%s' idx=%u token=0x%08X",
+                       _Node->mName.begin(), i, _TokenValue);
+            _Node->mData[i] = 0;
         } else {
             _Node->mData[i] = (uintptr_t) _RawValue;
         }

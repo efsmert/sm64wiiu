@@ -74,12 +74,19 @@ static s32 sRegister;
 static struct LevelCommand *sCurrentCmd;
 
 static inline bool level_cmd_swap_scalar_fields(void) {
-    // Keep vanilla opcodes on native-endian reads. Restrict scalar swapping to
-    // DynOS Lua extension opcodes that carry token-indexed scalar payloads.
+    // DynOS level scripts (.lvl) are produced on little-endian hosts (PC).
+    // On the Wii U (big-endian) we keep the raw command bytes as-is, which
+    // preserves u8 fields (type/size/flags) but leaves multi-byte scalar fields
+    // (s16/s32) in little-endian order. Swap scalar reads when executing a
+    // DynOS-provided script to interpret those immediates correctly.
     if (gLevelScriptModIndex < 0 || sCurrentCmd == NULL) {
         return false;
     }
-    return (sCurrentCmd->type >= 0x3F && sCurrentCmd->type <= 0x44);
+#if DYNOS_HOST_BIG_ENDIAN
+    return true;
+#else
+    return false;
+#endif
 }
 
 static inline u16 level_cmd_read_u16(u32 offset) {

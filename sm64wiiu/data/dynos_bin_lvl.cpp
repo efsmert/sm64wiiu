@@ -1086,8 +1086,9 @@ static DataNode<LevelScript>* DynOS_Lvl_Load(BinFile *aFile, GfxData *aGfxData) 
                 PrintError("Expected a pointer while reading level script: %s, %u", _Node->mName.begin(), _TokenValue);
                 _Node->mData[i] = 0;
             } else {
-                // Store non-pointer command words exactly as authored on disk so
-                // command decoding works on both endian types.
+                // Store non-pointer command words preserving file byte order.
+                // Multi-byte scalar fields are endian-fixed at read time in the
+                // level-script interpreter when executing DynOS-provided scripts.
                 _Node->mData[i] = (uintptr_t) _RawValue;
             }
         }

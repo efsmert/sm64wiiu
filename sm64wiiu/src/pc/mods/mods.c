@@ -29,6 +29,42 @@ static char sLocalModIncompatible[MODS_MAX_ACTIVE_SCRIPTS][128];
 static const char sDefaultModDescription[] = "Wii U donor compatibility mod entry.";
 static const char sDefaultModCategory[] = "misc";
 
+#ifdef TARGET_WII_U
+#define MODS_DYNOS_FAILED_ACTOR_BINS_MAX 128
+static char sModsDynosFailedActorBins[MODS_DYNOS_FAILED_ACTOR_BINS_MAX][SYS_MAX_PATH];
+static int sModsDynosFailedActorBinsCount = 0;
+
+static bool mods_dynos_failed_actor_bin_contains(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return false;
+    }
+    for (int i = 0; i < sModsDynosFailedActorBinsCount; i++) {
+        if (strcmp(sModsDynosFailedActorBins[i], path) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void mods_dynos_failed_actor_bin_add(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return;
+    }
+    if (mods_dynos_failed_actor_bin_contains(path)) {
+        return;
+    }
+    if (sModsDynosFailedActorBinsCount >= MODS_DYNOS_FAILED_ACTOR_BINS_MAX) {
+        WHBLogPrintf("mods: dynos actor bin blacklist full, keeping latest failure: '%s'", path);
+        return;
+    }
+    snprintf(sModsDynosFailedActorBins[sModsDynosFailedActorBinsCount],
+             sizeof(sModsDynosFailedActorBins[sModsDynosFailedActorBinsCount]),
+             "%s", path);
+    sModsDynosFailedActorBins[sModsDynosFailedActorBinsCount][SYS_MAX_PATH - 1] = '\0';
+    sModsDynosFailedActorBinsCount++;
+}
+#endif
+
 // Keep a deterministic script catalog for the current process lifetime.
 static const char *sBuiltinScripts[] = {
     "mods/character-select-coop/main.lua",
@@ -499,19 +535,23 @@ void mods_activate_dynos_assets(void) {
                 if (mods_path_has_suffix(vpath, ".lvl")) {
                     dynos_add_level(modIndex, realPath, name);
                 } else if (mods_path_has_suffix(vpath, ".bin")) {
+                    if (!configDynosEnableActorBins) {
+                        continue;
+                    }
 #ifdef TARGET_WII_U
-                    // Wii U: eager actor .bin activation still crashes in DynOS model geo
-                    // processing (observed on Flood `sled_geo.bin` during host startup).
-                    // Keep host path stable by deferring/omitting actor binaries here.
-                    (void)modFileIndex;
-                    (void)realPath;
-                    (void)name;
-#else
+                    if (mods_dynos_failed_actor_bin_contains(realPath)) {
+                        continue;
+                    }
+#endif
                     // DynOS uses the (modIndex, fileIndex) pair as part of its
                     // internal keying; keep `fileIndex` unique within the mod's
                     // root directory scan to avoid collisions/corruption.
-                    dynos_add_actor_custom(modIndex, modFileIndex++, realPath, name);
+                    if (!dynos_add_actor_custom(modIndex, modFileIndex++, realPath, name)) {
+#ifdef TARGET_WII_U
+                        WHBLogPrintf("mods: dynos actor bin failed '%s' (name='%s'), skipping", realPath, name);
 #endif
+                        mods_dynos_failed_actor_bin_add(realPath);
+                    }
                 } else if (mods_path_has_suffix(vpath, ".col")) {
                     dynos_add_collision(realPath, name);
                 } else if (mods_path_has_suffix(vpath, ".tex")) {

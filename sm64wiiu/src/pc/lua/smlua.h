@@ -32,6 +32,7 @@ extern "C" {
 #endif
 
 extern bool gSmLuaConvertSuccess;
+struct MarioState;
 int64_t smlua_to_integer(lua_State *L, uint32_t index);
 const char *smlua_to_string(lua_State *L, uint32_t index);
 void *smlua_to_cobject(lua_State *L, uint32_t index, uint16_t expected_type);
@@ -68,6 +69,9 @@ float smlua_get_override_near(float default_near);
 float smlua_get_override_fov(float default_fov);
 int8_t smlua_get_override_skybox(int8_t default_background);
 void smlua_get_skybox_color(uint8_t out_color[3]);
+int32_t smlua_debug_get_player_sync_spectator(int32_t playerIndex, int32_t fallbackValue);
+int32_t smlua_debug_get_global_sync_integer(const char *fieldName, int32_t fallbackValue);
+int32_t smlua_debug_get_mario_state_index(const struct MarioState *marioState);
 
 #ifdef __cplusplus
 }

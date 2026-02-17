@@ -170,6 +170,9 @@ static const struct ConfigOption options[] = {
     {.name = "coopnet_password",               .type = CONFIG_TYPE_STRING, .stringValue = configPassword, .maxStringLength = MAX_CONFIG_STRING},
     {.name = "rules_version",                  .type = CONFIG_TYPE_UINT,   .uintValue = &configRulesVersion},
 
+    // DynOS (Wii U safety toggles)
+    {.name = "dynos_enable_actor_bins",        .type = CONFIG_TYPE_BOOL,   .boolValue = &configDynosEnableActorBins},
+
     // DJUI
     {.name = "djui_theme",           .type = CONFIG_TYPE_UINT, .uintValue = &configDjuiTheme},
     {.name = "djui_theme_center",    .type = CONFIG_TYPE_BOOL, .boolValue = &configDjuiThemeCenter},

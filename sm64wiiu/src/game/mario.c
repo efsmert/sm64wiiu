@@ -13,6 +13,8 @@
 #include "interaction.h"
 #include "level_table.h"
 #include "level_update.h"
+#include "dialog_ids.h"
+#include "ingame_menu.h"
 #include "main.h"
 #include "mario.h"
 #include "mario_actions_airborne.h"
@@ -1435,6 +1437,29 @@ void update_mario_inputs(struct MarioState *m) {
     }
 }
 
+// Co-op DX semantics: m.freeze is a frame countdown timer.
+// Many mods set it to small values (like 1) expecting it to clear automatically.
+static void coopdx_tick_mario_freeze_timer(struct MarioState *m) {
+    if (m == NULL) {
+        return;
+    }
+
+    u8 freezeTimer = smlua_get_mario_freeze_timer(m);
+    if (freezeTimer > 0) {
+        freezeTimer--;
+    }
+
+    // Match CoopDX behavior: ensure at least 2 frames of freeze while a dialog box or pause is active.
+    if (freezeTimer < 2 && get_dialog_id() != DIALOG_NONE) {
+        freezeTimer = 2;
+    }
+    if (freezeTimer < 2 && sCurrPlayMode == PLAY_MODE_PAUSED) {
+        freezeTimer = 2;
+    }
+
+    smlua_set_mario_freeze_timer(m, freezeTimer);
+}
+
 /**
  * Set's the camera preset for submerged action behaviors.
  */
@@ -1727,6 +1752,7 @@ s32 execute_mario_action(UNUSED struct Object *o) {
         update_mario_inputs(gMarioState);
         mario_handle_special_floors(gMarioState);
         mario_process_interactions(gMarioState);
+        coopdx_tick_mario_freeze_timer(gMarioState);
 
         // If Mario is OOB, stop executing actions.
         if (gMarioState->floor == NULL) {

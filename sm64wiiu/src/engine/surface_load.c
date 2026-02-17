@@ -2,6 +2,10 @@
 
 #include "prevent_bss_reordering.h"
 
+#ifndef TARGET_N64
+#include <stdlib.h>
+#endif
+
 #include "sm64.h"
 #include "game/ingame_menu.h"
 #include "graph_node.h"
@@ -34,13 +38,10 @@ static struct AllocOnlyPool *sDynamicSurfaceNodePool;
 static struct AllocOnlyPool *sDynamicSurfacePool;
 static u8 sStaticSurfaceLoadComplete;
 #else
-struct SurfaceNode *sSurfaceNodePool;
-struct Surface *sSurfacePool;
-
-/**
- * The size of the surface pool (2300).
- */
-s16 sSurfacePoolSize;
+// CoopDX-style growing pools keep pointers stable (SurfaceNode holds pointers to Surface),
+// while allowing large custom stages to load without hard bounds.
+static struct GrowingArray *sSurfaceNodePool = NULL;
+static struct GrowingArray *sSurfacePool = NULL;
 #endif
 
 
@@ -55,20 +56,12 @@ static struct SurfaceNode *alloc_surface_node(void) {
                                  sStaticSurfaceNodePool : sDynamicSurfaceNodePool;
     struct SurfaceNode *node = alloc_only_pool_alloc(pool, sizeof(struct SurfaceNode));
 #else
-    struct SurfaceNode *node = &sSurfaceNodePool[gSurfaceNodesAllocated];
+    if (!sSurfaceNodePool) { return NULL; }
+    sSurfaceNodePool->count = (u32) gSurfaceNodesAllocated++;
+    struct SurfaceNode *node = growing_array_alloc(sSurfaceNodePool, sizeof(struct SurfaceNode));
 #endif
-    gSurfaceNodesAllocated++;
-
+    if (!node) { return NULL; }
     node->next = NULL;
-
-#ifndef USE_SYSTEM_MALLOC
-    //! A bounds check! If there's more surface nodes than 7000 allowed,
-    //  we, um...
-    // Perhaps originally just debug feedback?
-    if (gSurfaceNodesAllocated >= 7000) {
-    }
-#endif
-
     return node;
 }
 
@@ -82,17 +75,11 @@ static struct Surface *alloc_surface(void) {
                                  sStaticSurfacePool : sDynamicSurfacePool;
     struct Surface *surface = alloc_only_pool_alloc(pool, sizeof(struct Surface));
 #else
-    struct Surface *surface = &sSurfacePool[gSurfacesAllocated];
+    if (!sSurfacePool) { return NULL; }
+    sSurfacePool->count = (u32) gSurfacesAllocated++;
+    struct Surface *surface = growing_array_alloc(sSurfacePool, sizeof(struct Surface));
 #endif
-    gSurfacesAllocated++;
-
-#ifndef USE_SYSTEM_MALLOC
-    //! A bounds check! If there's more surfaces than the 2300 allowed,
-    //  we, um...
-    // Perhaps originally just debug feedback?
-    if (gSurfacesAllocated >= sSurfacePoolSize) {
-    }
-#endif
+    if (!surface) { return NULL; }
 
     surface->type = 0;
     surface->force = 0;
@@ -134,6 +121,7 @@ static void clear_static_surfaces(void) {
  */
 static void add_surface_to_cell(s16 dynamic, s16 cellX, s16 cellZ, struct Surface *surface) {
     struct SurfaceNode *newNode = alloc_surface_node();
+    if (!newNode) { return; }
     struct SurfaceNode *list;
     s16 surfacePriority;
     s16 priority;
@@ -558,9 +546,10 @@ void alloc_surface_pools(void) {
     sDynamicSurfaceNodePool = alloc_only_pool_init();
     sDynamicSurfacePool = alloc_only_pool_init();
 #else
-    sSurfacePoolSize = 2300;
-    sSurfaceNodePool = main_pool_alloc(7000 * sizeof(struct SurfaceNode), MEMORY_POOL_LEFT);
-    sSurfacePool = main_pool_alloc(sSurfacePoolSize * sizeof(struct Surface), MEMORY_POOL_LEFT);
+    // CoopDX uses growing arrays for these pools. We mirror that behavior to
+    // support DynOS custom levels whose collision can exceed vanilla budgets.
+    sSurfaceNodePool = growing_array_init(sSurfaceNodePool, 0x4000, malloc, free);
+    sSurfacePool = growing_array_init(sSurfacePool, 0x1000, malloc, free);
 #endif
 
     gEnvironmentRegions = NULL;
@@ -635,6 +624,10 @@ void load_area_terrain(s16 index, s16 *data, s8 *surfaceRooms, s16 *macroObjects
     unused8038BE90 = 0;
     gSurfaceNodesAllocated = 0;
     gSurfacesAllocated = 0;
+#ifndef USE_SYSTEM_MALLOC
+    if (sSurfaceNodePool) { sSurfaceNodePool->count = 0; }
+    if (sSurfacePool) { sSurfacePool->count = 0; }
+#endif
 #ifdef USE_SYSTEM_MALLOC
     alloc_only_pool_clear(sStaticSurfaceNodePool);
     alloc_only_pool_clear(sStaticSurfacePool);
@@ -710,6 +703,10 @@ void clear_dynamic_surfaces(void) {
 
         gSurfacesAllocated = gNumStaticSurfaces;
         gSurfaceNodesAllocated = gNumStaticSurfaceNodes;
+#ifndef USE_SYSTEM_MALLOC
+        if (sSurfacePool) { sSurfacePool->count = (u32) gSurfacesAllocated; }
+        if (sSurfaceNodePool) { sSurfaceNodePool->count = (u32) gSurfaceNodesAllocated; }
+#endif
 
         clear_spatial_partition(&gDynamicSurfacePartition[0][0]);
     }

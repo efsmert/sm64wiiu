@@ -43,6 +43,10 @@ bool DynOS_Actor_AddCustom(s32 aModIndex, s32 aModFileIndex, const SysPath &aFil
         PrintError("  ERROR: Couldn't load Actor Binary \"%s\" from \"%s\"", actorName.c_str(), aFilename.c_str());
         return false;
     }
+    if (_GfxData->mErrorCount > 0) {
+        PrintError("  ERROR: Actor binary \"%s\" had %d parse error(s); skipping", aFilename.c_str(), _GfxData->mErrorCount);
+        return false;
+    }
     _GfxData->mModIndex = aModIndex;
     _GfxData->mModFileIndex = aModFileIndex;
 

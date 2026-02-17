@@ -4,6 +4,10 @@
 #include "game/area.h"
 #include "data/dynos.c.h"
 
+#ifdef TARGET_WII_U
+#include <whb/log.h>
+#endif
+
 #define MIN_AREA_INDEX 0
 
 static struct CustomLevelInfo* sCustomLevelHead = NULL;
@@ -84,6 +88,64 @@ struct CustomLevelInfo* smlua_level_util_get_info_from_course_num(u8 courseNum) 
     return NULL;
 }
 
+int smlua_level_util_count(void) {
+    int count = 0;
+    struct CustomLevelInfo* node = sCustomLevelHead;
+    while (node != NULL) {
+        count++;
+        node = node->next;
+    }
+    return count;
+}
+
+void smlua_level_util_log_snapshot(const char *phase) {
+#ifdef TARGET_WII_U
+    static u32 sSnapshotLogCount = 0;
+    struct CustomLevelInfo* node = sCustomLevelHead;
+    int index = 0;
+
+    if (sSnapshotLogCount >= 16) {
+        return;
+    }
+    sSnapshotLogCount++;
+
+    WHBLogPrintf("lua: custom levels snapshot[%s] count=%d next=%d",
+                 phase != NULL ? phase : "?",
+                 smlua_level_util_count(),
+                 (int)sCustomLevelNumNext);
+
+    while (node != NULL && index < 64) {
+        WHBLogPrintf("lua: custom level[%d] level=%d course=%d mod=%d short='%s' entry='%s' script=%p",
+                     index, (int)node->levelNum, (int)node->courseNum, (int)node->modIndex,
+                     node->shortName != NULL ? node->shortName : "-",
+                     node->scriptEntryName != NULL ? node->scriptEntryName : "-",
+                     node->script);
+        node = node->next;
+        index++;
+    }
+    if (node != NULL) {
+        WHBLogPrintf("lua: custom levels snapshot truncated at %d entries", index);
+    }
+#else
+    (void)phase;
+#endif
+}
+
+#ifdef TARGET_WII_U
+static void smlua_level_util_log_level_register_new(const struct CustomLevelInfo *info) {
+    static u32 sLevelRegisterLogCount = 0;
+    if (info == NULL || sLevelRegisterLogCount >= 128) {
+        return;
+    }
+    WHBLogPrintf("lua: level_register new level=%d course=%d mod=%d short='%s' entry='%s' script=%p",
+                 (int)info->levelNum, (int)info->courseNum, (int)info->modIndex,
+                 info->shortName != NULL ? info->shortName : "-",
+                 info->scriptEntryName != NULL ? info->scriptEntryName : "-",
+                 info->script);
+    sLevelRegisterLogCount++;
+}
+#endif
+
 s16 level_register(const char* scriptEntryName, s16 courseNum, const char* fullName, const char* shortName, u32 acousticReach, u32 echoLevel1, u32 echoLevel2, u32 echoLevel3) {
     if (scriptEntryName == NULL || fullName == NULL || shortName == NULL) {
         LOG_LUA("level_register: missing required params");
@@ -92,6 +154,15 @@ s16 level_register(const char* scriptEntryName, s16 courseNum, const char* fullN
 
     struct CustomLevelInfo* existing = smlua_level_util_get_info_from_script(scriptEntryName);
     if (existing != NULL) {
+#ifdef TARGET_WII_U
+        static u32 sLevelRegisterReuseLogCount = 0;
+        if (sLevelRegisterReuseLogCount < 64) {
+            WHBLogPrintf("lua: level_register reuse entry='%s' level=%d course=%d mod=%d",
+                         scriptEntryName, (int)existing->levelNum, (int)existing->courseNum,
+                         (int)existing->modIndex);
+            sLevelRegisterReuseLogCount++;
+        }
+#endif
         return existing->levelNum;
     }
 
@@ -122,6 +193,9 @@ s16 level_register(const char* scriptEntryName, s16 courseNum, const char* fullN
 
     if (sCustomLevelHead == NULL) {
         sCustomLevelHead = info;
+#ifdef TARGET_WII_U
+        smlua_level_util_log_level_register_new(info);
+#endif
         return info->levelNum;
     }
 
@@ -130,6 +204,9 @@ s16 level_register(const char* scriptEntryName, s16 courseNum, const char* fullN
         tail = tail->next;
     }
     tail->next = info;
+#ifdef TARGET_WII_U
+    smlua_level_util_log_level_register_new(info);
+#endif
     return info->levelNum;
 }
 

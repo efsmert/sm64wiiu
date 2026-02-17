@@ -561,7 +561,15 @@ void read_controller_inputs(void) {
     // If any controllers are plugged in, update the controller information.
     if (gControllerBits) {
         osRecvMesg(&gSIEventMesgQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
-        osContGetReadData(gInteractableOverridePad ? &gInteractablePad : &gControllerPads[0]);
+        // Always read the primary controller into the standard pad buffer.
+        // DJUI uses `gInteractablePad` as an auxiliary input source for menus/cursor,
+        // but routing the read *away* from `gControllerPads` breaks gameplay/mods
+        // that consume `gMarioState->controller` while DJUI wants focus.
+        osContGetReadData(&gControllerPads[0]);
+
+        // Keep the interactable pad in sync so DJUI can still consume controller input.
+        // Mouse/keyboard interactions are handled separately by DJUI/input backends.
+        gInteractablePad = gControllerPads[0];
 #if ENABLE_RUMBLE
         release_rumble_pak_control();
 #endif
